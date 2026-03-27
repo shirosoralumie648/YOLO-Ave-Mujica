@@ -2,7 +2,7 @@
 
 - Date: 2026-03-28
 - Scope: 6-8 week MVP
-- Status: Draft validated in brainstorming session
+- Status: Revised after architecture review feedback
 - Owner: Platform team
 
 ## 1. Goals And Non-Goals
@@ -12,17 +12,20 @@
 1. Build a production-oriented MVP without Kubernetes for now, while preserving future migration paths.
 2. Use Go as the backend control plane and Python containerized workers for model/compute workloads.
 3. Deliver Data Hub capabilities:
-   - S3 mount-like indexing (no data copy)
-   - immutable dataset snapshots
+   - S3 mount-like indexing (no object migration)
+   - immutable dataset snapshots with Delta storage
    - import/export for COCO and YOLO
 4. Deliver Job Orchestrator capabilities:
    - async jobs with queueing
    - idempotency and retries
-   - heartbeat and timeout recovery
+   - capability-aware scheduling (CPU/GPU)
 5. Deliver first AI productivity features:
    - zero-shot labeling pipeline (Grounded-DINO + SAM2)
+   - pending-review trust chain for pseudo labels
    - snapshot diff foundation
-   - basic cleaning service rules
+   - basic cleaning rules
+6. Deliver CLI-first artifact delivery for training frameworks:
+   - `platform-cli pull --format yolo --version vX.Y`
 
 ### 1.2 Non-Goals (MVP)
 
@@ -35,20 +38,21 @@
 
 ### 2.1 Chosen Architecture
 
-Modular monolith in Go for control plane + containerized Python microservices for compute plane.
+Modular monolith in Go for control plane + containerized Python workers for compute plane.
 
 1. Go services (non-container, managed by systemd):
    - API server
    - Data Hub module
    - Versioning module
    - Job Orchestrator module
+   - Artifact Repository module
 2. Python workers (containerized):
-   - zero-shot-worker
-   - video-worker
-   - cleaning-worker
+   - zero-shot-worker (GPU)
+   - video-worker (CPU/GPU depending mode)
+   - cleaning-worker (CPU)
 3. Shared infra:
    - PostgreSQL for metadata/state
-   - Redis for queueing and short-lived runtime signals
+   - Redis for queueing and runtime coordination
    - S3/MinIO for raw data and generated artifacts
 
 ### 2.2 Why This Option
@@ -58,50 +62,85 @@ Modular monolith in Go for control plane + containerized Python microservices fo
 3. Preserves future Kubernetes migration by keeping services stateless and contract-driven.
 4. Avoids early distributed-system overhead while retaining clear module boundaries.
 
-## 3. Component Responsibilities
+## 3. Storage Indexing And "Zero-Copy" Data Access
 
-### 3.1 API Server (Go)
+### 3.1 Principle
+
+1. Data Hub stores metadata indexes only; images remain in S3.
+2. API server never streams image bytes as a data proxy.
+3. Frontend and workers read objects directly from S3 via short-lived pre-signed URLs.
+
+### 3.2 Pre-Signed URL Access Path
+
+1. Client/worker requests object access token from API.
+2. API validates permissions and creates pre-signed URL with short TTL (for example 60-300s).
+3. URL is returned and consumed directly against S3/compatible endpoint.
+4. Optional Redis cache for hot URL signatures keyed by `dataset_id + object_key + principal` and TTL-aligned expiration.
+
+### 3.3 Why This Matters
+
+1. Removes Go server from bulk data path.
+2. Reduces backend egress and memory pressure.
+3. Retains access control and auditability via signed URL issuance logs.
+
+### 3.4 CLI Mount Direction
+
+1. Add an experimental CLI mount mode in phase 2 (`platform-cli mount dataset_v1 /mnt/platform/dataset_v1`).
+2. Implement as a FUSE adapter with read-only semantics in MVP+1 scope.
+3. Keep training users unblocked in MVP by providing artifact packages (`zip`/`tar.gz`) through CLI pull.
+
+## 4. Component Responsibilities
+
+### 4.1 API Server (Go)
 
 1. Exposes REST APIs.
 2. Handles authentication/authorization.
-3. Validates payloads and writes command intent into orchestrator/data modules.
+3. Validates payloads and coordinates Data Hub and Orchestrator actions.
 4. Returns immediately for long tasks with `job_id`.
+5. Issues pre-signed object/artifact URLs.
 
-### 3.2 Data Hub Module (Go)
+### 4.2 Data Hub Module (Go)
 
-1. Registers dataset to `bucket + prefix`.
-2. Scans object metadata from S3 (without file migration).
+1. Registers datasets to `bucket + prefix`.
+2. Scans object metadata from S3 without file migration.
 3. Maintains dataset item index.
-4. Creates immutable snapshots.
+4. Creates immutable snapshots with lineage.
 5. Runs import/export jobs through orchestrator.
 
-### 3.3 Versioning Module (Go)
+### 4.3 Versioning Module (Go)
 
 1. Manages snapshot lineage.
-2. Stores annotation records linked to snapshot IDs.
+2. Maintains Git-like delta annotation history.
 3. Produces diff data (`add/remove/update`) between snapshots.
 
-### 3.4 Job Orchestrator Module (Go)
+### 4.4 Job Orchestrator Module (Go)
 
 1. Persists jobs with status machine.
-2. Enqueues tasks into Redis by job type.
+2. Enqueues tasks into resource-aware queues.
 3. Handles idempotency key deduplication.
 4. Tracks heartbeats and lease timeout.
 5. Performs retry with backoff for transient failures.
 
-### 3.5 Python Workers (Containerized)
+### 4.5 Artifact Repository Module (Go)
 
-1. Consume typed queue topics.
+1. Standardizes train-ready package generation.
+2. Stores artifact metadata and lifecycle state.
+3. Produces direct download URLs for CLI and automation.
+
+### 4.6 Python Workers (Containerized)
+
+1. Consume typed queue topics with capability filters.
 2. Execute compute tasks:
    - zero-shot model inference
    - video frame extraction
    - data quality checks
-3. Write outputs to S3 first, then update job result metadata.
+   - export package assembly
+3. Write outputs to S3 first, then update metadata.
 4. Emit heartbeat and structured logs.
 
-## 4. Data Model
+## 5. Data Model (Delta-Friendly)
 
-## 4.1 Core Tables
+### 5.1 Core Tables
 
 1. `projects`
    - `id, name, owner, created_at`
@@ -113,24 +152,112 @@ Modular monolith in Go for control plane + containerized Python microservices fo
    - `id, dataset_id, version, based_on_snapshot_id, created_by, created_at, note`
 5. `categories`
    - `id, project_id, name, alias_group, color`
-6. `annotations`
-   - `id, snapshot_id, item_id, category_id, bbox_x, bbox_y, bbox_w, bbox_h, polygon_json, score, source, model_name, created_at`
-7. `annotation_changes`
+6. `annotations` (canonical interval model)
+   - `id, dataset_id, item_id, category_id, bbox_x, bbox_y, bbox_w, bbox_h, polygon_json, source, model_name, created_at_snapshot_id, deleted_at_snapshot_id, review_status, is_pseudo, created_at, updated_at`
+7. `annotation_candidates` (pending review area)
+   - `id, job_id, dataset_id, snapshot_id, item_id, category_id, bbox_x, bbox_y, bbox_w, bbox_h, polygon_json, confidence, model_name, is_pseudo, review_status, reviewer_id, reviewed_at, created_at`
+8. `annotation_changes`
    - `id, from_snapshot_id, to_snapshot_id, item_id, change_type, before_json, after_json, created_at`
-8. `jobs`
-   - `id, project_id, dataset_id, snapshot_id, job_type, status, priority, idempotency_key, payload_json, result_json, error_code, error_msg, retry_count, lease_until, created_at, started_at, finished_at`
-9. `job_events`
-   - `id, job_id, event_type, message, ts`
-10. `audit_logs`
+9. `jobs`
+   - `id, project_id, dataset_id, snapshot_id, job_type, status, priority, required_resource_type, required_capabilities_json, idempotency_key, payload_json, result_artifact_ids_json, error_code, error_msg, retry_count, lease_until, created_at, started_at, finished_at`
+10. `job_events`
+    - `id, job_id, event_type, message, ts`
+11. `artifacts`
+    - `id, project_id, dataset_id, snapshot_id, artifact_type, format, uri, checksum, size, status, ttl_expire_at, created_by_job_id, created_at`
+12. `audit_logs`
     - `id, actor, action, resource_type, resource_id, detail_json, ts`
 
-### 4.2 Key Constraints
+### 5.2 Key Constraints
 
 1. Unique index on `(project_id, job_type, idempotency_key)`.
 2. Snapshot rows are immutable once created.
-3. Annotation rows are snapshot-bound, never overwritten in place.
+3. Canonical `annotations` are never hard-deleted; lifecycle is represented by snapshot interval fields.
+4. `annotation_candidates.review_status` is constrained to `pending|accepted|rejected`.
+5. `jobs.required_resource_type` is constrained to `cpu|gpu|mixed`.
 
-## 5. API Contract (MVP)
+### 5.3 Snapshot Query Rule (Delta Storage)
+
+For snapshot `Vn`, effective annotations are:
+
+- `created_at_snapshot_id <= Vn`
+- and (`deleted_at_snapshot_id IS NULL` or `deleted_at_snapshot_id > Vn`)
+- and `review_status = 'verified'`
+
+This model prevents snapshot-level row duplication and controls storage growth.
+
+## 6. Trust Chain For AI-Assisted Labeling
+
+### 6.1 Rule
+
+1. All model-generated labels enter `annotation_candidates` with:
+   - `is_pseudo = true`
+   - `review_status = pending`
+2. They do not enter canonical training snapshot data until reviewed.
+
+### 6.2 Human Review Gate
+
+1. UI renders pending pseudo boxes in dashed style.
+2. Reviewer actions:
+   - accept -> promote to canonical `annotations` and mark candidate `accepted`
+   - reject -> keep candidate record but mark `rejected`
+3. Promotion creates audit event with reviewer identity and source model metadata.
+
+### 6.3 Why This Matters
+
+1. Protects training set quality from pseudo-label noise.
+2. Makes model-assisted changes auditable and reproducible.
+3. Enables quality metrics by source (`manual` vs `pseudo`).
+
+## 7. Job Orchestration And Resource Scheduling
+
+### 7.1 Status Machine
+
+`queued -> running -> succeeded | failed | canceled`
+
+Optional intermediate state:
+`retry_waiting`
+
+### 7.2 Capability Tags
+
+1. Workers register capability tags, for example:
+   - zero-shot-worker: `gpu`, `sam2`, `grounded_dino`
+   - cleaning-worker: `cpu`, `rules_engine`
+2. Job payload declares required resource and optional capability tags.
+3. Scheduler dispatches only to eligible workers.
+
+### 7.3 Queue Partitioning
+
+1. Separate queue lanes by resource type (`jobs:gpu`, `jobs:cpu`, `jobs:mixed`).
+2. Prevent low-value CPU tasks from starving GPU-critical inference workloads.
+3. Support per-project and per-job-type concurrency limits.
+
+### 7.4 Idempotency
+
+1. API requires `idempotency_key` for job-creation endpoints.
+2. Duplicate request returns existing `job_id`.
+3. Worker handlers must be side-effect safe for re-delivery.
+
+### 7.5 Heartbeat And Timeout Recovery
+
+1. Worker acquires lease and updates `lease_until` every `N` seconds.
+2. Orchestrator sweeper marks stale `running` job as retryable if lease expired.
+3. Retry path re-enqueues payload for transient error classes only.
+
+### 7.6 Retry Policy
+
+1. Transient errors: exponential backoff (`10s -> 30s -> 90s`, max configurable attempts).
+2. Fatal errors: direct `failed` terminal state.
+3. All failures write `error_code`, `error_msg`, and job event timeline.
+
+### 7.7 Write Ordering
+
+1. Worker writes artifact to S3 first.
+2. Worker persists `artifacts` row and links `result_artifact_ids_json` second.
+3. Job is marked `succeeded` last.
+
+This ordering prevents a success state with missing artifacts.
+
+## 8. API Contract (MVP)
 
 1. `POST /v1/datasets`
 2. `POST /v1/datasets/{id}/scan`
@@ -144,8 +271,15 @@ Modular monolith in Go for control plane + containerized Python microservices fo
 10. `GET /v1/jobs/{job_id}`
 11. `POST /v1/snapshots/diff`
 12. `GET /v1/datasets/{id}/items`
+13. `POST /v1/objects/presign` (short-lived object read URL)
+14. `GET /v1/review/candidates` (pending pseudo labels)
+15. `POST /v1/review/candidates/{id}/accept`
+16. `POST /v1/review/candidates/{id}/reject`
+17. `POST /v1/artifacts/packages` (create training package)
+18. `GET /v1/artifacts/{id}`
+19. `POST /v1/artifacts/{id}/presign` (download URL)
 
-### 5.1 API Conventions
+### 8.1 API Conventions
 
 1. Long-running operations are always async and return `job_id`.
 2. Error classes:
@@ -156,46 +290,29 @@ Modular monolith in Go for control plane + containerized Python microservices fo
    - `job_id`
    - `status` (`queued` initially)
 
-## 6. Job Orchestration Design
+## 9. CLI Contract (MVP)
 
-### 6.1 Status Machine
+### 9.1 Artifact Pull UX
 
-`queued -> running -> succeeded | failed | canceled`
+1. `platform-cli pull --dataset <name> --version v1.2 --format yolo`
+2. CLI requests artifact package from Artifact Repository.
+3. If package is not ready, CLI can block/poll until job completion.
+4. Final output is a standard archive containing:
+   - `images/`
+   - `labels/`
+   - optional `meta.yaml`
 
-Optional intermediate state:
-`retry_waiting`
+### 9.2 Why This Matters
 
-### 6.2 Idempotency
+1. Training scripts avoid parsing platform-internal business JSON.
+2. Framework compatibility is preserved through standard directory layout.
+3. Engineer workflow remains path- and file-oriented.
 
-1. API requires `idempotency_key` for job-creation endpoints.
-2. Duplicate request returns existing `job_id`.
-3. Worker handlers must be side-effect safe for re-delivery.
+## 10. Diff And Cleaning (MVP Rules)
 
-### 6.3 Heartbeat And Timeout Recovery
+### 10.1 Snapshot Diff
 
-1. Worker acquires lease and updates `lease_until` every `N` seconds.
-2. Orchestrator sweeper marks stale `running` job as retryable if lease expired.
-3. Retry path re-enqueues payload for transient error classes only.
-
-### 6.4 Retry Policy
-
-1. Transient errors: exponential backoff (`10s -> 30s -> 90s`, max configurable attempts).
-2. Fatal errors: direct `failed` terminal state.
-3. All failures write `error_code`, `error_msg`, and job event timeline.
-
-### 6.5 Write Ordering
-
-1. Worker writes artifact to S3 first.
-2. Worker persists `result_json` and emits success event second.
-3. Job is marked `succeeded` last.
-
-This ordering prevents a success state with missing artifacts.
-
-## 7. Diff And Cleaning (MVP Rules)
-
-### 7.1 Snapshot Diff
-
-1. Match annotations by `item_id + category_id`.
+1. Match effective annotations by `item_id + category_id` and geometry.
 2. Use IoU threshold to classify updates.
 3. Emit:
    - add
@@ -206,7 +323,7 @@ This ordering prevents a success state with missing artifacts.
    - total box delta
    - average IoU drift for updated boxes
 
-### 7.2 Cleaning Rules (First Batch)
+### 10.2 Cleaning Rules (First Batch)
 
 1. Bounding box with zero/negative area.
 2. Category label mismatch against project taxonomy.
@@ -216,9 +333,9 @@ Outputs:
 1. machine-readable report (JSON)
 2. optional candidate-removal list for user review
 
-## 8. Observability And Operations
+## 11. Observability And Operations
 
-### 8.1 Logging
+### 11.1 Logging
 
 1. Structured JSON logs for Go and Python.
 2. Mandatory context fields:
@@ -226,69 +343,76 @@ Outputs:
    - `job_id` (if available)
    - `project_id` (if available)
 
-### 8.2 Metrics
+### 11.2 Metrics
 
-1. Queue depth by job type.
+1. Queue depth by job type and resource lane.
 2. Job latency (P50/P95).
 3. Success/failure/retry rates.
 4. Lease-timeout recovery count.
+5. Pending review backlog size and acceptance ratio.
 
-### 8.3 Health Endpoints
+### 11.3 Health Endpoints
 
 1. `/healthz` for liveness.
 2. `/readyz` for dependency readiness.
 
-## 9. Security And Access Baseline
+## 12. Security And Access Baseline
 
 1. S3 credentials managed via environment variables or secret manager.
 2. Principle of least privilege for S3 bucket access.
 3. Input validation for all import payloads and prompt fields.
-4. Audit log for dataset/snapshot/job mutations.
+4. Audit log for dataset/snapshot/job/review mutations.
+5. Pre-signed URL TTL kept short and never reused across principals.
 
-## 10. Testing Strategy (MVP)
+## 13. Testing Strategy (MVP)
 
 1. Unit tests:
    - job state machine transitions
    - idempotency behavior
+   - delta snapshot query correctness
    - diff classification logic
 2. Integration tests:
    - dataset scan to snapshot creation
    - job enqueue to worker completion
    - retry and timeout recovery path
+   - pseudo-label review promotion path
 3. Contract tests:
    - OpenAPI schema checks
    - worker payload schema validation
+   - CLI pull package structure validation
 4. Smoke tests:
    - zero-shot sample run on a small dataset
-   - export artifact readability
+   - artifact download/readability
 
-## 11. Implementation Plan (6-8 Weeks)
+## 14. Implementation Plan (6-8 Weeks)
 
 ### Week 1-2
 
 1. Data Hub object indexing from S3.
 2. Core tables and migrations for datasets/snapshots/items.
-3. API endpoints for dataset create, scan, snapshot create/list.
+3. Pre-signed object access endpoint.
+4. API endpoints for dataset create, scan, snapshot create/list.
 
 ### Week 3-4
 
 1. Jobs tables and orchestrator core.
-2. Redis queue integration.
+2. Resource-aware queue lanes (`cpu/gpu/mixed`).
 3. Worker heartbeat, lease, retry, timeout sweeper.
 
 ### Week 5-6
 
 1. zero-shot-worker integration (Grounded-DINO + SAM2).
-2. artifact writeback to S3 + metadata result link.
-3. API endpoint and result retrieval flow.
+2. Pending-review pipeline (`annotation_candidates` + accept/reject).
+3. Artifact Repository base model and package generation jobs.
 
 ### Week 7-8
 
-1. snapshot diff API and aggregation output.
+1. Delta-based snapshot diff API and aggregation output.
 2. cleaning-worker with first batch rules.
-3. reliability hardening and end-to-end MVP runbook.
+3. CLI pull integration for YOLO package.
+4. Reliability hardening and end-to-end MVP runbook.
 
-## 12. Repository Skeleton
+## 15. Repository Skeleton
 
 ```text
 YOLO-Ave-Mujica/
@@ -298,6 +422,8 @@ YOLO-Ave-Mujica/
     datahub/
     versioning/
     jobs/
+    artifacts/
+    review/
     audit/
     storage/
     queue/
@@ -308,6 +434,7 @@ YOLO-Ave-Mujica/
     zero-shot/
     video/
     cleaning/
+    packager/
   deploy/
     systemd/
     docker/
@@ -318,28 +445,33 @@ YOLO-Ave-Mujica/
       specs/
 ```
 
-## 13. Production Migration Path
+## 16. Production Migration Path
 
 1. Keep services stateless and config-driven.
-2. Keep job contracts and storage contracts stable.
+2. Keep job/data/artifact contracts stable.
 3. Move deployment layer from `systemd + docker` to Kubernetes later.
 4. Reuse same APIs, schemas, and queue semantics during migration.
+5. Promote resource lanes to native node pools and autoscaling policies in Kubernetes phase.
 
-## 14. Risks And Mitigations
+## 17. Risks And Mitigations
 
 1. Risk: Python dependency drift across workers.
    - Mitigation: per-worker pinned image and lockfile.
 2. Risk: Long-running job stuck in `running`.
    - Mitigation: lease-based recovery sweeper.
-3. Risk: S3 scan cost growth on massive bucket prefixes.
+3. Risk: S3 scan cost growth on massive prefixes.
    - Mitigation: incremental scan marker and prefix partitioning.
 4. Risk: Pseudo-label quality variance.
-   - Mitigation: confidence thresholds + manual review workflow.
+   - Mitigation: mandatory pending-review gate and confidence thresholds.
+5. Risk: Artifact package generation backlog under concurrent demand.
+   - Mitigation: cache hot versions and isolate packager workers.
 
-## 15. Exit Criteria For MVP
+## 18. Exit Criteria For MVP
 
 1. Data Hub supports stable S3 indexing and immutable snapshots.
-2. Job Orchestrator supports async execution with idempotency and retry recovery.
-3. Zero-shot pipeline can produce pseudo labels and persist outputs.
-4. Snapshot diff and base cleaning rules are operational.
-5. One-click local deployment runbook (Go processes + Python containers) works in development.
+2. Snapshot storage uses delta interval model without full snapshot duplication.
+3. Job Orchestrator supports async execution with idempotency, retries, and resource-aware routing.
+4. Zero-shot pipeline outputs only to pending review until human confirmation.
+5. Artifact Repository enables CLI pull in standard YOLO-compatible package format.
+6. Snapshot diff and base cleaning rules are operational.
+7. One-click local deployment runbook (Go processes + Python containers) works in development.
