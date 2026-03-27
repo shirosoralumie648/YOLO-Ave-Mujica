@@ -32,3 +32,26 @@ func TestMigrationIncludesRequiredTables(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateOrGetByIdempotency(t *testing.T) {
+	repo := NewInMemoryRepository()
+
+	first, created, err := repo.CreateOrGet(1, "zero-shot", "gpu", "same-key", map[string]any{"prompt": "extinguisher"})
+	if err != nil {
+		t.Fatalf("first create returned error: %v", err)
+	}
+	if !created {
+		t.Fatal("expected first create to be new")
+	}
+
+	second, created, err := repo.CreateOrGet(1, "zero-shot", "gpu", "same-key", map[string]any{"prompt": "extinguisher"})
+	if err != nil {
+		t.Fatalf("second create returned error: %v", err)
+	}
+	if created {
+		t.Fatal("expected second create to reuse existing job")
+	}
+	if first.ID != second.ID {
+		t.Fatalf("expected same id, got first=%d second=%d", first.ID, second.ID)
+	}
+}
