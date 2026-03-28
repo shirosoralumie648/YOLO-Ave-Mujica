@@ -22,6 +22,10 @@ func NewHTTPServerWithDataHub(dataHubHandler *datahub.Handler) *HTTPServer {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
+	})
 
 	if dataHubHandler != nil {
 		r.Route("/v1", func(r chi.Router) {
