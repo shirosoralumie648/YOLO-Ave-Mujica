@@ -1,9 +1,8 @@
 package datahub
 
 import (
+	"context"
 	"errors"
-	"fmt"
-	"sync"
 )
 
 type PresignFunc func(datasetID int64, objectKey string, ttlSeconds int) (string, error)
@@ -11,12 +10,8 @@ type PresignFunc func(datasetID int64, objectKey string, ttlSeconds int) (string
 // Service currently uses in-memory maps to keep MVP behavior deterministic in tests.
 // The public method contracts are designed to map directly to DB-backed storage later.
 type Service struct {
-	mu           sync.Mutex
-	presign      PresignFunc
-	nextDataset  int64
-	nextSnapshot int64
-	datasets     map[int64]Dataset
-	snapshots    map[int64][]Snapshot
+	repo    Repository
+	presign PresignFunc
 }
 
 type Dataset struct {
@@ -53,13 +48,24 @@ type PresignInput struct {
 	TTLSeconds int    `json:"ttl_seconds"`
 }
 
+type DatasetItem struct {
+	ID        int64  `json:"id"`
+	DatasetID int64  `json:"dataset_id"`
+	ObjectKey string `json:"object_key"`
+	ETag      string `json:"etag"`
+}
+
 func NewService(presign PresignFunc) *Service {
+	return NewServiceWithRepository(presign, nil)
+}
+
+func NewServiceWithRepository(presign PresignFunc, repo Repository) *Service {
+	if repo == nil {
+		repo = NewInMemoryRepository()
+	}
 	return &Service{
-		presign:      presign,
-		nextDataset:  1,
-		nextSnapshot: 1,
-		datasets:     make(map[int64]Dataset),
-		snapshots:    make(map[int64][]Snapshot),
+		repo:    repo,
+		presign: presign,
 	}
 }
 
@@ -70,55 +76,23 @@ func (s *Service) CreateDataset(in CreateDatasetInput) (Dataset, error) {
 	if in.Name == "" || in.Bucket == "" {
 		return Dataset{}, errors.New("name and bucket are required")
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	d := Dataset{
-		ID:        s.nextDataset,
-		ProjectID: in.ProjectID,
-		Name:      in.Name,
-		Bucket:    in.Bucket,
-		Prefix:    in.Prefix,
-	}
-	s.nextDataset++
-	s.datasets[d.ID] = d
-	return d, nil
+	return s.repo.CreateDataset(context.Background(), in)
 }
 
 func (s *Service) CreateSnapshot(datasetID int64, in CreateSnapshotInput) (Snapshot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, ok := s.datasets[datasetID]; !ok {
-		return Snapshot{}, fmt.Errorf("dataset %d not found", datasetID)
-	}
-
-	// Snapshot version is monotonic per dataset in the MVP skeleton (v1, v2, ...).
-	version := fmt.Sprintf("v%d", len(s.snapshots[datasetID])+1)
-	snap := Snapshot{
-		ID:              s.nextSnapshot,
-		DatasetID:       datasetID,
-		Version:         version,
-		BasedOnSnapshot: in.BasedOnSnapshotID,
-		Note:            in.Note,
-	}
-	s.nextSnapshot++
-	s.snapshots[datasetID] = append(s.snapshots[datasetID], snap)
-	return snap, nil
+	return s.repo.CreateSnapshot(context.Background(), datasetID, in)
 }
 
 func (s *Service) ListSnapshots(datasetID int64) ([]Snapshot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return s.repo.ListSnapshots(context.Background(), datasetID)
+}
 
-	if _, ok := s.datasets[datasetID]; !ok {
-		return nil, fmt.Errorf("dataset %d not found", datasetID)
-	}
+func (s *Service) ScanDataset(datasetID int64, objectKeys []string) (int, error) {
+	return s.repo.InsertItems(context.Background(), datasetID, objectKeys)
+}
 
-	out := make([]Snapshot, len(s.snapshots[datasetID]))
-	copy(out, s.snapshots[datasetID])
-	return out, nil
+func (s *Service) ListItems(datasetID int64) ([]DatasetItem, error) {
+	return s.repo.ListItems(context.Background(), datasetID)
 }
 
 func (s *Service) PresignObject(in PresignInput) (string, error) {

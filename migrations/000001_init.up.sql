@@ -111,6 +111,7 @@ create table jobs (
   required_resource_type text not null,
   required_capabilities_json jsonb not null default '[]'::jsonb,
   idempotency_key text not null,
+  worker_id text,
   payload_json jsonb not null,
   result_artifact_ids_json jsonb not null default '[]'::jsonb,
   total_items int not null default 0,
@@ -148,6 +149,7 @@ create table artifacts (
   snapshot_id bigint not null references dataset_snapshots(id),
   artifact_type text not null,
   format text not null,
+  version text not null,
   uri text not null,
   checksum text not null,
   size bigint not null,
@@ -168,6 +170,12 @@ create table audit_logs (
   detail_json jsonb not null default '{}'::jsonb,
   ts timestamptz not null default now()
 );
+
+insert into projects (id, name, owner)
+values (1, 'default', 'system')
+on conflict (id) do nothing;
+
+select setval('projects_id_seq', coalesce((select max(id) from projects), 1), true);
 
 create index idx_dataset_items_dataset on dataset_items(dataset_id);
 create index idx_annotations_interval on annotations(dataset_id, created_at_snapshot_id, deleted_at_snapshot_id);

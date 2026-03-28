@@ -8,7 +8,7 @@ import (
 )
 
 func TestMigrationIncludesRequiredTables(t *testing.T) {
-	migrationPath := filepath.Join("..", "..", "migrations", "0001_init.sql")
+	migrationPath := filepath.Join("..", "..", "migrations", "000001_init.up.sql")
 	b, err := os.ReadFile(migrationPath)
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
