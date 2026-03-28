@@ -39,6 +39,7 @@ This is a completion-focused design. It does not replace the broader architectur
 1. The repository is already in a dirty state with in-progress completion work; those changes are the baseline for this iteration.
 2. Existing tests must remain easy to run in isolation, so test-oriented in-memory implementations should be preserved where they improve determinism.
 3. Runtime wiring should move toward PostgreSQL, Redis, and S3-backed behavior without forcing handlers to know which backing implementation they are using.
+4. From the start of completion execution, schema changes must go through versioned migrations only; manual drift between code and database shape is not allowed.
 
 ## 3. Chosen Completion Strategy
 
@@ -109,6 +110,13 @@ The Jobs module must expose:
 3. Event visibility for external polling.
 4. Lease timeout recovery via a sweeper path.
 
+The MVP lease model is explicitly `heartbeat + lease_until timeout`:
+
+1. A worker claims a job and records a stable `worker_id` for that execution attempt.
+2. The worker refreshes `lease_until` on a fixed heartbeat cadence while work is active.
+3. The sweeper treats an expired `lease_until` on a `running` job as abandoned work and decides whether to requeue or fail it.
+4. Job events related to claim, heartbeat, timeout, recovery, and terminal failure should carry `worker_id` explicitly so lease churn can be traced across worker instances.
+
 ### 4.4 Review
 
 `internal/review/service.go` owns trust-chain transitions.
@@ -131,8 +139,18 @@ Its responsibilities are:
 1. Compare two annotation sets.
 2. Produce `add`, `remove`, and `update` changes.
 3. Compute stable aggregate metrics such as count deltas and average IOU drift.
+4. Return a `compatibility_score` in the diff response so downstream review automation has a stable similarity signal to consume.
 
 This module should stay detached from storage concerns for the current MVP completion pass.
+
+`compatibility_score` must be deterministic and bounded to `[0,1]`. For the MVP completion pass it should be computed from the diff result as:
+
+1. `baseline = max(len(before_annotations), len(after_annotations), 1)`.
+2. `exact_matches = baseline - added_count - removed_count - updated_count`.
+3. `weighted_similarity = exact_matches + sum(update.IOU for each updated annotation)`.
+4. `compatibility_score = max(0, min(1, weighted_similarity / baseline))`.
+
+This keeps the field simple enough for the MVP while avoiding an empty placeholder with no defined semantics.
 
 ### 4.6 Artifacts
 
@@ -176,12 +194,14 @@ This flow is the definition of functional completeness for the current iteration
 2. Dispatch failure should not silently lose a created job.
 3. Lease-based recovery must be testable without real background infrastructure.
 4. Event emission should record enough structured detail to explain partial success and retry behavior.
+5. Lease and recovery events should include explicit `worker_id` attribution.
 
 ### 6.3 CLI Verification
 
 1. CLI pull must fail on checksum mismatch by default.
 2. `--allow-partial` may relax terminal behavior, but verification results must still be recorded.
 3. A local verification report is required for reproducibility.
+4. `verify-report.json` must include an `environment_context` object containing at least `os`, `arch`, `cli_version`, and `storage_driver`.
 
 ## 7. Testing And Acceptance
 
@@ -190,13 +210,14 @@ This flow is the definition of functional completeness for the current iteration
 The completion work must preserve or add focused tests in these categories:
 
 1. Server route registration and base health/readiness behavior.
-2. Data Hub handler and service behavior for scan, items, snapshots, and presign.
-3. Job creation, idempotency, lane dispatch, event listing, and lease recovery behavior.
-4. Review accept/reject handling and trust-chain state changes.
-5. Versioning diff correctness and aggregate statistics.
-6. Artifact service and packager outputs.
-7. CLI pull and verification behavior.
-8. Worker-side client and rule-processing unit tests already present in the branch.
+2. Migration application and schema compatibility checks against the current repository schema.
+3. Data Hub handler and service behavior for scan, items, snapshots, and presign.
+4. Job creation, idempotency, lane dispatch, event listing, and lease recovery behavior.
+5. Review accept/reject handling and trust-chain state changes.
+6. Versioning diff correctness, aggregate statistics, and `compatibility_score` output.
+7. Artifact service and packager outputs.
+8. CLI pull, verification behavior, and `environment_context` report output.
+9. Worker-side client and rule-processing unit tests already present in the branch.
 
 ### 7.2 Local Smoke
 
@@ -208,6 +229,8 @@ The completion work must preserve or add focused tests in these categories:
 4. Item listing.
 5. Object presign response shape.
 6. At least one async job creation path.
+
+Local runtime smoke should use the repository's MinIO-backed development stack rather than a mock-only object store path. Presign host handling is part of the integration surface, so the smoke path should validate against the same MinIO endpoint family configured in local development.
 
 If the local API is not already running, the smoke script may start a temporary process. Any required runtime assumptions should be documented in `docs/development/local-quickstart.md`.
 
@@ -225,6 +248,7 @@ This completion pass is done when:
 
 Recommended implementation order:
 
+0. Lock schema management with `golang-migrate`, standardize on versioned migrations, and stop manual schema edits outside the migration flow.
 1. Finish server composition and route wiring.
 2. Stabilize Data Hub runtime and tests.
 3. Complete Jobs runtime path, dispatch, and sweeper logic.
