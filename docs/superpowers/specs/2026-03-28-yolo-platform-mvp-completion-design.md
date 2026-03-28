@@ -70,9 +70,17 @@ It is responsible for:
 1. Loading configuration.
 2. Constructing concrete module dependencies.
 3. Wiring handlers into `internal/server/http_server.go`.
-4. Failing fast when required runtime dependencies are unavailable.
+4. Owning process lifecycle, including signal handling and bounded graceful shutdown.
+5. Failing fast when required runtime dependencies are unavailable.
 
 Handlers must not contain branching logic that switches between test and runtime implementations.
+
+Graceful shutdown requirements for the MVP completion pass:
+
+1. `SIGINT` and `SIGTERM` should trigger context cancellation from `cmd/api-server/main.go`.
+2. The HTTP server should use bounded `Shutdown` behavior instead of abrupt process exit.
+3. Background runtime loops started by the API process, including any sweeper polling loop, must stop accepting new work before the HTTP server finishes shutdown.
+4. Shutdown sequencing must prefer clean lease handoff over immediate exit, but still complete within a fixed timeout.
 
 ### 4.2 Data Hub
 
@@ -152,6 +160,8 @@ This module should stay detached from storage concerns for the current MVP compl
 
 This keeps the field simple enough for the MVP while avoiding an empty placeholder with no defined semantics.
 
+For the explicit empty-to-empty case, `compatibility_score = 1.0` is intentional and should be treated as "fully compatible because neither snapshot contains effective annotations."
+
 ### 4.6 Artifacts
 
 The Artifacts module is split into:
@@ -218,6 +228,7 @@ The completion work must preserve or add focused tests in these categories:
 7. Artifact service and packager outputs.
 8. CLI pull, verification behavior, and `environment_context` report output.
 9. Worker-side client and rule-processing unit tests already present in the branch.
+10. API process shutdown behavior for signal handling and bounded background-loop teardown.
 
 ### 7.2 Local Smoke
 
@@ -248,7 +259,7 @@ This completion pass is done when:
 
 Recommended implementation order:
 
-0. Lock schema management with `golang-migrate`, standardize on versioned migrations, and stop manual schema edits outside the migration flow.
+0. Lock schema management with `golang-migrate`, treat the repository's current canonical schema as the migration baseline, and bring existing environments under migration control by stamping the baseline version instead of replaying duplicate table-creation DDL over already-provisioned databases.
 1. Finish server composition and route wiring.
 2. Stabilize Data Hub runtime and tests.
 3. Complete Jobs runtime path, dispatch, and sweeper logic.
