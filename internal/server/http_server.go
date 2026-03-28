@@ -11,10 +11,12 @@ type HTTPServer struct {
 	Handler http.Handler
 }
 
+// NewHTTPServer builds a control-plane HTTP server with base health routes.
 func NewHTTPServer() *HTTPServer {
 	return NewHTTPServerWithDataHub(nil)
 }
 
+// NewHTTPServerWithDataHub optionally wires Data Hub APIs when a handler is provided.
 func NewHTTPServerWithDataHub(dataHubHandler *datahub.Handler) *HTTPServer {
 	r := chi.NewRouter()
 
@@ -28,6 +30,7 @@ func NewHTTPServerWithDataHub(dataHubHandler *datahub.Handler) *HTTPServer {
 	})
 
 	if dataHubHandler != nil {
+		// Keep Data Hub routes grouped under /v1 to match the planned API surface.
 		r.Route("/v1", func(r chi.Router) {
 			r.Post("/datasets", dataHubHandler.CreateDataset)
 			r.Post("/datasets/{id}/snapshots", dataHubHandler.CreateSnapshot)

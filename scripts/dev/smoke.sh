@@ -12,6 +12,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# If no API is running, start a temporary local one just for this smoke check.
 if ! curl -fsS http://localhost:8080/healthz >/dev/null 2>&1; then
   GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go run ./cmd/api-server >/tmp/api-server.log 2>&1 &
   pid=$!
@@ -24,5 +25,6 @@ if ! curl -fsS http://localhost:8080/healthz >/dev/null 2>&1; then
   done
 fi
 
+# Health and readiness are both required for a passing smoke run.
 curl -fsS http://localhost:8080/healthz >/dev/null
 curl -fsS http://localhost:8080/readyz >/dev/null

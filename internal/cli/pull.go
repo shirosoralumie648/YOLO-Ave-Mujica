@@ -8,10 +8,12 @@ import (
 
 type RootCommand struct{}
 
+// NewRootCommand returns a minimal command dispatcher for MVP CLI flows.
 func NewRootCommand() *RootCommand {
 	return &RootCommand{}
 }
 
+// Execute dispatches to subcommands and provides top-level help.
 func (r *RootCommand) Execute() error {
 	args := os.Args[1:]
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
@@ -52,6 +54,7 @@ func runPull(args []string) error {
 	if *format == "" || *version == "" {
 		return fmt.Errorf("--format and --version are required")
 	}
+	// Placeholder for future behavior: allow partial artifact verification failures.
 	_ = allowPartial
 	return nil
 }

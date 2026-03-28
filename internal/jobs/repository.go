@@ -13,6 +13,7 @@ type InMemoryRepository struct {
 	byID   map[int64]*Job
 }
 
+// NewInMemoryRepository is a lightweight stand-in for the future DB-backed repository.
 func NewInMemoryRepository() *InMemoryRepository {
 	return &InMemoryRepository{
 		nextID: 1,
@@ -21,10 +22,13 @@ func NewInMemoryRepository() *InMemoryRepository {
 	}
 }
 
+// idempotencyKey scopes deduplication by project + job type + user-provided key.
 func idempotencyKey(projectID int64, jobType, key string) string {
 	return fmt.Sprintf("%d:%s:%s", projectID, jobType, key)
 }
 
+// CreateOrGet returns an existing job when the idempotency tuple already exists.
+// created=true means a new job row (in-memory object) was generated.
 func (r *InMemoryRepository) CreateOrGet(projectID int64, jobType, requiredResourceType, key string, payload map[string]any) (*Job, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -51,6 +55,7 @@ func (r *InMemoryRepository) CreateOrGet(projectID int64, jobType, requiredResou
 	return job, true, nil
 }
 
+// UpdateStatus enforces legal transitions and stamps started/finished timestamps.
 func (r *InMemoryRepository) UpdateStatus(id int64, to string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -8,6 +8,8 @@ import (
 
 type PresignFunc func(datasetID int64, objectKey string, ttlSeconds int) (string, error)
 
+// Service currently uses in-memory maps to keep MVP behavior deterministic in tests.
+// The public method contracts are designed to map directly to DB-backed storage later.
 type Service struct {
 	mu           sync.Mutex
 	presign      PresignFunc
@@ -92,6 +94,7 @@ func (s *Service) CreateSnapshot(datasetID int64, in CreateSnapshotInput) (Snaps
 		return Snapshot{}, fmt.Errorf("dataset %d not found", datasetID)
 	}
 
+	// Snapshot version is monotonic per dataset in the MVP skeleton (v1, v2, ...).
 	version := fmt.Sprintf("v%d", len(s.snapshots[datasetID])+1)
 	snap := Snapshot{
 		ID:              s.nextSnapshot,
@@ -125,6 +128,7 @@ func (s *Service) PresignObject(in PresignInput) (string, error) {
 	if in.DatasetID <= 0 || in.ObjectKey == "" {
 		return "", errors.New("dataset_id and object_key are required")
 	}
+	// Keep URLs short-lived by default to avoid long-lived object exposure.
 	if in.TTLSeconds <= 0 {
 		in.TTLSeconds = 120
 	}
