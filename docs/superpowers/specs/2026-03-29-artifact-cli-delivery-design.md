@@ -62,7 +62,7 @@ Use a minimal-intrusion export path with six focused layers:
 2. `ArtifactBuilder` creates a real YOLO package directory and archive from the query result.
 3. `ArtifactStorage` writes generated outputs through a storage abstraction.
 4. `ArtifactRepository` persists artifact metadata and lifecycle status.
-5. `ArtifactBuildRunner` executes package builds asynchronously after HTTP request completion.
+5. `ArtifactBuildRunner` executes package builds asynchronously after HTTP request completion and enforces a bounded concurrency limit inside the API process.
 6. `CLI Pull` resolves, downloads, unpacks, and verifies the exported archive.
 
 This approach is intentionally narrower than also solving candidate review or generalized worker execution. It makes the artifact path real without widening the current sub-project beyond control.
@@ -73,6 +73,7 @@ This approach is intentionally narrower than also solving candidate review or ge
 2. It keeps the export query logic separate from package generation and storage concerns, which reduces future migration cost.
 3. It preserves the intended architecture shape: control plane coordinates, storage abstraction hides runtime backend choice, CLI depends on stable HTTP contracts.
 4. It avoids request-time timeout risk without taking on the full complexity of an external worker system in the same iteration.
+5. It bounds in-process resource pressure so repeated export requests cannot saturate a single API node without limit.
 
 ## 4. Architecture
 
@@ -177,7 +178,25 @@ Lifecycle states for this iteration:
 
 `resolve` must only return artifacts in `ready` state.
 
-### 4.5 CLI Pull Pipeline
+### 4.5 Artifact Build Runner
+
+The first completed implementation should use an in-process asynchronous build runner rather than an external worker queue.
+
+Responsibilities:
+
+1. Accept build requests after artifact row creation.
+2. Enforce a fixed concurrency ceiling through a semaphore or equivalent bounded-runner primitive.
+3. Queue additional build requests in memory when all build slots are busy.
+4. Transition artifact lifecycle state from `pending` to `building` only when work actually begins.
+5. Ensure a failed build releases its slot so queued work can continue.
+
+Runtime constraints:
+
+1. The default concurrency limit should be low and explicit, such as `2` or `3`.
+2. The limit must be configurable so local development and production-like deployments can tune for CPU, memory, and network capacity.
+3. The in-memory wait queue is acceptable for this iteration, but it is not durable across process restarts.
+
+### 4.6 CLI Pull Pipeline
 
 `platform-cli pull` should become a real delivery path.
 
@@ -191,10 +210,16 @@ Flow:
 6. Read `manifest.json` from the extracted package.
 7. Verify extracted files against manifest checksums.
 8. Write `verify-report.json` with verification summary and environment context.
+9. Remove the temporary archive file on success and on failure paths once it is no longer needed.
 
 The CLI should not construct artifact storage paths by itself. It must depend on server-provided metadata and download URLs.
 
 The CLI should also avoid direct network-stream-to-final-directory extraction in this iteration. A temporary archive file is preferred because it composes cleanly with retries, resumable downloads, and extraction failure recovery.
+
+Signal-handling requirement:
+
+1. If the CLI receives an interrupt while a temporary archive exists, it must clean up the temporary file before exit where possible.
+2. Cleanup must not remove already extracted final package files unless the implementation can prove the target directory is incomplete and safe to discard.
 
 ## 5. HTTP And Data Flow
 
@@ -212,6 +237,7 @@ The CLI should also avoid direct network-stream-to-final-directory extraction in
 8. Update artifact metadata with final URIs, checksum, and `ready` status on success or `failed` on error.
 
 This iteration intentionally uses immediate-return plus status polling rather than synchronous request-time package construction. It avoids introducing a full external worker system while still removing long-running I/O from the HTTP request lifetime.
+The asynchronous runner must respect the configured build concurrency limit instead of launching an unbounded goroutine per request.
 
 ### 5.2 Artifact Resolve
 
@@ -301,6 +327,12 @@ At minimum it should include:
    - total image count
    - total annotation count
    - total class count
+6. an explicit checksum algorithm contract using `sha256`
+
+Checksum format requirement:
+
+1. Manifest file entries must store checksums as `sha256:<hex>`.
+2. CLI verification must parse and validate the algorithm prefix rather than assuming an unlabeled hash string.
 
 ## 7. Error Handling
 
@@ -330,7 +362,7 @@ At minimum, errors should distinguish:
 Crash recovery requirement:
 
 1. In-process background builds are not durable across API restarts in this iteration.
-2. Startup reconciliation must detect stale `pending` or `building` artifact rows left behind by interrupted builds and mark them `failed` with an explicit recovery reason.
+2. Startup reconciliation must detect stale `pending` or `building` artifact rows left behind by interrupted builds or in-memory queue loss and mark them `failed` with an explicit recovery reason.
 
 ### 7.3 CLI Failures
 
@@ -344,6 +376,7 @@ Crash recovery requirement:
 6. resumed archive download cannot be validated or completed successfully
 
 `--allow-partial` may permit completion when extracted files exist but one or more checksum validations fail. It must not suppress artifact-resolution, download, or extraction failures.
+Temporary archive cleanup must still run on these failure paths.
 
 ## 8. Testing And Acceptance
 
@@ -360,8 +393,9 @@ Add or update tests for:
 7. archive generation and extraction
 8. artifact metadata persistence and resolve behavior
 9. asynchronous package creation state progression (`pending/building/ready/failed`)
-10. atomic write and promotion behavior in the filesystem adapter
-11. CLI download, resume or retry behavior, unpack, and verify flow
+10. build-runner concurrency limiting and queue release behavior
+11. atomic write and promotion behavior in the filesystem adapter
+12. CLI download, resume or retry behavior, unpack, verify flow, and temporary archive cleanup
 
 ### 8.2 Integration Coverage
 
@@ -395,8 +429,10 @@ This sub-project is done when:
 4. CLI pull downloads and extracts the real package
 5. checksums are verified against `manifest.json`
 6. manifest includes category map and package statistics
-7. local smoke covers the end-to-end artifact delivery path
-8. existing tests and new tests pass together
+7. build execution is concurrency-limited inside the API process
+8. temporary archive files are cleaned up after CLI completion or interruption
+9. local smoke covers the end-to-end artifact delivery path
+10. existing tests and new tests pass together
 
 ## 9. Implementation Order
 
@@ -406,7 +442,7 @@ Recommended execution order:
 2. Introduce deterministic YOLO package builder tests with `train/images`, `train/labels`, category map, and package stats.
 3. Add runtime artifact repository persistence and expanded lifecycle states.
 4. Add storage abstraction and filesystem adapter with temp-path plus atomic promotion semantics.
-5. Wire package creation to return immediately and launch asynchronous in-process builds.
+5. Wire package creation to return immediately and launch asynchronous in-process builds with bounded concurrency.
 6. Add real package download support for CLI, including range-capable download path when supported by storage.
-7. Update CLI pull to download to a temporary archive, resume or retry, extract, and verify real packages.
+7. Update CLI pull to download to a temporary archive, resume or retry, extract, verify real packages, and clean up temporary files.
 8. Extend smoke coverage for the artifact path.
