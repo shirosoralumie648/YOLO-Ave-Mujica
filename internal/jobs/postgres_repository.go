@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -17,23 +18,31 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 	return &PostgresRepository{pool: pool}
 }
 
-func (r *PostgresRepository) CreateOrGet(projectID int64, jobType, requiredResourceType, key string, payload map[string]any) (*Job, bool, error) {
-	if existing, ok, err := r.findByKey(context.Background(), projectID, jobType, key); err != nil || ok {
+func (r *PostgresRepository) CreateOrGet(in CreateJobInput) (*Job, bool, error) {
+	if existing, ok, err := r.findByKey(context.Background(), in.ProjectID, in.JobType, in.IdempotencyKey); err != nil || ok {
 		return existing, false, err
 	}
 
-	payloadJSON, err := json.Marshal(payload)
+	payloadJSON, err := json.Marshal(in.Payload)
+	if err != nil {
+		return nil, false, err
+	}
+	requiredCapabilitiesJSON, err := json.Marshal(in.RequiredCapabilities)
 	if err != nil {
 		return nil, false, err
 	}
 
 	row := r.pool.QueryRow(context.Background(), `
-		insert into jobs (project_id, job_type, status, required_resource_type, idempotency_key, payload_json)
-		values ($1, $2, $3, $4, $5, $6)
-		returning id, project_id, job_type, status, required_resource_type, idempotency_key, worker_id,
-		          payload_json, total_items, succeeded_items, failed_items, created_at, started_at,
-		          finished_at, lease_until, retry_count, error_code, error_msg
-	`, projectID, jobType, StatusQueued, requiredResourceType, key, payloadJSON)
+		insert into jobs (
+			project_id, dataset_id, snapshot_id, job_type, status, required_resource_type,
+			required_capabilities_json, idempotency_key, payload_json
+		)
+		values ($1, nullif($2, 0), nullif($3, 0), $4, $5, $6, $7, $8, $9)
+		returning id, project_id, dataset_id, snapshot_id, job_type, status, required_resource_type,
+		          required_capabilities_json, idempotency_key, worker_id, payload_json, total_items,
+		          succeeded_items, failed_items, created_at, started_at, finished_at, lease_until,
+		          retry_count, error_code, error_msg
+	`, in.ProjectID, in.DatasetID, in.SnapshotID, in.JobType, StatusQueued, in.RequiredResourceType, requiredCapabilitiesJSON, in.IdempotencyKey, payloadJSON)
 
 	job, err := scanJob(row)
 	if err != nil {
@@ -44,8 +53,8 @@ func (r *PostgresRepository) CreateOrGet(projectID int64, jobType, requiredResou
 
 func (r *PostgresRepository) findByKey(ctx context.Context, projectID int64, jobType, key string) (*Job, bool, error) {
 	row := r.pool.QueryRow(ctx, `
-		select id, project_id, job_type, status, required_resource_type, idempotency_key, worker_id,
-		       payload_json, total_items, succeeded_items, failed_items, created_at, started_at,
+		select id, project_id, dataset_id, snapshot_id, job_type, status, required_resource_type,
+		       required_capabilities_json, idempotency_key, worker_id, payload_json, total_items, succeeded_items, failed_items, created_at, started_at,
 		       finished_at, lease_until, retry_count, error_code, error_msg
 		from jobs
 		where project_id = $1 and job_type = $2 and idempotency_key = $3
@@ -63,8 +72,8 @@ func (r *PostgresRepository) findByKey(ctx context.Context, projectID int64, job
 
 func (r *PostgresRepository) Get(id int64) (*Job, bool) {
 	row := r.pool.QueryRow(context.Background(), `
-		select id, project_id, job_type, status, required_resource_type, idempotency_key, worker_id,
-		       payload_json, total_items, succeeded_items, failed_items, created_at, started_at,
+		select id, project_id, dataset_id, snapshot_id, job_type, status, required_resource_type,
+		       required_capabilities_json, idempotency_key, worker_id, payload_json, total_items, succeeded_items, failed_items, created_at, started_at,
 		       finished_at, lease_until, retry_count, error_code, error_msg
 		from jobs
 		where id = $1
@@ -134,10 +143,71 @@ func (r *PostgresRepository) TouchLease(id int64, workerID string, leaseUntil ti
 	return err
 }
 
+func (r *PostgresRepository) UpdateProgress(id int64, workerID string, total, succeeded, failed int) error {
+	job, ok := r.Get(id)
+	if !ok {
+		return fmt.Errorf("job %d not found", id)
+	}
+
+	var startedAt any
+	if job.Status != StatusRunning {
+		if err := CanTransition(job.Status, StatusRunning); err != nil {
+			return err
+		}
+		startedAt = time.Now().UTC()
+	}
+
+	_, err := r.pool.Exec(context.Background(), `
+		update jobs
+		set status = case when status = $2 then status else $2 end,
+		    worker_id = $3,
+		    total_items = $4,
+		    succeeded_items = $5,
+		    failed_items = $6,
+		    started_at = coalesce(started_at, $7)
+		where id = $1
+	`, id, StatusRunning, workerID, total, succeeded, failed, startedAt)
+	return err
+}
+
+func (r *PostgresRepository) Complete(id int64, workerID, status string, total, succeeded, failed int) error {
+	job, ok := r.Get(id)
+	if !ok {
+		return fmt.Errorf("job %d not found", id)
+	}
+
+	fromStatus := job.Status
+	if fromStatus == StatusQueued || fromStatus == StatusRetryWaiting {
+		fromStatus = StatusRunning
+	}
+	if err := CanTransition(fromStatus, status); err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	var startedAt any
+	if job.StartedAt == nil {
+		startedAt = now
+	}
+
+	_, err := r.pool.Exec(context.Background(), `
+		update jobs
+		set status = $2,
+		    worker_id = $3,
+		    total_items = $4,
+		    succeeded_items = $5,
+		    failed_items = $6,
+		    started_at = coalesce(started_at, $7),
+		    finished_at = $8
+		where id = $1
+	`, id, status, workerID, total, succeeded, failed, startedAt, now)
+	return err
+}
+
 func (r *PostgresRepository) ListExpiredRunning(now time.Time) []*Job {
 	rows, err := r.pool.Query(context.Background(), `
-		select id, project_id, job_type, status, required_resource_type, idempotency_key, worker_id,
-		       payload_json, total_items, succeeded_items, failed_items, created_at, started_at,
+		select id, project_id, dataset_id, snapshot_id, job_type, status, required_resource_type,
+		       required_capabilities_json, idempotency_key, worker_id, payload_json, total_items, succeeded_items, failed_items, created_at, started_at,
 		       finished_at, lease_until, retry_count, error_code, error_msg
 		from jobs
 		where status = $1 and lease_until is not null and lease_until < $2
@@ -223,16 +293,22 @@ func scanJob(row interface {
 	Scan(dest ...any) error
 }) (*Job, error) {
 	job := &Job{}
+	var datasetID sql.NullInt64
+	var snapshotID sql.NullInt64
 	var payloadJSON []byte
+	var requiredCapabilitiesJSON []byte
 	var workerID *string
 	var errorCode *string
 	var errorMsg *string
 	if err := row.Scan(
 		&job.ID,
 		&job.ProjectID,
+		&datasetID,
+		&snapshotID,
 		&job.JobType,
 		&job.Status,
 		&job.RequiredResourceType,
+		&requiredCapabilitiesJSON,
 		&job.IdempotencyKey,
 		&workerID,
 		&payloadJSON,
@@ -252,6 +328,12 @@ func scanJob(row interface {
 	if workerID != nil {
 		job.WorkerID = *workerID
 	}
+	if datasetID.Valid {
+		job.DatasetID = datasetID.Int64
+	}
+	if snapshotID.Valid {
+		job.SnapshotID = snapshotID.Int64
+	}
 	if errorCode != nil {
 		job.ErrorCode = *errorCode
 	}
@@ -260,6 +342,11 @@ func scanJob(row interface {
 	}
 	if len(payloadJSON) > 0 {
 		if err := json.Unmarshal(payloadJSON, &job.Payload); err != nil {
+			return nil, err
+		}
+	}
+	if len(requiredCapabilitiesJSON) > 0 {
+		if err := json.Unmarshal(requiredCapabilitiesJSON, &job.RequiredCapabilities); err != nil {
 			return nil, err
 		}
 	}

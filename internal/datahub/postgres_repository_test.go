@@ -57,4 +57,12 @@ func TestPostgresRepositoryRoundTripDatasetScanAndSnapshots(t *testing.T) {
 	if snap.Version != "v1" {
 		t.Fatalf("expected v1 snapshot, got %s", snap.Version)
 	}
+
+	got, err := repo.GetSnapshot(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("get snapshot: %v", err)
+	}
+	if got.ID != snap.ID || got.DatasetID != ds.ID || got.Version != "v1" {
+		t.Fatalf("unexpected snapshot: %+v", got)
+	}
 }

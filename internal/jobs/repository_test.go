@@ -36,7 +36,13 @@ func TestMigrationIncludesRequiredTables(t *testing.T) {
 func TestCreateOrGetByIdempotency(t *testing.T) {
 	repo := NewInMemoryRepository()
 
-	first, created, err := repo.CreateOrGet(1, "zero-shot", "gpu", "same-key", map[string]any{"prompt": "extinguisher"})
+	first, created, err := repo.CreateOrGet(CreateJobInput{
+		ProjectID:            1,
+		JobType:              "zero-shot",
+		RequiredResourceType: "gpu",
+		IdempotencyKey:       "same-key",
+		Payload:              map[string]any{"prompt": "extinguisher"},
+	})
 	if err != nil {
 		t.Fatalf("first create returned error: %v", err)
 	}
@@ -44,7 +50,13 @@ func TestCreateOrGetByIdempotency(t *testing.T) {
 		t.Fatal("expected first create to be new")
 	}
 
-	second, created, err := repo.CreateOrGet(1, "zero-shot", "gpu", "same-key", map[string]any{"prompt": "extinguisher"})
+	second, created, err := repo.CreateOrGet(CreateJobInput{
+		ProjectID:            1,
+		JobType:              "zero-shot",
+		RequiredResourceType: "gpu",
+		IdempotencyKey:       "same-key",
+		Payload:              map[string]any{"prompt": "extinguisher"},
+	})
 	if err != nil {
 		t.Fatalf("second create returned error: %v", err)
 	}

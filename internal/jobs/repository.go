@@ -1,17 +1,21 @@
 package jobs
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 )
 
 type Repository interface {
-	CreateOrGet(projectID int64, jobType, requiredResourceType, key string, payload map[string]any) (*Job, bool, error)
+	CreateOrGet(in CreateJobInput) (*Job, bool, error)
 	Get(id int64) (*Job, bool)
 	UpdateStatus(id int64, to string) error
 	Claim(id int64, workerID string, leaseUntil time.Time) (*Job, error)
 	TouchLease(id int64, workerID string, leaseUntil time.Time) error
+	UpdateProgress(id int64, workerID string, total, succeeded, failed int) error
+	Complete(id int64, workerID, status string, total, succeeded, failed int) error
 	ListExpiredRunning(now time.Time) []*Job
 	IncrementRetryCount(id int64) error
 	MarkRetryWaiting(id int64) error
@@ -41,17 +45,17 @@ func NewInMemoryRepository() *InMemoryRepository {
 }
 
 // idempotencyKey scopes deduplication by project + job type + user-provided key.
-func idempotencyKey(projectID int64, jobType, key string) string {
-	return fmt.Sprintf("%d:%s:%s", projectID, jobType, key)
+func idempotencyKey(in CreateJobInput) string {
+	return fmt.Sprintf("%d:%s:%s", in.ProjectID, in.JobType, in.IdempotencyKey)
 }
 
 // CreateOrGet returns an existing job when the idempotency tuple already exists.
 // created=true means a new job row (in-memory object) was generated.
-func (r *InMemoryRepository) CreateOrGet(projectID int64, jobType, requiredResourceType, key string, payload map[string]any) (*Job, bool, error) {
+func (r *InMemoryRepository) CreateOrGet(in CreateJobInput) (*Job, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	idx := idempotencyKey(projectID, jobType, key)
+	idx := idempotencyKey(in)
 	if existing, ok := r.byKey[idx]; ok {
 		return existing, false, nil
 	}
@@ -59,18 +63,45 @@ func (r *InMemoryRepository) CreateOrGet(projectID int64, jobType, requiredResou
 	now := time.Now().UTC()
 	job := &Job{
 		ID:                   r.nextID,
-		ProjectID:            projectID,
-		JobType:              jobType,
+		ProjectID:            in.ProjectID,
+		DatasetID:            in.DatasetID,
+		SnapshotID:           in.SnapshotID,
+		JobType:              in.JobType,
 		Status:               StatusQueued,
-		RequiredResourceType: requiredResourceType,
-		IdempotencyKey:       key,
-		Payload:              payload,
+		RequiredResourceType: in.RequiredResourceType,
+		RequiredCapabilities: append([]string(nil), in.RequiredCapabilities...),
+		IdempotencyKey:       in.IdempotencyKey,
+		Payload:              in.Payload,
 		CreatedAt:            now,
 	}
 	r.nextID++
 	r.byKey[idx] = job
 	r.byID[job.ID] = job
 	return job, true, nil
+}
+
+func payloadInt64(payload map[string]any, key string) int64 {
+	if payload == nil {
+		return 0
+	}
+	switch v := payload[key].(type) {
+	case int:
+		return int64(v)
+	case int32:
+		return int64(v)
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case json.Number:
+		parsed, _ := strconv.ParseInt(string(v), 10, 64)
+		return parsed
+	case string:
+		parsed, _ := strconv.ParseInt(v, 10, 64)
+		return parsed
+	default:
+		return 0
+	}
 }
 
 // UpdateStatus enforces legal transitions and stamps started/finished timestamps.
@@ -124,6 +155,57 @@ func (r *InMemoryRepository) TouchLease(id int64, workerID string, leaseUntil ti
 	}
 	job.WorkerID = workerID
 	job.LeaseUntil = &leaseUntil
+	return nil
+}
+
+func (r *InMemoryRepository) UpdateProgress(id int64, workerID string, total, succeeded, failed int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	job, ok := r.byID[id]
+	if !ok {
+		return fmt.Errorf("job %d not found", id)
+	}
+	if job.Status != StatusRunning {
+		if err := CanTransition(job.Status, StatusRunning); err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		job.Status = StatusRunning
+		job.StartedAt = &now
+	}
+	job.WorkerID = workerID
+	job.TotalItems = total
+	job.SucceededItems = succeeded
+	job.FailedItems = failed
+	return nil
+}
+
+func (r *InMemoryRepository) Complete(id int64, workerID, status string, total, succeeded, failed int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	job, ok := r.byID[id]
+	if !ok {
+		return fmt.Errorf("job %d not found", id)
+	}
+	fromStatus := job.Status
+	if fromStatus == StatusQueued || fromStatus == StatusRetryWaiting {
+		fromStatus = StatusRunning
+	}
+	if err := CanTransition(fromStatus, status); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if job.StartedAt == nil {
+		job.StartedAt = &now
+	}
+	job.Status = status
+	job.WorkerID = workerID
+	job.TotalItems = total
+	job.SucceededItems = succeeded
+	job.FailedItems = failed
+	job.FinishedAt = &now
 	return nil
 }
 

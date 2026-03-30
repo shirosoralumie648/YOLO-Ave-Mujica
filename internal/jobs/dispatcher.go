@@ -43,8 +43,11 @@ func buildDispatchPayload(job *Job) map[string]any {
 	return map[string]any{
 		"job_id":                 job.ID,
 		"project_id":             job.ProjectID,
+		"dataset_id":             job.DatasetID,
+		"snapshot_id":            job.SnapshotID,
 		"job_type":               job.JobType,
 		"required_resource_type": job.RequiredResourceType,
+		"required_capabilities":  job.RequiredCapabilities,
 		"payload":                job.Payload,
 	}
 }

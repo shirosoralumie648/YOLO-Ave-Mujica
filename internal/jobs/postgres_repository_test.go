@@ -26,7 +26,13 @@ func TestPostgresRepositoryRoundTripCreateClaimAndEvents(t *testing.T) {
 	repo := NewPostgresRepository(pool)
 	key := "integration-" + time.Now().UTC().Format("20060102150405.000000000")
 
-	job, created, err := repo.CreateOrGet(1, "zero-shot", "gpu", key, map[string]any{"prompt": "person"})
+	job, created, err := repo.CreateOrGet(CreateJobInput{
+		ProjectID:            1,
+		JobType:              "zero-shot",
+		RequiredResourceType: "gpu",
+		IdempotencyKey:       key,
+		Payload:              map[string]any{"prompt": "person"},
+	})
 	if err != nil {
 		t.Fatalf("create job: %v", err)
 	}
@@ -34,7 +40,13 @@ func TestPostgresRepositoryRoundTripCreateClaimAndEvents(t *testing.T) {
 		t.Fatal("expected first create to insert a new job")
 	}
 
-	duplicate, created, err := repo.CreateOrGet(1, "zero-shot", "gpu", key, map[string]any{"prompt": "person"})
+	duplicate, created, err := repo.CreateOrGet(CreateJobInput{
+		ProjectID:            1,
+		JobType:              "zero-shot",
+		RequiredResourceType: "gpu",
+		IdempotencyKey:       key,
+		Payload:              map[string]any{"prompt": "person"},
+	})
 	if err != nil {
 		t.Fatalf("create duplicate job: %v", err)
 	}

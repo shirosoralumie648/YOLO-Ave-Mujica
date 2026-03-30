@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -39,5 +41,11 @@ func TestLoadConfigProvidesRuntimeDefaults(t *testing.T) {
 	}
 	if cfg.LeaseSeconds != 30 {
 		t.Fatalf("expected default lease seconds, got %d", cfg.LeaseSeconds)
+	}
+	if cfg.ArtifactBuildConcurrency != 2 {
+		t.Fatalf("expected default artifact build concurrency, got %d", cfg.ArtifactBuildConcurrency)
+	}
+	if cfg.ArtifactStorageDir != filepath.Join(os.TempDir(), "platform-artifacts") {
+		t.Fatalf("expected default artifact storage dir, got %s", cfg.ArtifactStorageDir)
 	}
 }

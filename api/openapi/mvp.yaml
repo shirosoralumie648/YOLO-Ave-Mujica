@@ -65,6 +65,37 @@ paths:
       responses:
         "200":
           description: Snapshot list
+  /v1/snapshots/{id}/import:
+    post:
+      summary: Queue snapshot import job
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [format, idempotency_key]
+      responses:
+        "200":
+          description: Import job accepted
+  /v1/snapshots/{id}/export:
+    post:
+      summary: Queue snapshot export package build
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Export job accepted
   /v1/datasets/{id}/items:
     get:
       summary: List indexed dataset items
@@ -165,11 +196,28 @@ paths:
     post:
       summary: Queue artifact package build
       responses:
-        "200":
+        "202":
           description: Package job accepted
+  /v1/artifacts/resolve:
+    get:
+      summary: Resolve a ready artifact by format and version
+      parameters:
+        - in: query
+          name: format
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: version
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Resolved artifact metadata
   /v1/artifacts/{id}:
     get:
-      summary: Get artifact metadata
+      summary: Get artifact metadata and inline bundle entries
       parameters:
         - in: path
           name: id
@@ -179,6 +227,18 @@ paths:
       responses:
         "200":
           description: Artifact details
+  /v1/artifacts/{id}/download:
+    get:
+      summary: Download artifact package archive
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Artifact archive stream
   /v1/artifacts/{id}/presign:
     post:
       summary: Create artifact download presign URL
@@ -191,3 +251,25 @@ paths:
       responses:
         "200":
           description: Signed artifact URL
+  /v1/artifacts/resolve:
+    get:
+      summary: Resolve artifact metadata by dataset, format, and version
+      parameters:
+        - in: query
+          name: dataset
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: format
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: version
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Resolved artifact details
