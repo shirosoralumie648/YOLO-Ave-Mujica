@@ -2,11 +2,17 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"yolo-ave-mujica/internal/artifacts"
 	"yolo-ave-mujica/internal/config"
+	"yolo-ave-mujica/internal/review"
 	"yolo-ave-mujica/internal/server"
 )
 
@@ -48,5 +54,40 @@ func TestStartBackgroundLoopInvokesTick(t *testing.T) {
 	case <-done:
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("expected background loop to invoke tick")
+	}
+}
+
+func TestBuildModulesWithHandlersUsesInjectedReviewAndArtifacts(t *testing.T) {
+	reviewSvc := review.NewService()
+	reviewSvc.SeedCandidate(review.Candidate{ID: 10, DatasetID: 1, SnapshotID: 1, ItemID: 1, CategoryID: 1, ReviewStatus: "pending"})
+	reviewHandler := review.NewHandler(reviewSvc)
+
+	artifactSvc := artifacts.NewService()
+	artifact, err := artifactSvc.CreatePackageJob(artifacts.PackageRequest{
+		DatasetID:  1,
+		SnapshotID: 2,
+		Format:     "yolo",
+		Version:    "v1",
+	})
+	if err != nil {
+		t.Fatalf("create artifact fixture: %v", err)
+	}
+	artifactHandler := artifacts.NewHandler(artifactSvc)
+
+	modules := buildModulesWithHandlers(reviewHandler, artifactHandler)
+	srv := server.NewHTTPServerWithModules(modules)
+
+	reviewReq := httptest.NewRequest(http.MethodGet, "/v1/review/candidates", nil)
+	reviewRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(reviewRec, reviewReq)
+	if reviewRec.Code != http.StatusOK || !strings.Contains(reviewRec.Body.String(), `"id":10`) {
+		t.Fatalf("expected injected review handler to serve candidate, got %d %s", reviewRec.Code, reviewRec.Body.String())
+	}
+
+	artifactReq := httptest.NewRequest(http.MethodGet, "/v1/artifacts/1", nil)
+	artifactRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(artifactRec, artifactReq)
+	if artifactRec.Code != http.StatusOK || !strings.Contains(artifactRec.Body.String(), `"id":`+strconv.FormatInt(artifact.ID, 10)) {
+		t.Fatalf("expected injected artifact handler to serve artifact, got %d %s", artifactRec.Code, artifactRec.Body.String())
 	}
 }

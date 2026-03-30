@@ -59,19 +59,26 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	}
 
 	dataHubRepo := datahub.NewPostgresRepository(pool)
-	dataHubSvc := datahub.NewServiceWithRepository(func(datasetID int64, objectKey string, ttlSeconds int) (string, error) {
-		return storage.PresignURLString(s3Client, cfg.S3Bucket, objectKey, time.Duration(ttlSeconds)*time.Second)
-	}, dataHubRepo)
-	dataHubHandler := datahub.NewHandler(dataHubSvc)
+	dataHubSvc := datahub.NewServiceWithRepositoryAndScanner(
+		func(datasetID int64, objectKey string, ttlSeconds int) (string, error) {
+			return storage.PresignURLString(s3Client, cfg.S3Bucket, objectKey, time.Duration(ttlSeconds)*time.Second)
+		},
+		dataHubRepo,
+		s3ObjectScanner{client: s3Client},
+	)
 
 	redisClient := queue.NewRedisClient(cfg)
 	jobsRepo := jobs.NewPostgresRepository(pool)
 	jobsSvc := jobs.NewServiceWithPublisher(jobsRepo, jobs.NewRedisPublisher(redisClient))
 	jobsHandler := jobs.NewHandler(jobsSvc)
+	dataHubHandler := datahub.NewHandlerWithJobsAndSourcePresign(dataHubSvc, jobsSvc, func(sourceURI string, ttlSeconds int) (string, error) {
+		return storage.PresignURI(s3Client, sourceURI, time.Duration(ttlSeconds)*time.Second)
+	})
 	jobSweeper := jobs.NewSweeper(jobsRepo, jobs.NewRedisPublisher(redisClient), 3)
 
-	versioningHandler := versioning.NewHandler(versioning.NewService())
-	reviewHandler := review.NewHandler(review.NewService())
+	versioningHandler := versioning.NewHandler(versioning.NewServiceWithRepository(versioning.NewPostgresRepository(pool)))
+	reviewHandler := review.NewHandler(review.NewServiceWithRepository(review.NewPostgresRepository(pool)))
+
 	artifactRepo := artifacts.NewPostgresRepository(pool)
 	artifactQuery := artifacts.NewExportQuery(pool)
 	artifactStorage := artifacts.NewFilesystemStorage(cfg.ArtifactStorageDir)
@@ -93,62 +100,55 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	artifactService.StartBuildRunner(ctx, cfg.ArtifactBuildConcurrency)
 	artifactHandler := artifacts.NewHandler(artifactService)
 
-	modules := server.Modules{
-		DataHub: server.DataHubRoutes{
-			CreateDataset:  dataHubHandler.CreateDataset,
-			ScanDataset:    dataHubHandler.ScanDataset,
-			CreateSnapshot: dataHubHandler.CreateSnapshot,
-			ListSnapshots:  dataHubHandler.ListSnapshots,
-			ListItems:      dataHubHandler.ListItems,
-			PresignObject:  dataHubHandler.PresignObject,
+	modules := buildModulesWithHandlers(reviewHandler, artifactHandler)
+	modules.DataHub = server.DataHubRoutes{
+		CreateDataset:          dataHubHandler.CreateDataset,
+		ScanDataset:            dataHubHandler.ScanDataset,
+		CreateSnapshot:         dataHubHandler.CreateSnapshot,
+		ListSnapshots:          dataHubHandler.ListSnapshots,
+		ListItems:              dataHubHandler.ListItems,
+		PresignObject:          dataHubHandler.PresignObject,
+		ImportSnapshot:         dataHubHandler.ImportSnapshot,
+		CompleteImportSnapshot: dataHubHandler.CompleteImportSnapshot,
+	}
+	modules.Jobs = server.JobRoutes{
+		CreateZeroShot:     jobsHandler.CreateZeroShot,
+		CreateVideoExtract: jobsHandler.CreateVideoExtract,
+		CreateCleaning:     jobsHandler.CreateCleaning,
+		GetJob:             jobsHandler.GetJob,
+		ListEvents:         jobsHandler.ListEvents,
+		ReportHeartbeat:    jobsHandler.ReportHeartbeat,
+		ReportProgress:     jobsHandler.ReportProgress,
+		ReportItemError:    jobsHandler.ReportItemError,
+		ReportTerminal:     jobsHandler.ReportTerminal,
+	}
+	modules.Versioning = server.VersioningRoutes{
+		DiffSnapshots: versioningHandler.DiffSnapshots,
+	}
+	modules.ReadyChecks = []server.ReadyCheck{
+		func(ctx context.Context) error {
+			if err := pool.Ping(ctx); err != nil {
+				return fmt.Errorf("postgres not ready: %w", err)
+			}
+			return nil
 		},
-		Jobs: server.JobRoutes{
-			CreateZeroShot:     jobsHandler.CreateZeroShot,
-			CreateVideoExtract: jobsHandler.CreateVideoExtract,
-			CreateCleaning:     jobsHandler.CreateCleaning,
-			GetJob:             jobsHandler.GetJob,
-			ListEvents:         jobsHandler.ListEvents,
+		func(ctx context.Context) error {
+			if err := queue.Ping(ctx, redisClient); err != nil {
+				return fmt.Errorf("redis not ready: %w", err)
+			}
+			return nil
 		},
-		Versioning: server.VersioningRoutes{
-			DiffSnapshots: versioningHandler.DiffSnapshots,
+		func(ctx context.Context) error {
+			if _, err := s3Client.ListBuckets(ctx); err != nil {
+				return fmt.Errorf("s3 not ready: %w", err)
+			}
+			return nil
 		},
-		Review: server.ReviewRoutes{
-			ListCandidates:  reviewHandler.ListCandidates,
-			AcceptCandidate: reviewHandler.AcceptCandidate,
-			RejectCandidate: reviewHandler.RejectCandidate,
-		},
-		Artifacts: server.ArtifactRoutes{
-			CreatePackage:    artifactHandler.CreatePackage,
-			GetArtifact:      artifactHandler.GetArtifact,
-			PresignArtifact:  artifactHandler.PresignArtifact,
-			ResolveArtifact:  artifactHandler.ResolveArtifact,
-			DownloadArtifact: artifactHandler.DownloadArtifact,
-		},
-		ReadyChecks: []server.ReadyCheck{
-			func(ctx context.Context) error {
-				if err := pool.Ping(ctx); err != nil {
-					return fmt.Errorf("postgres not ready: %w", err)
-				}
-				return nil
-			},
-			func(ctx context.Context) error {
-				if err := queue.Ping(ctx, redisClient); err != nil {
-					return fmt.Errorf("redis not ready: %w", err)
-				}
-				return nil
-			},
-			func(ctx context.Context) error {
-				if _, err := s3Client.ListBuckets(ctx); err != nil {
-					return fmt.Errorf("s3 not ready: %w", err)
-				}
-				return nil
-			},
-			func(_ context.Context) error {
-				if cfg.S3Bucket == "" {
-					return fmt.Errorf("s3 bucket is not configured")
-				}
-				return nil
-			},
+		func(_ context.Context) error {
+			if cfg.S3Bucket == "" {
+				return fmt.Errorf("s3 bucket is not configured")
+			}
+			return nil
 		},
 	}
 
@@ -156,6 +156,49 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 		_ = redisClient.Close()
 		pool.Close()
 	}, jobSweeper.Tick, nil
+}
+
+type s3ObjectScanner struct {
+	client *minio.Client
+}
+
+func (s s3ObjectScanner) ListObjects(bucket, prefix string) ([]datahub.ScannedObject, error) {
+	objects, err := storage.ListObjects(s.client, bucket, prefix)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]datahub.ScannedObject, 0, len(objects))
+	for _, object := range objects {
+		out = append(out, datahub.ScannedObject{
+			Key:  object.Key,
+			ETag: object.ETag,
+			Size: object.Size,
+		})
+	}
+	return out, nil
+}
+
+func buildModulesWithHandlers(reviewHandler *review.Handler, artifactHandler *artifacts.Handler) server.Modules {
+	modules := server.Modules{}
+	if reviewHandler != nil {
+		modules.Review = server.ReviewRoutes{
+			ListCandidates:  reviewHandler.ListCandidates,
+			AcceptCandidate: reviewHandler.AcceptCandidate,
+			RejectCandidate: reviewHandler.RejectCandidate,
+		}
+	}
+	if artifactHandler != nil {
+		modules.Artifacts = server.ArtifactRoutes{
+			CreatePackage:    artifactHandler.CreatePackage,
+			ExportSnapshot:   artifactHandler.ExportSnapshot,
+			GetArtifact:      artifactHandler.GetArtifact,
+			PresignArtifact:  artifactHandler.PresignArtifact,
+			ResolveArtifact:  artifactHandler.ResolveArtifact,
+			CompleteArtifact: artifactHandler.CompleteArtifact,
+			DownloadArtifact: artifactHandler.DownloadArtifact,
+		}
+	}
+	return modules
 }
 
 func startBackgroundLoop(ctx context.Context, interval time.Duration, tick func(time.Time) error) {

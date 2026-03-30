@@ -1,4 +1,9 @@
+import os
 from typing import Any, Dict, Iterable, List, Set
+
+from workers.common.job_client import JobClient
+from workers.common.queue_runner import QueueRunner, poll_forever
+from workers.zero_shot.main import summarize_batch
 
 
 def classify_bbox(item: Dict[str, Any]) -> str:
@@ -38,3 +43,31 @@ def run_rules(items: Iterable[Dict[str, Any]], taxonomy: Set[str], dark_threshol
         "issues": issues,
         "removal_candidates": removal_candidates,
     }
+
+
+def run_cleaning_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    payload = job.get("payload", {})
+    items = payload.get("items", [])
+    taxonomy = set(payload.get("taxonomy", []))
+    dark_threshold = payload.get("rules", {}).get("dark_threshold", 0.2)
+
+    report = run_rules(items, taxonomy, dark_threshold=dark_threshold)
+    total = len(items)
+    failed = len(report["issues"])
+    ok = max(total - failed, 0)
+    status, summary = summarize_batch(total=total, ok=ok, failed=failed)
+    return {"status": status, **summary, "report": report}
+
+
+def build_cleaning_runner(worker_id: str = "cleaning-local") -> QueueRunner:
+    return QueueRunner(worker_id=worker_id, accepted_job_types={"cleaning"})
+
+
+def main():
+    runner = build_cleaning_runner()
+    client = JobClient(base_url=os.getenv("API_BASE_URL", "http://127.0.0.1:8080"))
+    poll_forever(redis_addr=os.getenv("REDIS_ADDR", "localhost:6379"), lane="jobs:cpu", runner=runner, handler=run_cleaning_job, job_client=client)
+
+
+if __name__ == "__main__":
+    main()

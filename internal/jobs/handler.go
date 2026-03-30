@@ -19,20 +19,22 @@ func NewHandler(svc *Service) *Handler {
 }
 
 type zeroShotRequest struct {
-	ProjectID            int64  `json:"project_id"`
-	DatasetID            int64  `json:"dataset_id"`
-	SnapshotID           int64  `json:"snapshot_id"`
-	Prompt               string `json:"prompt"`
-	IdempotencyKey       string `json:"idempotency_key"`
-	RequiredResourceType string `json:"required_resource_type"`
+	ProjectID            int64    `json:"project_id"`
+	DatasetID            int64    `json:"dataset_id"`
+	SnapshotID           int64    `json:"snapshot_id"`
+	Prompt               string   `json:"prompt"`
+	IdempotencyKey       string   `json:"idempotency_key"`
+	RequiredResourceType string   `json:"required_resource_type"`
+	RequiredCapabilities []string `json:"required_capabilities"`
 }
 
 type videoExtractRequest struct {
-	ProjectID            int64  `json:"project_id"`
-	DatasetID            int64  `json:"dataset_id"`
-	FPS                  int    `json:"fps"`
-	IdempotencyKey       string `json:"idempotency_key"`
-	RequiredResourceType string `json:"required_resource_type"`
+	ProjectID            int64    `json:"project_id"`
+	DatasetID            int64    `json:"dataset_id"`
+	FPS                  int      `json:"fps"`
+	IdempotencyKey       string   `json:"idempotency_key"`
+	RequiredResourceType string   `json:"required_resource_type"`
+	RequiredCapabilities []string `json:"required_capabilities"`
 }
 
 type cleaningRequest struct {
@@ -42,6 +44,33 @@ type cleaningRequest struct {
 	Rules                map[string]any `json:"rules"`
 	IdempotencyKey       string         `json:"idempotency_key"`
 	RequiredResourceType string         `json:"required_resource_type"`
+	RequiredCapabilities []string       `json:"required_capabilities"`
+}
+
+type workerHeartbeatRequest struct {
+	WorkerID     string `json:"worker_id"`
+	LeaseSeconds int    `json:"lease_seconds"`
+}
+
+type workerProgressRequest struct {
+	WorkerID       string `json:"worker_id"`
+	TotalItems     int    `json:"total_items"`
+	SucceededItems int    `json:"succeeded_items"`
+	FailedItems    int    `json:"failed_items"`
+}
+
+type workerItemErrorRequest struct {
+	ItemID  int64          `json:"item_id"`
+	Message string         `json:"message"`
+	Detail  map[string]any `json:"detail_json"`
+}
+
+type workerTerminalRequest struct {
+	WorkerID       string `json:"worker_id"`
+	Status         string `json:"status"`
+	TotalItems     int    `json:"total_items"`
+	SucceededItems int    `json:"succeeded_items"`
+	FailedItems    int    `json:"failed_items"`
 }
 
 func (h *Handler) CreateZeroShot(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +89,16 @@ func (h *Handler) CreateZeroShot(w http.ResponseWriter, r *http.Request) {
 		"snapshot_id": in.SnapshotID,
 		"prompt":      in.Prompt,
 	}
-	job, err := h.svc.CreateJob(in.ProjectID, "zero-shot", in.RequiredResourceType, in.IdempotencyKey, payload)
+	job, err := h.svc.CreateJob(CreateJobInput{
+		ProjectID:            in.ProjectID,
+		DatasetID:            in.DatasetID,
+		SnapshotID:           in.SnapshotID,
+		JobType:              "zero-shot",
+		RequiredResourceType: in.RequiredResourceType,
+		RequiredCapabilities: in.RequiredCapabilities,
+		IdempotencyKey:       in.IdempotencyKey,
+		Payload:              payload,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -83,7 +121,15 @@ func (h *Handler) CreateVideoExtract(w http.ResponseWriter, r *http.Request) {
 		"dataset_id": in.DatasetID,
 		"fps":        in.FPS,
 	}
-	job, err := h.svc.CreateJob(in.ProjectID, "video-extract", in.RequiredResourceType, in.IdempotencyKey, payload)
+	job, err := h.svc.CreateJob(CreateJobInput{
+		ProjectID:            in.ProjectID,
+		DatasetID:            in.DatasetID,
+		JobType:              "video-extract",
+		RequiredResourceType: in.RequiredResourceType,
+		RequiredCapabilities: in.RequiredCapabilities,
+		IdempotencyKey:       in.IdempotencyKey,
+		Payload:              payload,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -107,7 +153,16 @@ func (h *Handler) CreateCleaning(w http.ResponseWriter, r *http.Request) {
 		"snapshot_id": in.SnapshotID,
 		"rules":       in.Rules,
 	}
-	job, err := h.svc.CreateJob(in.ProjectID, "cleaning", in.RequiredResourceType, in.IdempotencyKey, payload)
+	job, err := h.svc.CreateJob(CreateJobInput{
+		ProjectID:            in.ProjectID,
+		DatasetID:            in.DatasetID,
+		SnapshotID:           in.SnapshotID,
+		JobType:              "cleaning",
+		RequiredResourceType: in.RequiredResourceType,
+		RequiredCapabilities: in.RequiredCapabilities,
+		IdempotencyKey:       in.IdempotencyKey,
+		Payload:              payload,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -129,9 +184,12 @@ func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":                     job.ID,
 		"project_id":             job.ProjectID,
+		"dataset_id":             job.DatasetID,
+		"snapshot_id":            job.SnapshotID,
 		"job_type":               job.JobType,
 		"status":                 job.Status,
 		"required_resource_type": job.RequiredResourceType,
+		"required_capabilities":  job.RequiredCapabilities,
 		"idempotency_key":        job.IdempotencyKey,
 		"total_items":            job.TotalItems,
 		"succeeded_items":        job.SucceededItems,
@@ -146,6 +204,98 @@ func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": h.svc.ListEvents(id)})
+}
+
+func (h *Handler) ReportHeartbeat(w http.ResponseWriter, r *http.Request) {
+	jobID, err := strconv.ParseInt(chi.URLParam(r, "job_id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var in workerHeartbeatRequest
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := h.svc.ReportHeartbeat(jobID, in.WorkerID, in.LeaseSeconds); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJobStatus(w, h.svc, jobID)
+}
+
+func (h *Handler) ReportProgress(w http.ResponseWriter, r *http.Request) {
+	jobID, err := strconv.ParseInt(chi.URLParam(r, "job_id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var in workerProgressRequest
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := h.svc.ReportProgress(jobID, in.WorkerID, in.TotalItems, in.SucceededItems, in.FailedItems); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJobStatus(w, h.svc, jobID)
+}
+
+func (h *Handler) ReportItemError(w http.ResponseWriter, r *http.Request) {
+	jobID, err := strconv.ParseInt(chi.URLParam(r, "job_id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var in workerItemErrorRequest
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := h.svc.ReportItemError(jobID, in.ItemID, in.Message, in.Detail); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"job_id": jobID, "status": "accepted"})
+}
+
+func (h *Handler) ReportTerminal(w http.ResponseWriter, r *http.Request) {
+	jobID, err := strconv.ParseInt(chi.URLParam(r, "job_id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var in workerTerminalRequest
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := h.svc.ReportTerminal(jobID, in.WorkerID, in.Status, in.TotalItems, in.SucceededItems, in.FailedItems); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJobStatus(w, h.svc, jobID)
+}
+
+func writeJobStatus(w http.ResponseWriter, svc *Service, jobID int64) {
+	job, ok := svc.GetJob(jobID)
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Errorf("job %d not found", jobID))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"job_id":          job.ID,
+		"status":          job.Status,
+		"worker_id":       job.WorkerID,
+		"total_items":     job.TotalItems,
+		"succeeded_items": job.SucceededItems,
+		"failed_items":    job.FailedItems,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

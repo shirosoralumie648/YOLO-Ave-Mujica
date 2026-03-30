@@ -1,21 +1,27 @@
 package jobs
 
 import (
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
 )
 
-type fakeJobRow struct{}
+type fakeJobRow struct {
+	values []any
+}
 
-func (fakeJobRow) Scan(dest ...any) error {
+func defaultFakeJobRowValues() []any {
 	createdAt := time.Unix(1700000000, 0).UTC()
-	values := []any{
+	return []any{
 		int64(1),
 		int64(1),
+		int64(42),
+		int64(9),
 		"zero-shot",
 		StatusQueued,
 		"gpu",
+		[]byte(`[]`),
 		"idem-nullables",
 		nil,
 		[]byte(`{"prompt":"person"}`),
@@ -30,11 +36,27 @@ func (fakeJobRow) Scan(dest ...any) error {
 		nil,
 		nil,
 	}
+}
+
+func (r fakeJobRow) Scan(dest ...any) error {
+	values := defaultFakeJobRowValues()
+	if len(r.values) > 0 {
+		values = r.values
+	}
 
 	for i, value := range values {
 		switch ptr := dest[i].(type) {
 		case *int64:
+			if value == nil {
+				return fmt.Errorf("can't scan into dest[%d]: cannot scan NULL into *int64", i)
+			}
 			*ptr = value.(int64)
+		case *sql.NullInt64:
+			if value == nil {
+				*ptr = sql.NullInt64{}
+				continue
+			}
+			*ptr = sql.NullInt64{Int64: value.(int64), Valid: true}
 		case *string:
 			if value == nil {
 				return fmt.Errorf("can't scan into dest[%d]: cannot scan NULL into *string", i)
@@ -78,5 +100,16 @@ func TestScanJobHandlesNullOptionalFields(t *testing.T) {
 	}
 	if job.ErrorCode != "" || job.ErrorMsg != "" {
 		t.Fatalf("expected empty error fields, got code=%q msg=%q", job.ErrorCode, job.ErrorMsg)
+	}
+}
+
+func TestScanJobHandlesNullDatasetAndSnapshotIDs(t *testing.T) {
+	values := defaultFakeJobRowValues()
+	values[2] = nil
+	values[3] = nil
+
+	_, err := scanJob(fakeJobRow{values: values})
+	if err != nil {
+		t.Fatalf("scanJob returned error: %v", err)
 	}
 }

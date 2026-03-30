@@ -25,13 +25,16 @@ func NewAPIArtifactSource(baseURL string) *APIArtifactSource {
 	return &APIArtifactSource{BaseURL: baseURL}
 }
 
-func (s *APIArtifactSource) ResolveArtifact(format, version string) (ResolvedArtifact, error) {
+func (s *APIArtifactSource) ResolveArtifact(dataset, format, version string) (ResolvedArtifact, error) {
 	client := s.httpClient()
 	resolveURL := fmt.Sprintf("%s/v1/artifacts/resolve?format=%s&version=%s",
 		strings.TrimRight(s.BaseURL, "/"),
 		url.QueryEscape(format),
 		url.QueryEscape(version),
 	)
+	if dataset != "" {
+		resolveURL += "&dataset=" + url.QueryEscape(dataset)
+	}
 
 	var artifact struct {
 		ID          int64  `json:"id"`

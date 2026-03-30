@@ -1,8 +1,6 @@
 package review
 
 import (
-	"fmt"
-	"sync"
 	"time"
 )
 
@@ -32,94 +30,54 @@ type AuditEvent struct {
 }
 
 type Service struct {
-	mu          sync.Mutex
-	candidates  map[int64]Candidate
-	annotations []Annotation
-	audits      []AuditEvent
+	repo Repository
 }
 
 func NewService() *Service {
-	return &Service{
-		candidates:  make(map[int64]Candidate),
-		annotations: []Annotation{},
-		audits:      []AuditEvent{},
+	return NewServiceWithRepository(nil)
+}
+
+func NewServiceWithRepository(repo Repository) *Service {
+	if repo == nil {
+		repo = NewInMemoryRepository()
 	}
+	return &Service{repo: repo}
 }
 
 func (s *Service) SeedCandidate(c Candidate) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if c.ReviewStatus == "" {
-		c.ReviewStatus = "pending"
+	if repo, ok := s.repo.(interface{ SeedCandidate(Candidate) }); ok {
+		repo.SeedCandidate(c)
 	}
-	s.candidates[c.ID] = c
 }
 
 func (s *Service) ListCandidates() []Candidate {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	out := make([]Candidate, 0, len(s.candidates))
-	for _, c := range s.candidates {
-		if c.ReviewStatus == "pending" {
-			out = append(out, c)
-		}
+	items, err := s.repo.ListPending()
+	if err != nil {
+		return nil
 	}
-	return out
+	return items
 }
 
 func (s *Service) AcceptCandidate(candidateID int64, reviewer string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	c, ok := s.candidates[candidateID]
-	if !ok {
-		return fmt.Errorf("candidate %d not found", candidateID)
-	}
-	if c.ReviewStatus != "pending" {
-		return fmt.Errorf("candidate is %s", c.ReviewStatus)
-	}
-
-	now := time.Now().UTC()
-	c.ReviewStatus = "accepted"
-	c.ReviewerID = reviewer
-	c.ReviewedAt = now
-	s.candidates[candidateID] = c
-	s.annotations = append(s.annotations, Annotation{CandidateID: candidateID, ReviewerID: reviewer, CreatedAt: now})
-	s.audits = append(s.audits, AuditEvent{Actor: reviewer, Action: "review.accept", ResourceType: "annotation_candidate", ResourceID: fmt.Sprintf("%d", candidateID), TS: now})
-	return nil
+	return s.repo.Accept(candidateID, reviewer)
 }
 
 func (s *Service) RejectCandidate(candidateID int64, reviewer string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	c, ok := s.candidates[candidateID]
-	if !ok {
-		return fmt.Errorf("candidate %d not found", candidateID)
-	}
-	if c.ReviewStatus != "pending" {
-		return fmt.Errorf("candidate is %s", c.ReviewStatus)
-	}
-
-	now := time.Now().UTC()
-	c.ReviewStatus = "rejected"
-	c.ReviewerID = reviewer
-	c.ReviewedAt = now
-	s.candidates[candidateID] = c
-	s.audits = append(s.audits, AuditEvent{Actor: reviewer, Action: "review.reject", ResourceType: "annotation_candidate", ResourceID: fmt.Sprintf("%d", candidateID), TS: now})
-	return nil
+	return s.repo.Reject(candidateID, reviewer)
 }
 
 func (s *Service) AnnotationCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.annotations)
+	if repo, ok := s.repo.(interface{ AnnotationCount() int }); ok {
+		return repo.AnnotationCount()
+	}
+	return 0
 }
 
 func (s *Service) GetCandidate(id int64) (Candidate, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	c, ok := s.candidates[id]
-	return c, ok
+	if repo, ok := s.repo.(interface {
+		GetCandidate(id int64) (Candidate, bool)
+	}); ok {
+		return repo.GetCandidate(id)
+	}
+	return Candidate{}, false
 }

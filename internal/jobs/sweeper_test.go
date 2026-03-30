@@ -10,7 +10,13 @@ func TestLeaseSweeperRequeuesExpiredJobAndAppendsRecoveryEvent(t *testing.T) {
 	pub := NewInMemoryPublisher()
 	svc := NewServiceWithPublisher(repo, pub)
 
-	job, err := svc.CreateJob(1, "zero-shot", "gpu", "idem-requeue", map[string]any{"prompt": "person"})
+	job, err := svc.CreateJob(CreateJobInput{
+		ProjectID:            1,
+		JobType:              "zero-shot",
+		RequiredResourceType: "gpu",
+		IdempotencyKey:       "idem-requeue",
+		Payload:              map[string]any{"prompt": "person"},
+	})
 	if err != nil {
 		t.Fatalf("create job: %v", err)
 	}

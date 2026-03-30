@@ -11,6 +11,7 @@ type Repository interface {
 	Create(ctx context.Context, a Artifact) (Artifact, error)
 	Get(ctx context.Context, id int64) (Artifact, bool, error)
 	FindReadyByFormatVersion(ctx context.Context, format, version string) (Artifact, bool, error)
+	FindReadyByDatasetFormatVersion(ctx context.Context, dataset, format, version string) (Artifact, bool, error)
 	UpdateStatus(ctx context.Context, id int64, status string, errorMsg string) (Artifact, error)
 	UpdateBuildResult(ctx context.Context, id int64, result BuildResult) (Artifact, error)
 	MarkStaleBuildsFailed(ctx context.Context, reason string) (int64, error)
@@ -18,6 +19,7 @@ type Repository interface {
 
 const (
 	StatusPending  = "pending"
+	StatusQueued   = "queued"
 	StatusBuilding = "building"
 	StatusReady    = "ready"
 	StatusFailed   = "failed"
@@ -74,6 +76,22 @@ func (r *InMemoryRepository) FindReadyByFormatVersion(_ context.Context, format,
 	return Artifact{}, false, nil
 }
 
+func (r *InMemoryRepository) FindReadyByDatasetFormatVersion(_ context.Context, dataset, format, version string) (Artifact, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, artifact := range r.byID {
+		if artifact.Format != format || artifact.Version != version || artifact.Status != StatusReady {
+			continue
+		}
+		if dataset != "" && dataset != fmt.Sprintf("%d", artifact.DatasetID) {
+			continue
+		}
+		return artifact, true, nil
+	}
+	return Artifact{}, false, nil
+}
+
 func (r *InMemoryRepository) UpdateStatus(_ context.Context, id int64, status string, errorMsg string) (Artifact, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -112,7 +130,7 @@ func (r *InMemoryRepository) MarkStaleBuildsFailed(_ context.Context, reason str
 
 	var affected int64
 	for id, artifact := range r.byID {
-		if artifact.Status != StatusPending && artifact.Status != StatusBuilding {
+		if artifact.Status != StatusPending && artifact.Status != StatusQueued && artifact.Status != StatusBuilding {
 			continue
 		}
 		artifact.Status = StatusFailed
