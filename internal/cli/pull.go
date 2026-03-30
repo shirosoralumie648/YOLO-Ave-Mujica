@@ -17,6 +17,7 @@ type RootCommand struct{}
 
 // PullOptions configures artifact resolution, download, and local verification.
 type PullOptions struct {
+	Dataset      string
 	Format       string
 	Version      string
 	AllowPartial bool
@@ -48,7 +49,7 @@ func (c *PullClient) OutputDir() string {
 // ArtifactSource abstracts where pull fetches artifacts from so tests can
 // replace the live HTTP implementation with deterministic fixtures.
 type ArtifactSource interface {
-	ResolveArtifact(format, version string) (ResolvedArtifact, error)
+	ResolveArtifact(dataset, format, version string) (ResolvedArtifact, error)
 	DownloadArchive(ctx context.Context, artifact ResolvedArtifact, tempPath string) error
 }
 
@@ -91,6 +92,7 @@ Commands:
   pull
 
 Flags for pull:
+  --dataset
   --format
   --version
   --allow-partial
@@ -99,6 +101,7 @@ Flags for pull:
 
 func runPull(args []string) error {
 	fs := flag.NewFlagSet("pull", flag.ContinueOnError)
+	dataset := fs.String("dataset", "", "dataset name")
 	format := fs.String("format", "", "dataset format")
 	version := fs.String("version", "", "dataset snapshot version")
 	allowPartial := fs.Bool("allow-partial", false, "allow partial verification failures")
@@ -120,6 +123,7 @@ func runPull(args []string) error {
 	}
 	client := NewPullClientWithSource(wd, NewAPIArtifactSource(baseURL))
 	return client.Pull(PullOptions{
+		Dataset:      *dataset,
 		Format:       *format,
 		Version:      *version,
 		AllowPartial: *allowPartial,
@@ -148,7 +152,7 @@ func (c *PullClient) Pull(opts PullOptions) error {
 		outDir = wd
 	}
 
-	resolved, err := c.source.ResolveArtifact(opts.Format, opts.Version)
+	resolved, err := c.source.ResolveArtifact(opts.Dataset, opts.Format, opts.Version)
 	if err != nil {
 		return err
 	}

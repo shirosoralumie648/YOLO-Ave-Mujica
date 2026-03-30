@@ -49,10 +49,13 @@ The smoke flow verifies:
 - dataset creation
 - dataset scan
 - dataset item listing
+- snapshot creation
 - object presign response shape
-- zero-shot job creation response shape
-- artifact package build polling
-- `platform-cli pull` archive download, extraction, and verification
+- zero-shot job creation response shape with the created snapshot id
+- snapshot import response shape with resolved dataset/snapshot linkage
+- snapshot export/build response shape
+- dataset-aware artifact resolve response shape
+- `platform-cli pull --dataset smoke-dataset --format yolo --version v-smoke-<dataset_id>` archive download, extraction, and verification
 
 `/readyz` checks PostgreSQL, Redis, and MinIO endpoint access with the configured credentials. A `503` means the API process is alive but one or more runtime dependencies are still unavailable.
 

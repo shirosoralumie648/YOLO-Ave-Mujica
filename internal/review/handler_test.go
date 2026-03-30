@@ -9,6 +9,40 @@ import (
 	"yolo-ave-mujica/internal/server"
 )
 
+type fakeRepository struct {
+	pending  []Candidate
+	accepted []int64
+	rejected []int64
+}
+
+func (r *fakeRepository) ListPending() ([]Candidate, error) {
+	out := make([]Candidate, len(r.pending))
+	copy(out, r.pending)
+	return out, nil
+}
+
+func (r *fakeRepository) Accept(candidateID int64, _ string) error {
+	r.accepted = append(r.accepted, candidateID)
+	return nil
+}
+
+func (r *fakeRepository) Reject(candidateID int64, _ string) error {
+	r.rejected = append(r.rejected, candidateID)
+	return nil
+}
+
+func TestServiceUsesRepositoryPendingCandidates(t *testing.T) {
+	repo := &fakeRepository{
+		pending: []Candidate{{ID: 12, DatasetID: 1, SnapshotID: 1, ItemID: 1, CategoryID: 1, ReviewStatus: "pending"}},
+	}
+
+	svc := NewServiceWithRepository(repo)
+	items := svc.ListCandidates()
+	if len(items) != 1 || items[0].ID != 12 {
+		t.Fatalf("expected repository-backed pending candidates, got %+v", items)
+	}
+}
+
 func TestAcceptPromotesCandidateToAnnotation(t *testing.T) {
 	svc := NewService()
 	svc.SeedCandidate(Candidate{ID: 10, DatasetID: 1, SnapshotID: 1, ItemID: 1, CategoryID: 1, ReviewStatus: "pending"})

@@ -1,14 +1,23 @@
 package artifacts
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
 
 type ManifestEntry struct {
 	Path     string `json:"path"`
+	Checksum string `json:"checksum"`
+}
+
+type BundleEntry struct {
+	Path     string `json:"path"`
+	Body     []byte `json:"body"`
 	Checksum string `json:"checksum"`
 }
 
@@ -66,6 +75,54 @@ func BuildManifestWithMetadata(version string, categoryMap map[string]string, st
 		Entries:     normalizedEntries,
 	}
 	return json.MarshalIndent(payload, "", "  ")
+}
+
+func BuildBundleEntries(a Artifact) []BundleEntry {
+	entries := []BundleEntry{
+		newBundleEntry("data.yaml", []byte(BuildDataYAML("./train/images", "./train/images", bundleNames(a.LabelMapJSON)))),
+		newBundleEntry("train/labels/0001.txt", []byte("0 0.5 0.5 0.2 0.2\n")),
+	}
+
+	if a.Format != "yolo" {
+		entries = append(entries, newBundleEntry("README.txt", []byte(fmt.Sprintf("artifact format=%s version=%s\n", a.Format, a.Version))))
+		return entries
+	}
+
+	entries = append(entries, newBundleEntry("train/images/README.txt", []byte(fmt.Sprintf("dataset=%d snapshot=%d artifact=%d\n", a.DatasetID, a.SnapshotID, a.ID))))
+	return entries
+}
+
+func bundleNames(labelMap map[string]string) []string {
+	if len(labelMap) == 0 {
+		return []string{"person"}
+	}
+
+	seen := make(map[string]struct{}, len(labelMap))
+	names := make([]string, 0, len(labelMap))
+	for _, label := range labelMap {
+		if label == "" {
+			continue
+		}
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		seen[label] = struct{}{}
+		names = append(names, label)
+	}
+	if len(names) == 0 {
+		return []string{"person"}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func newBundleEntry(path string, body []byte) BundleEntry {
+	sum := sha256.Sum256(body)
+	return BundleEntry{
+		Path:     path,
+		Body:     body,
+		Checksum: NormalizeSHA256Checksum(hex.EncodeToString(sum[:])),
+	}
 }
 
 func NormalizeSHA256Checksum(checksum string) string {

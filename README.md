@@ -9,7 +9,13 @@ A production-oriented MVP foundation for dataset indexing, annotation workflow o
 - 简体中文本地开发: `docs/development/local-quickstart.zh-CN.md`
 - 简体中文架构说明: `docs/development/architecture.zh-CN.md`
 
-## Current MVP Scope
+- Go control plane skeleton (`api-server`, `platform-cli`)
+- Data Hub basics (dataset/scan/items/snapshot APIs + object presign)
+- Job primitives (state machine, idempotent create model, lane dispatch, lease sweeper)
+- Review, diff, and artifact HTTP modules
+- Artifact packager helpers (`label_map`, `manifest`, `data.yaml`)
+- Worker-side partial-success, heartbeat, import, and cleaning primitives
+- Local smoke and quickstart docs
 
 - Go control plane entry points: `api-server`, `platform-cli`
 - Data Hub APIs for dataset creation, scans, snapshots, item listing, and object presign
@@ -58,6 +64,8 @@ See `docs/development/local-quickstart.md` for the full local runbook.
 - `POST /v1/datasets/{id}/snapshots`
 - `GET /v1/datasets/{id}/snapshots`
 - `GET /v1/datasets/{id}/items`
+- `POST /v1/snapshots/{id}/import`
+- `POST /v1/snapshots/{id}/export`
 - `POST /v1/objects/presign`
 - `POST /v1/jobs/zero-shot`
 - `POST /v1/jobs/video-extract`

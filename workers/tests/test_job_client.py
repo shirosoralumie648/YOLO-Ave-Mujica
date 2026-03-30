@@ -1,6 +1,26 @@
 import unittest
 
-from workers.common.job_client import emit_heartbeat, emit_terminal
+from workers.common.job_client import JobClient, emit_heartbeat, emit_terminal
+
+
+class _FakeResponse:
+    def __init__(self, code: int = 200):
+        self.code = code
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeOpener:
+    def __init__(self):
+        self.requests = []
+
+    def __call__(self, request):
+        self.requests.append(request)
+        return _FakeResponse()
 
 
 class JobClientContractTest(unittest.TestCase):
@@ -16,6 +36,27 @@ class JobClientContractTest(unittest.TestCase):
         self.assertEqual(payload["worker_id"], "worker-a")
         self.assertEqual(payload["status"], "succeeded_with_errors")
         self.assertEqual(payload["failed_items"], 1)
+
+    def test_job_client_build_terminal_payload(self):
+        client = JobClient(base_url="http://api.local")
+
+        body = client.build_terminal(job_id=5, worker_id="worker-a", status="succeeded", total=3, ok=3, failed=0)
+
+        self.assertEqual("worker-a", body["worker_id"])
+        self.assertEqual("succeeded", body["status"])
+        self.assertEqual(3, body["total_items"])
+
+    def test_job_client_posts_terminal_update(self):
+        opener = _FakeOpener()
+        client = JobClient(base_url="http://api.local", opener=opener)
+
+        client.post_terminal(job_id=5, worker_id="worker-a", status="succeeded", total=3, ok=3, failed=0)
+
+        self.assertEqual(1, len(opener.requests))
+        request = opener.requests[0]
+        self.assertEqual("http://api.local/internal/jobs/5/complete", request.full_url)
+        self.assertEqual("POST", request.get_method())
+        self.assertIn(b'"status": "succeeded"', request.data)
 
 
 if __name__ == "__main__":

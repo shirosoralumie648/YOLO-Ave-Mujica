@@ -19,12 +19,14 @@ type ReadyCheck func(ctx context.Context) error
 
 // DataHubRoutes groups handlers for dataset and object-management endpoints.
 type DataHubRoutes struct {
-	CreateDataset  http.HandlerFunc
-	ScanDataset    http.HandlerFunc
-	CreateSnapshot http.HandlerFunc
-	ListSnapshots  http.HandlerFunc
-	ListItems      http.HandlerFunc
-	PresignObject  http.HandlerFunc
+	CreateDataset          http.HandlerFunc
+	ScanDataset            http.HandlerFunc
+	CreateSnapshot         http.HandlerFunc
+	ListSnapshots          http.HandlerFunc
+	ListItems              http.HandlerFunc
+	PresignObject          http.HandlerFunc
+	ImportSnapshot         http.HandlerFunc
+	CompleteImportSnapshot http.HandlerFunc
 }
 
 // JobRoutes groups handlers for asynchronous job creation and inspection.
@@ -34,6 +36,10 @@ type JobRoutes struct {
 	CreateCleaning     http.HandlerFunc
 	GetJob             http.HandlerFunc
 	ListEvents         http.HandlerFunc
+	ReportHeartbeat    http.HandlerFunc
+	ReportProgress     http.HandlerFunc
+	ReportItemError    http.HandlerFunc
+	ReportTerminal     http.HandlerFunc
 }
 
 // VersioningRoutes groups handlers for snapshot diff operations.
@@ -54,6 +60,8 @@ type ArtifactRoutes struct {
 	GetArtifact      http.HandlerFunc
 	PresignArtifact  http.HandlerFunc
 	ResolveArtifact  http.HandlerFunc
+	ExportSnapshot   http.HandlerFunc
+	CompleteArtifact http.HandlerFunc
 	DownloadArtifact http.HandlerFunc
 }
 
@@ -78,12 +86,14 @@ func NewHTTPServerWithDataHub(dataHubHandler *datahub.Handler) *HTTPServer {
 	var dataHubRoutes DataHubRoutes
 	if dataHubHandler != nil {
 		dataHubRoutes = DataHubRoutes{
-			CreateDataset:  dataHubHandler.CreateDataset,
-			ScanDataset:    dataHubHandler.ScanDataset,
-			CreateSnapshot: dataHubHandler.CreateSnapshot,
-			ListSnapshots:  dataHubHandler.ListSnapshots,
-			ListItems:      dataHubHandler.ListItems,
-			PresignObject:  dataHubHandler.PresignObject,
+			CreateDataset:          dataHubHandler.CreateDataset,
+			ScanDataset:            dataHubHandler.ScanDataset,
+			CreateSnapshot:         dataHubHandler.CreateSnapshot,
+			ListSnapshots:          dataHubHandler.ListSnapshots,
+			ListItems:              dataHubHandler.ListItems,
+			PresignObject:          dataHubHandler.PresignObject,
+			ImportSnapshot:         dataHubHandler.ImportSnapshot,
+			CompleteImportSnapshot: dataHubHandler.CompleteImportSnapshot,
 		}
 	}
 	return NewHTTPServerWithModules(Modules{DataHub: dataHubRoutes})
@@ -95,12 +105,14 @@ func NewHTTPServerWithDataHubAndJobs(dataHubHandler *datahub.Handler, jobsHandle
 
 	if dataHubHandler != nil {
 		dataHubRoutes = DataHubRoutes{
-			CreateDataset:  dataHubHandler.CreateDataset,
-			ScanDataset:    dataHubHandler.ScanDataset,
-			CreateSnapshot: dataHubHandler.CreateSnapshot,
-			ListSnapshots:  dataHubHandler.ListSnapshots,
-			ListItems:      dataHubHandler.ListItems,
-			PresignObject:  dataHubHandler.PresignObject,
+			CreateDataset:          dataHubHandler.CreateDataset,
+			ScanDataset:            dataHubHandler.ScanDataset,
+			CreateSnapshot:         dataHubHandler.CreateSnapshot,
+			ListSnapshots:          dataHubHandler.ListSnapshots,
+			ListItems:              dataHubHandler.ListItems,
+			PresignObject:          dataHubHandler.PresignObject,
+			ImportSnapshot:         dataHubHandler.ImportSnapshot,
+			CompleteImportSnapshot: dataHubHandler.CompleteImportSnapshot,
 		}
 	}
 	var jobRoutes JobRoutes
@@ -111,6 +123,10 @@ func NewHTTPServerWithDataHubAndJobs(dataHubHandler *datahub.Handler, jobsHandle
 			CreateCleaning:     jobsHandler.CreateCleaning,
 			GetJob:             jobsHandler.GetJob,
 			ListEvents:         jobsHandler.ListEvents,
+			ReportHeartbeat:    jobsHandler.ReportHeartbeat,
+			ReportProgress:     jobsHandler.ReportProgress,
+			ReportItemError:    jobsHandler.ReportItemError,
+			ReportTerminal:     jobsHandler.ReportTerminal,
 		}
 	}
 	return NewHTTPServerWithModules(Modules{
@@ -150,6 +166,7 @@ func NewHTTPServerWithModules(m Modules) *HTTPServer {
 		r.Get("/datasets/{id}/snapshots", handlerOrNotImplemented(m.DataHub.ListSnapshots))
 		r.Get("/datasets/{id}/items", handlerOrNotImplemented(m.DataHub.ListItems))
 		r.Post("/objects/presign", handlerOrNotImplemented(m.DataHub.PresignObject))
+		r.Post("/snapshots/{id}/import", handlerOrNotImplemented(m.DataHub.ImportSnapshot))
 
 		r.Post("/jobs/zero-shot", handlerOrNotImplemented(m.Jobs.CreateZeroShot))
 		r.Post("/jobs/video-extract", handlerOrNotImplemented(m.Jobs.CreateVideoExtract))
@@ -164,10 +181,20 @@ func NewHTTPServerWithModules(m Modules) *HTTPServer {
 		r.Post("/review/candidates/{id}/reject", handlerOrNotImplemented(m.Review.RejectCandidate))
 
 		r.Post("/artifacts/packages", handlerOrNotImplemented(m.Artifacts.CreatePackage))
+		r.Post("/snapshots/{id}/export", handlerOrNotImplemented(m.Artifacts.ExportSnapshot))
 		r.Get("/artifacts/resolve", handlerOrNotImplemented(m.Artifacts.ResolveArtifact))
 		r.Get("/artifacts/{id}", handlerOrNotImplemented(m.Artifacts.GetArtifact))
 		r.Get("/artifacts/{id}/download", handlerOrNotImplemented(m.Artifacts.DownloadArtifact))
 		r.Post("/artifacts/{id}/presign", handlerOrNotImplemented(m.Artifacts.PresignArtifact))
+	})
+
+	r.Route("/internal", func(r chi.Router) {
+		r.Post("/jobs/{job_id}/heartbeat", handlerOrNotImplemented(m.Jobs.ReportHeartbeat))
+		r.Post("/jobs/{job_id}/progress", handlerOrNotImplemented(m.Jobs.ReportProgress))
+		r.Post("/jobs/{job_id}/events", handlerOrNotImplemented(m.Jobs.ReportItemError))
+		r.Post("/jobs/{job_id}/complete", handlerOrNotImplemented(m.Jobs.ReportTerminal))
+		r.Post("/snapshots/{id}/import", handlerOrNotImplemented(m.DataHub.CompleteImportSnapshot))
+		r.Post("/artifacts/{id}/complete", handlerOrNotImplemented(m.Artifacts.CompleteArtifact))
 	})
 
 	return &HTTPServer{Handler: r}

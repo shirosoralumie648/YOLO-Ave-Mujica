@@ -2,6 +2,9 @@ package artifacts
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -32,18 +35,24 @@ type Artifact struct {
 	Checksum     string            `json:"checksum"`
 	Size         int64             `json:"size"`
 	LabelMapJSON map[string]string `json:"label_map_json,omitempty"`
+	Entries      []BundleEntry     `json:"entries,omitempty"`
 	Status       string            `json:"status"`
 	ErrorMsg     string            `json:"error_msg,omitempty"`
 	CreatedAt    time.Time         `json:"created_at"`
 }
 
-// Service coordinates artifact creation, background building, and archive access.
+type UploadObjectFunc func(uri string, body []byte, contentType string) (int64, error)
+type PresignObjectFunc func(uri string, ttlSeconds int) (string, error)
+
 type Service struct {
 	repo    Repository
 	query   *ExportQuery
 	builder *Builder
 	storage ArtifactStorage
 	runner  *BuildRunner
+	bucket  string
+	upload  UploadObjectFunc
+	presign PresignObjectFunc
 }
 
 // NewService builds an artifact service backed by in-memory defaults.
@@ -66,6 +75,7 @@ func NewServiceWithDependencies(repo Repository, query *ExportQuery, builder *Bu
 		query:   query,
 		builder: builder,
 		storage: storage,
+		bucket:  "artifacts",
 	}
 }
 
@@ -94,18 +104,28 @@ func (s *Service) CreatePackageJob(in PackageRequest) (Artifact, error) {
 	if in.ProjectID <= 0 {
 		in.ProjectID = 1
 	}
+	if status == "" {
+		status = StatusPending
+	}
 
-	artifact, err := s.repo.Create(context.Background(), Artifact{
+	return s.repo.Create(context.Background(), Artifact{
 		ProjectID:    in.ProjectID,
 		DatasetID:    in.DatasetID,
 		SnapshotID:   in.SnapshotID,
 		ArtifactType: "dataset-export",
 		Format:       in.Format,
 		Version:      in.Version,
+		URI:          fmt.Sprintf("s3://%s/artifacts/%d/%d/%s/package.%s.tar.gz", s.bucket, in.DatasetID, in.SnapshotID, in.Version, in.Format),
+		ManifestURI:  fmt.Sprintf("s3://%s/artifacts/%d/%d/%s/manifest.json", s.bucket, in.DatasetID, in.SnapshotID, in.Version),
 		Checksum:     "pending",
+		Size:         0,
 		LabelMapJSON: in.LabelMapJSON,
-		Status:       StatusPending,
+		Status:       status,
 	})
+}
+
+func (s *Service) CreatePackageJob(in PackageRequest) (Artifact, error) {
+	artifact, err := s.CreateArtifact(in, StatusPending)
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -135,6 +155,9 @@ func (s *Service) ResolveArtifact(format, version string) (Artifact, error) {
 		return Artifact{}, err
 	}
 	if !ok {
+		if dataset != "" {
+			return Artifact{}, fmt.Errorf("artifact %s/%s@%s not found", dataset, format, version)
+		}
 		return Artifact{}, fmt.Errorf("artifact %s@%s not found", format, version)
 	}
 	return a, nil
@@ -148,6 +171,9 @@ func (s *Service) PresignArtifact(id int64, ttlSeconds int) (string, error) {
 	}
 	if ttlSeconds <= 0 {
 		ttlSeconds = 120
+	}
+	if a.Status == StatusReady && s.presign != nil {
+		return s.presign(a.URI, ttlSeconds)
 	}
 	return fmt.Sprintf("https://signed.local/artifacts/%d?ttl=%d&uri=%s", a.ID, ttlSeconds, a.URI), nil
 }

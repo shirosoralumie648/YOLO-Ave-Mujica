@@ -29,6 +29,7 @@ type Job struct {
 	JobType              string
 	Status               string
 	RequiredResourceType string
+	RequiredCapabilities []string
 	IdempotencyKey       string
 	WorkerID             string
 	Payload              map[string]any
@@ -42,4 +43,15 @@ type Job struct {
 	RetryCount           int
 	ErrorCode            string
 	ErrorMsg             string
+}
+
+type CreateJobInput struct {
+	ProjectID            int64
+	DatasetID            int64
+	SnapshotID           int64
+	JobType              string
+	RequiredResourceType string
+	RequiredCapabilities []string
+	IdempotencyKey       string
+	Payload              map[string]any
 }

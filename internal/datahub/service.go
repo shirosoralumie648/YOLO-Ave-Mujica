@@ -8,11 +8,25 @@ import (
 // PresignFunc resolves a short-lived object URL for a dataset item.
 type PresignFunc func(datasetID int64, objectKey string, ttlSeconds int) (string, error)
 
+type ScannedObject struct {
+	Key    string
+	ETag   string
+	Size   int64
+	Mime   string
+	Width  int
+	Height int
+}
+
+type ObjectScanner interface {
+	ListObjects(bucket, prefix string) ([]ScannedObject, error)
+}
+
 // Service currently uses in-memory maps to keep MVP behavior deterministic in tests.
 // The public method contracts are designed to map directly to DB-backed storage later.
 type Service struct {
 	repo    Repository
 	presign PresignFunc
+	scanner ObjectScanner
 }
 
 // Dataset is the minimal dataset record exposed by the MVP control plane.
@@ -70,12 +84,17 @@ func NewService(presign PresignFunc) *Service {
 
 // NewServiceWithRepository builds the Data Hub service with an explicit repository.
 func NewServiceWithRepository(presign PresignFunc, repo Repository) *Service {
+	return NewServiceWithRepositoryAndScanner(presign, repo, nil)
+}
+
+func NewServiceWithRepositoryAndScanner(presign PresignFunc, repo Repository, scanner ObjectScanner) *Service {
 	if repo == nil {
 		repo = NewInMemoryRepository()
 	}
 	return &Service{
 		repo:    repo,
 		presign: presign,
+		scanner: scanner,
 	}
 }
 
@@ -102,6 +121,20 @@ func (s *Service) ListSnapshots(datasetID int64) ([]Snapshot, error) {
 
 // ScanDataset records object keys discovered under a dataset prefix.
 func (s *Service) ScanDataset(datasetID int64, objectKeys []string) (int, error) {
+	if len(objectKeys) > 0 {
+		return s.repo.InsertItems(context.Background(), datasetID, objectKeys)
+	}
+	if s.scanner != nil {
+		dataset, err := s.repo.GetDataset(context.Background(), datasetID)
+		if err != nil {
+			return 0, err
+		}
+		objects, err := s.scanner.ListObjects(dataset.Bucket, dataset.Prefix)
+		if err != nil {
+			return 0, err
+		}
+		return s.repo.UpsertScannedItems(context.Background(), datasetID, objects)
+	}
 	return s.repo.InsertItems(context.Background(), datasetID, objectKeys)
 }
 

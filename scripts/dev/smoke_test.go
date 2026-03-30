@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -40,7 +41,7 @@ exit 98
 	}
 }
 
-func TestSmokeExercisesArtifactBuildAndPull(t *testing.T) {
+func TestSmokeExercisesImportExportResolveAndPull(t *testing.T) {
 	skipIfSmokePortsUnavailable(t)
 
 	fakeBin := t.TempDir()
@@ -54,15 +55,36 @@ exit 0
 	writeExecutable(t, filepath.Join(fakeBin, "curl"), fakeCurlScript())
 	writeExecutable(t, filepath.Join(fakeBin, "go"), fakeGoScript())
 
+	callLog := filepath.Join(t.TempDir(), "calls.log")
 	cmd := exec.Command("bash", "scripts/dev/smoke.sh")
 	cmd.Dir = repoRoot(t)
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"API_BASE_URL=http://127.0.0.1:8080",
+		"CALL_LOG="+callLog,
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("smoke script failed: %v\n%s", err, out)
+	}
+
+	callBytes, err := os.ReadFile(callLog)
+	if err != nil {
+		t.Fatalf("read call log: %v", err)
+	}
+	callText := string(callBytes)
+	for _, fragment := range []string{
+		"/v1/datasets/1/snapshots",
+		"/v1/snapshots/1/import",
+		"/v1/jobs/3",
+		"go run ./cmd/dev-seed-artifact-smoke --dataset-id 1",
+		"/v1/snapshots/1/export",
+		"/v1/artifacts/resolve?dataset=smoke-dataset&format=yolo&version=v-smoke-1",
+		"platform-cli pull --dataset smoke-dataset --format yolo --version v-smoke-1",
+	} {
+		if !strings.Contains(callText, fragment) {
+			t.Fatalf("expected smoke script to call %s, got log:\n%s", fragment, callText)
+		}
 	}
 }
 
@@ -74,6 +96,9 @@ for arg in "$@"; do
     url="$arg"
   fi
 done
+if [[ -n "$CALL_LOG" && -n "$url" ]]; then
+  printf '%s\n' "$url" >> "$CALL_LOG"
+fi
 case "$url" in
   */healthz|*/readyz)
     exit 0
@@ -81,23 +106,35 @@ case "$url" in
   */v1/datasets)
     printf '{"dataset_id":1}\n'
     ;;
+  */v1/datasets/1/snapshots)
+    printf '{"id":1,"dataset_id":1,"version":"v1"}\n'
+    ;;
+  */v1/snapshots/1/import)
+    printf '{"job_id":3,"status":"queued","dataset_id":1,"snapshot_id":1}\n'
+    ;;
+  */v1/jobs/3)
+    printf '{"id":3,"status":"succeeded","dataset_id":1,"snapshot_id":1}\n'
+    ;;
   */scan)
     printf '{"added_items":2}\n'
     ;;
   */items)
     printf '{"items":[{"object_key":"train/a.jpg"}]}\n'
     ;;
+  */v1/snapshots/1/export)
+    printf '{"job_id":5,"artifact_id":5,"status":"pending"}\n'
+    ;;
+  */v1/artifacts/5)
+    printf '{"id":5,"format":"yolo","version":"v-smoke-1","status":"ready"}\n'
+    ;;
+  */v1/artifacts/resolve?dataset=smoke-dataset&format=yolo&version=v-smoke-1)
+    printf '{"id":5,"format":"yolo","version":"v-smoke-1","download_url":"http://127.0.0.1:8080/v1/artifacts/5/download"}\n'
+    ;;
   */objects/presign)
     printf '{"url":"http://signed.local/object"}\n'
     ;;
   */jobs/zero-shot)
     printf '{"job_id":1}\n'
-    ;;
-  */v1/artifacts/packages)
-    printf '{"artifact_id":7,"status":"pending"}\n'
-    ;;
-  */v1/artifacts/7)
-    printf '{"id":7,"status":"ready","format":"yolo","version":"v-smoke-1"}\n'
     ;;
   *)
     echo "unexpected curl url: $url" >&2
@@ -109,6 +146,9 @@ esac
 
 func fakeGoScript() string {
 	return `#!/usr/bin/env bash
+if [[ -n "$CALL_LOG" ]]; then
+  printf 'go %s\n' "$*" >> "$CALL_LOG"
+fi
 if [[ "$1" == "run" && "$2" == "./cmd/s3-bootstrap" ]]; then
   exit 0
 fi
@@ -128,6 +168,9 @@ if [[ "$1" == "build" ]]; then
   done
   cat > "$out" <<'EOF'
 #!/usr/bin/env bash
+if [[ -n "$CALL_LOG" ]]; then
+  printf 'platform-cli %s\n' "$*" >> "$CALL_LOG"
+fi
 version=""
 prev=""
 for arg in "$@"; do
@@ -138,9 +181,10 @@ for arg in "$@"; do
 done
 mkdir -p "pulled-${version}/train/images" "pulled-${version}/train/labels"
 printf 'train: ./train/images\nval: ./train/images\nnames:\n  - person\n' > "pulled-${version}/data.yaml"
+printf '{"version":"%s","entries":[{"path":"train/images/a.jpg","checksum":"sha256:abc"},{"path":"train/labels/a.txt","checksum":"sha256:def"},{"path":"data.yaml","checksum":"sha256:ghi"}]}\n' "$version" > "pulled-${version}/manifest.json"
 printf 'fake-image-a' > "pulled-${version}/train/images/a.jpg"
 printf '0 0.5 0.5 0.2 0.2\n' > "pulled-${version}/train/labels/a.txt"
-printf '{"artifact_id":7,"snapshot":"%s"}\n' "$version" > verify-report.json
+printf '{"artifact_id":5,"snapshot":"%s"}\n' "$version" > verify-report.json
 EOF
   chmod +x "$out"
   exit 0
