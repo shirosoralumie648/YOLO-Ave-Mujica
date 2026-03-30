@@ -3,6 +3,7 @@
 ## Prerequisites
 
 - Go 1.20+
+- Node.js 20+ and npm 10+
 - Python 3.12+
 - Docker for the default local PostgreSQL, Redis, and MinIO stack
 - Or equivalent local services already running on `5432`, `6379`, and `9000`
@@ -24,6 +25,23 @@ make migrate-up
 
 `make up-dev` starts the Docker-backed dependency stack and also bootstraps the default MinIO bucket (`platform-dev`). If Docker is unavailable, you need PostgreSQL, Redis, and a MinIO-compatible endpoint running locally before the API server or smoke script can succeed.
 
+## Run The API Server
+
+```bash
+make api-dev
+```
+
+The control plane listens on `http://127.0.0.1:8080` by default.
+
+## Run The Web Console
+
+```bash
+make web-install
+make web-dev
+```
+
+The Vite app listens on `http://127.0.0.1:5173` and proxies `/v1/*` to `http://127.0.0.1:8080` by default. If your API server listens elsewhere, set `VITE_API_PROXY_TARGET`.
+
 ## Run Tests
 
 ```bash
@@ -35,6 +53,14 @@ This runs the full Go test suite and the worker unit tests:
 - `workers.tests.test_partial_success`
 - `workers.tests.test_job_client`
 - `workers.tests.test_cleaning_rules`
+- `apps/web` Vitest suite
+
+You can also run frontend verification independently:
+
+```bash
+make web-test
+make web-build
+```
 
 ## Run Smoke Checks
 
@@ -44,6 +70,9 @@ bash scripts/dev/smoke.sh
 
 The smoke flow verifies:
 
+- task overview route shape
+- project task list route shape
+- task detail route shape
 - `/healthz`
 - `/readyz`
 - dataset creation

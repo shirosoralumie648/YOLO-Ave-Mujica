@@ -3,6 +3,7 @@
 ## 前置条件
 
 - Go 1.20+
+- Node.js 20+ 与 npm 10+
 - Python 3.12+
 - Docker，用于启动默认的 PostgreSQL、Redis、MinIO 本地依赖
 - 如果不使用 Docker，需要自行在本机提供 `5432`、`6379`、`9000` 对应的兼容服务
@@ -24,6 +25,23 @@ make migrate-up
 
 `make up-dev` 会启动 Docker 依赖栈，并自动创建默认的 MinIO bucket `platform-dev`。如果本机没有 Docker，这一步会被跳过，此时需要你自行准备 PostgreSQL、Redis 和兼容 S3 的对象存储服务，否则 API 和 smoke 脚本都无法通过。
 
+## 启动 API 服务
+
+```bash
+make api-dev
+```
+
+默认监听地址是 `http://127.0.0.1:8080`。
+
+## 启动 Web 控制台
+
+```bash
+make web-install
+make web-dev
+```
+
+默认前端地址是 `http://127.0.0.1:5173`，并会把 `/v1/*` 请求代理到 `http://127.0.0.1:8080`。如果 API 不在这个地址，设置 `VITE_API_PROXY_TARGET` 即可。
+
 ## 运行测试
 
 ```bash
@@ -36,6 +54,14 @@ make test
 - `workers.tests.test_partial_success`
 - `workers.tests.test_job_client`
 - `workers.tests.test_cleaning_rules`
+- `apps/web` 的 Vitest 测试
+
+前端也可以单独验证：
+
+```bash
+make web-test
+make web-build
+```
 
 ## 运行 Smoke 检查
 
@@ -45,6 +71,9 @@ bash scripts/dev/smoke.sh
 
 Smoke 脚本会验证以下链路：
 
+- 任务总览路由形状
+- 项目任务列表路由形状
+- 单任务详情路由形状
 - `/healthz`
 - `/readyz`
 - 创建数据集

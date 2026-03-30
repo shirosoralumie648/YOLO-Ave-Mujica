@@ -79,6 +79,20 @@ func NewServiceWithDependencies(repo Repository, query *ExportQuery, builder *Bu
 	}
 }
 
+func NewServiceWithRepositoryAndStorage(repo Repository, upload UploadObjectFunc, presign PresignObjectFunc) *Service {
+	return NewServiceWithRepositoryAndStorageAndBucket(repo, "artifacts", upload, presign)
+}
+
+func NewServiceWithRepositoryAndStorageAndBucket(repo Repository, bucket string, upload UploadObjectFunc, presign PresignObjectFunc) *Service {
+	svc := NewServiceWithDependencies(repo, nil, nil, nil)
+	if bucket != "" {
+		svc.bucket = bucket
+	}
+	svc.upload = upload
+	svc.presign = presign
+	return svc
+}
+
 // StartBuildRunner enables asynchronous artifact builds inside the API process.
 func (s *Service) StartBuildRunner(ctx context.Context, concurrency int) {
 	s.runner = NewBuildRunner(concurrency, s.buildArtifact)
@@ -90,8 +104,7 @@ func (s *Service) MarkStaleBuildsFailed(ctx context.Context, reason string) (int
 	return s.repo.MarkStaleBuildsFailed(ctx, reason)
 }
 
-// CreatePackageJob validates the request and records a new artifact build job.
-func (s *Service) CreatePackageJob(in PackageRequest) (Artifact, error) {
+func (s *Service) CreateArtifact(in PackageRequest, status string) (Artifact, error) {
 	if in.DatasetID <= 0 || in.SnapshotID <= 0 {
 		return Artifact{}, errors.New("dataset_id and snapshot_id are required")
 	}
@@ -124,6 +137,7 @@ func (s *Service) CreatePackageJob(in PackageRequest) (Artifact, error) {
 	})
 }
 
+// CreatePackageJob validates the request and records a new artifact build job.
 func (s *Service) CreatePackageJob(in PackageRequest) (Artifact, error) {
 	artifact, err := s.CreateArtifact(in, StatusPending)
 	if err != nil {
@@ -148,9 +162,18 @@ func (s *Service) GetArtifact(id int64) (Artifact, error) {
 	return a, nil
 }
 
-// ResolveArtifact finds the ready artifact published under a format/version pair.
-func (s *Service) ResolveArtifact(format, version string) (Artifact, error) {
-	a, ok, err := s.repo.FindReadyByFormatVersion(context.Background(), format, version)
+// ResolveArtifact finds the ready artifact published under a dataset/format/version tuple.
+func (s *Service) ResolveArtifact(dataset, format, version string) (Artifact, error) {
+	var (
+		a   Artifact
+		ok  bool
+		err error
+	)
+	if dataset != "" {
+		a, ok, err = s.repo.FindReadyByDatasetFormatVersion(context.Background(), dataset, format, version)
+	} else {
+		a, ok, err = s.repo.FindReadyByFormatVersion(context.Background(), format, version)
+	}
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -161,6 +184,84 @@ func (s *Service) ResolveArtifact(format, version string) (Artifact, error) {
 		return Artifact{}, fmt.Errorf("artifact %s@%s not found", format, version)
 	}
 	return a, nil
+}
+
+func (s *Service) CompleteArtifact(id int64, entries []BundleEntry) (Artifact, error) {
+	if len(entries) == 0 {
+		return Artifact{}, errors.New("entries are required")
+	}
+	if s.upload == nil {
+		return Artifact{}, errors.New("artifact storage upload is not configured")
+	}
+
+	artifact, err := s.GetArtifact(id)
+	if err != nil {
+		return Artifact{}, err
+	}
+
+	pulled := struct {
+		ArtifactID int64         `json:"artifact_id"`
+		Version    string        `json:"version"`
+		Entries    []BundleEntry `json:"entries"`
+	}{
+		ArtifactID: artifact.ID,
+		Version:    artifact.Version,
+		Entries:    entries,
+	}
+	packageBody, err := json.MarshalIndent(pulled, "", "  ")
+	if err != nil {
+		return Artifact{}, err
+	}
+
+	manifestEntries := make([]ManifestEntry, 0, len(entries))
+	for _, entry := range entries {
+		manifestEntries = append(manifestEntries, ManifestEntry{
+			Path:     entry.Path,
+			Checksum: entry.Checksum,
+		})
+	}
+	manifestBody, err := BuildManifest(artifact.Version, manifestEntries)
+	if err != nil {
+		return Artifact{}, err
+	}
+
+	size, err := s.upload(artifact.URI, packageBody, "application/json")
+	if err != nil {
+		return Artifact{}, err
+	}
+	if _, err := s.upload(artifact.ManifestURI, manifestBody, "application/json"); err != nil {
+		return Artifact{}, err
+	}
+
+	sum := sha256.Sum256(packageBody)
+	if err := s.MarkArtifactReady(artifact.ID, artifact.URI, artifact.ManifestURI, NormalizeSHA256Checksum(hex.EncodeToString(sum[:])), size); err != nil {
+		return Artifact{}, err
+	}
+	return s.GetArtifact(artifact.ID)
+}
+
+func (s *Service) MarkArtifactReady(id int64, uri, manifestURI, checksum string, size int64) error {
+	if uri == "" {
+		return errors.New("uri is required")
+	}
+	if manifestURI == "" {
+		return errors.New("manifest_uri is required")
+	}
+	if checksum == "" {
+		return errors.New("checksum is required")
+	}
+	if size < 0 {
+		return errors.New("size must be >= 0")
+	}
+
+	_, err := s.repo.UpdateBuildResult(context.Background(), id, BuildResult{
+		Status:      StatusReady,
+		URI:         uri,
+		ManifestURI: manifestURI,
+		Checksum:    NormalizeSHA256Checksum(checksum),
+		Size:        size,
+	})
+	return err
 }
 
 // PresignArtifact returns a short-lived download URL for an existing artifact.

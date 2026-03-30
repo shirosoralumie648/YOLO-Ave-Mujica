@@ -150,6 +150,25 @@ if [[ -z "$snapshot_id" ]]; then
   fail "snapshot create response missing id: $snapshot_response"
 fi
 
+task_response="$(curl -fsS -X POST "${api_base}/v1/projects/1/tasks" \
+  -H 'Content-Type: application/json' \
+  -d "{\"title\":\"Smoke overview task\",\"description\":\"Verify project task overview endpoints\",\"assignee\":\"reviewer-1\",\"priority\":\"high\",\"dataset_id\":${dataset_id},\"snapshot_id\":${snapshot_id}}")" || fail "project task create request failed"
+
+task_id="$(json_int_field "$task_response" "id")"
+if [[ -z "$task_id" ]]; then
+  fail "project task create response missing id: $task_response"
+fi
+
+project_tasks_response="$(curl -fsS "${api_base}/v1/projects/1/tasks")" || fail "project tasks request failed"
+if [[ "$project_tasks_response" != *"Smoke overview task"* ]]; then
+  fail "project tasks response missing created task: $project_tasks_response"
+fi
+
+project_overview_response="$(curl -fsS "${api_base}/v1/projects/1/overview")" || fail "project overview request failed"
+if [[ "$project_overview_response" != *"\"project_id\":1"* || "$project_overview_response" != *"\"open_task_count\""* ]]; then
+  fail "project overview response missing expected summary fields: $project_overview_response"
+fi
+
 zero_shot_idempotency_key="smoke-zero-shot-${dataset_id}-${snapshot_id}"
 import_idempotency_key="smoke-snapshot-import-${dataset_id}-${snapshot_id}"
 
