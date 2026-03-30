@@ -55,8 +55,9 @@ Notes:
 - `make migrate-up` applies the canonical baseline schema and seeds the default `project_id=1` used by the current smoke path.
 - `make test` runs Go tests plus Python worker unit tests.
 - `/readyz` reflects dependency readiness for PostgreSQL, Redis, and MinIO endpoint access with the configured credentials, while `/healthz` remains pure process liveness.
-- `scripts/dev/smoke.sh` checks health/readiness and exercises dataset create, dataset scan, item listing, object presign, and zero-shot job creation. It can start a temporary local API process if one is not already running.
-- `platform-cli pull` writes `verify-report.json` with `environment_context` fields for OS, architecture, CLI version, and the active storage driver.
+- `scripts/dev/smoke.sh` checks health/readiness and exercises dataset create, dataset scan, item listing, snapshot creation, object presign, zero-shot job creation, snapshot import, snapshot export, dataset-aware artifact resolve, and `platform-cli pull`. It can start a temporary local API process if one is not already running.
+- `POST /v1/snapshots/{id}/import` queues a `snapshot-import` job and returns `job_id`, `status`, `dataset_id`, and `snapshot_id`.
+- `platform-cli pull --dataset <name> --format <format> --version <version>` downloads inline bundle entries from the API-backed artifact flow and writes `verify-report.json` with `environment_context` fields for OS, architecture, CLI version, and the active storage driver.
 
 ## Implemented API Surface (MVP Skeleton)
 
@@ -65,6 +66,8 @@ Notes:
 - `POST /v1/datasets/{id}/snapshots`
 - `GET /v1/datasets/{id}/snapshots`
 - `GET /v1/datasets/{id}/items`
+- `POST /v1/snapshots/{id}/import`
+- `POST /v1/snapshots/{id}/export`
 - `POST /v1/objects/presign`
 - `POST /v1/jobs/zero-shot`
 - `POST /v1/jobs/video-extract`

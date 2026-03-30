@@ -2,6 +2,7 @@ package datahub
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -24,6 +25,16 @@ func (r *PostgresRepository) CreateDataset(ctx context.Context, in CreateDataset
 		returning id, project_id, name, bucket, prefix
 	`, in.ProjectID, in.Name, in.Bucket, in.Prefix).
 		Scan(&out.ID, &out.ProjectID, &out.Name, &out.Bucket, &out.Prefix)
+	return out, err
+}
+
+func (r *PostgresRepository) GetDataset(ctx context.Context, datasetID int64) (Dataset, error) {
+	var out Dataset
+	err := r.pool.QueryRow(ctx, `
+		select id, project_id, name, bucket, prefix
+		from datasets
+		where id = $1
+	`, datasetID).Scan(&out.ID, &out.ProjectID, &out.Name, &out.Bucket, &out.Prefix)
 	return out, err
 }
 
@@ -63,6 +74,16 @@ func (r *PostgresRepository) CreateSnapshot(ctx context.Context, datasetID int64
 	return out, nil
 }
 
+func (r *PostgresRepository) GetSnapshot(ctx context.Context, snapshotID int64) (Snapshot, error) {
+	var out Snapshot
+	err := r.pool.QueryRow(ctx, `
+		select id, dataset_id, version, based_on_snapshot_id, note
+		from dataset_snapshots
+		where id = $1
+	`, snapshotID).Scan(&out.ID, &out.DatasetID, &out.Version, &out.BasedOnSnapshot, &out.Note)
+	return out, err
+}
+
 func (r *PostgresRepository) ListSnapshots(ctx context.Context, datasetID int64) ([]Snapshot, error) {
 	rows, err := r.pool.Query(ctx, `
 		select id, dataset_id, version, based_on_snapshot_id, note
@@ -87,20 +108,38 @@ func (r *PostgresRepository) ListSnapshots(ctx context.Context, datasetID int64)
 }
 
 func (r *PostgresRepository) InsertItems(ctx context.Context, datasetID int64, objectKeys []string) (int, error) {
-	added := 0
+	objects := make([]ScannedObject, 0, len(objectKeys))
 	for _, objectKey := range objectKeys {
 		if objectKey == "" {
 			continue
 		}
+		objects = append(objects, ScannedObject{Key: objectKey})
+	}
+	return r.UpsertScannedItems(ctx, datasetID, objects)
+}
+
+func (r *PostgresRepository) UpsertScannedItems(ctx context.Context, datasetID int64, objects []ScannedObject) (int, error) {
+	added := 0
+	for _, object := range objects {
+		if object.Key == "" {
+			continue
+		}
 		tag, err := r.pool.Exec(ctx, `
-			insert into dataset_items (dataset_id, object_key, etag)
-			values ($1, $2, md5($2))
-			on conflict (dataset_id, object_key) do nothing
-		`, datasetID, objectKey)
+			insert into dataset_items (dataset_id, object_key, etag, size, width, height, mime)
+			values ($1, $2, nullif($3, ''), $4, nullif($5, 0), nullif($6, 0), nullif($7, ''))
+			on conflict (dataset_id, object_key) do update set
+				etag = coalesce(excluded.etag, dataset_items.etag),
+				size = coalesce(excluded.size, dataset_items.size),
+				width = coalesce(excluded.width, dataset_items.width),
+				height = coalesce(excluded.height, dataset_items.height),
+				mime = coalesce(excluded.mime, dataset_items.mime)
+		`, datasetID, object.Key, object.ETag, object.Size, object.Width, object.Height, object.Mime)
 		if err != nil {
 			return 0, err
 		}
-		added += int(tag.RowsAffected())
+		if tag.RowsAffected() > 0 {
+			added++
+		}
 	}
 	return added, nil
 }
@@ -120,10 +159,50 @@ func (r *PostgresRepository) ListItems(ctx context.Context, datasetID int64) ([]
 	items := []DatasetItem{}
 	for rows.Next() {
 		var item DatasetItem
-		if err := rows.Scan(&item.ID, &item.DatasetID, &item.ObjectKey, &item.ETag); err != nil {
+		var etag sql.NullString
+		if err := rows.Scan(&item.ID, &item.DatasetID, &item.ObjectKey, &etag); err != nil {
 			return nil, err
 		}
+		item.ETag = etag.String
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (r *PostgresRepository) GetItemByObjectKey(ctx context.Context, datasetID int64, objectKey string) (DatasetItem, error) {
+	var item DatasetItem
+	var etag sql.NullString
+	err := r.pool.QueryRow(ctx, `
+		select id, dataset_id, object_key, etag
+		from dataset_items
+		where dataset_id = $1 and object_key = $2
+	`, datasetID, objectKey).Scan(&item.ID, &item.DatasetID, &item.ObjectKey, &etag)
+	if err != nil {
+		return DatasetItem{}, err
+	}
+	item.ETag = etag.String
+	return item, nil
+}
+
+func (r *PostgresRepository) EnsureCategory(ctx context.Context, projectID int64, categoryName string) (int64, error) {
+	var categoryID int64
+	err := r.pool.QueryRow(ctx, `
+		insert into categories (project_id, name)
+		values ($1, $2)
+		on conflict (project_id, name) do update set
+			name = excluded.name
+		returning id
+	`, projectID, categoryName).Scan(&categoryID)
+	return categoryID, err
+}
+
+func (r *PostgresRepository) CreateAnnotation(ctx context.Context, snapshotID, datasetID, itemID int64, _ string, categoryID int64, _ string, bboxX, bboxY, bboxW, bboxH float64) error {
+	_, err := r.pool.Exec(ctx, `
+		insert into annotations (
+			dataset_id, item_id, category_id, bbox_x, bbox_y, bbox_w, bbox_h,
+			source, created_at_snapshot_id, review_status, is_pseudo
+		)
+		values ($1, $2, $3, $4, $5, $6, $7, 'import', $8, 'verified', false)
+	`, datasetID, itemID, categoryID, bboxX, bboxY, bboxW, bboxH, snapshotID)
+	return err
 }

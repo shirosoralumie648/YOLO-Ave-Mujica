@@ -9,7 +9,8 @@ import (
 type Repository interface {
 	Create(a Artifact) (Artifact, error)
 	Get(id int64) (Artifact, bool)
-	FindByFormatVersion(format, version string) (Artifact, bool)
+	FindByDatasetFormatVersion(dataset, format, version string) (Artifact, bool)
+	UpdateReady(id int64, uri, manifestURI, checksum string, size int64) error
 }
 
 type InMemoryRepository struct {
@@ -42,16 +43,39 @@ func (r *InMemoryRepository) Get(id int64) (Artifact, bool) {
 	return a, ok
 }
 
-func (r *InMemoryRepository) FindByFormatVersion(format, version string) (Artifact, bool) {
+func (r *InMemoryRepository) FindByDatasetFormatVersion(dataset, format, version string) (Artifact, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	for _, artifact := range r.byID {
+		if artifact.Format != format || artifact.Version != version {
+			continue
+		}
+		if dataset != "" && dataset != fmt.Sprintf("%d", artifact.DatasetID) {
+			continue
+		}
 		if artifact.Format == format && artifact.Version == version {
 			return artifact, true
 		}
 	}
 	return Artifact{}, false
+}
+
+func (r *InMemoryRepository) UpdateReady(id int64, uri, manifestURI, checksum string, size int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	artifact, ok := r.byID[id]
+	if !ok {
+		return fmt.Errorf("artifact %d not found", id)
+	}
+	artifact.URI = uri
+	artifact.ManifestURI = manifestURI
+	artifact.Checksum = checksum
+	artifact.Size = size
+	artifact.Status = "ready"
+	r.byID[id] = artifact
+	return nil
 }
 
 func (r *InMemoryRepository) MustGet(id int64) (Artifact, error) {

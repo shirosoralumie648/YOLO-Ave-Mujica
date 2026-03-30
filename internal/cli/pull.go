@@ -12,6 +12,7 @@ import (
 type RootCommand struct{}
 
 type PullOptions struct {
+	Dataset      string
 	Format       string
 	Version      string
 	AllowPartial bool
@@ -48,7 +49,7 @@ type PulledArtifact struct {
 }
 
 type ArtifactSource interface {
-	FetchArtifact(format, version string) (PulledArtifact, error)
+	FetchArtifact(dataset, format, version string) (PulledArtifact, error)
 }
 
 // NewRootCommand returns a minimal command dispatcher for MVP CLI flows.
@@ -79,6 +80,7 @@ Commands:
   pull
 
 Flags for pull:
+  --dataset
   --format
   --version
   --allow-partial
@@ -87,6 +89,7 @@ Flags for pull:
 
 func runPull(args []string) error {
 	fs := flag.NewFlagSet("pull", flag.ContinueOnError)
+	dataset := fs.String("dataset", "", "dataset name")
 	format := fs.String("format", "", "dataset format")
 	version := fs.String("version", "", "dataset snapshot version")
 	allowPartial := fs.Bool("allow-partial", false, "allow partial verification failures")
@@ -94,8 +97,8 @@ func runPull(args []string) error {
 		return err
 	}
 
-	if *format == "" || *version == "" {
-		return fmt.Errorf("--format and --version are required")
+	if *dataset == "" || *format == "" || *version == "" {
+		return fmt.Errorf("--dataset, --format and --version are required")
 	}
 
 	wd, err := os.Getwd()
@@ -108,6 +111,7 @@ func runPull(args []string) error {
 	}
 	client := NewPullClientWithSource(wd, NewAPIArtifactSource(baseURL))
 	return client.Pull(PullOptions{
+		Dataset:      *dataset,
 		Format:       *format,
 		Version:      *version,
 		AllowPartial: *allowPartial,
@@ -116,8 +120,8 @@ func runPull(args []string) error {
 }
 
 func (c *PullClient) Pull(opts PullOptions) error {
-	if opts.Format == "" || opts.Version == "" {
-		return fmt.Errorf("format and version are required")
+	if opts.Dataset == "" || opts.Format == "" || opts.Version == "" {
+		return fmt.Errorf("dataset, format and version are required")
 	}
 	if c.source == nil {
 		return fmt.Errorf("artifact source is not configured")
@@ -135,7 +139,7 @@ func (c *PullClient) Pull(opts PullOptions) error {
 		outDir = wd
 	}
 
-	pulled, err := c.source.FetchArtifact(opts.Format, opts.Version)
+	pulled, err := c.source.FetchArtifact(opts.Dataset, opts.Format, opts.Version)
 	if err != nil {
 		return err
 	}

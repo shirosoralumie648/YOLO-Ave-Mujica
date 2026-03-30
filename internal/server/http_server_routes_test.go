@@ -13,12 +13,14 @@ func okHandler(w http.ResponseWriter, _ *http.Request) {
 func newFakeModules() Modules {
 	return Modules{
 		DataHub: DataHubRoutes{
-			CreateDataset:  okHandler,
-			ScanDataset:    okHandler,
-			CreateSnapshot: okHandler,
-			ListSnapshots:  okHandler,
-			ListItems:      okHandler,
-			PresignObject:  okHandler,
+			CreateDataset:          okHandler,
+			ScanDataset:            okHandler,
+			CreateSnapshot:         okHandler,
+			ListSnapshots:          okHandler,
+			ListItems:              okHandler,
+			PresignObject:          okHandler,
+			ImportSnapshot:         okHandler,
+			CompleteImportSnapshot: okHandler,
 		},
 		Jobs: JobRoutes{
 			CreateZeroShot:     okHandler,
@@ -36,10 +38,12 @@ func newFakeModules() Modules {
 			RejectCandidate: okHandler,
 		},
 		Artifacts: ArtifactRoutes{
-			CreatePackage:   okHandler,
-			GetArtifact:     okHandler,
-			PresignArtifact: okHandler,
-			ResolveArtifact: okHandler,
+			CreatePackage:    okHandler,
+			GetArtifact:      okHandler,
+			PresignArtifact:  okHandler,
+			ResolveArtifact:  okHandler,
+			ExportSnapshot:   okHandler,
+			CompleteArtifact: okHandler,
 		},
 	}
 }
@@ -57,9 +61,17 @@ func TestMVPRoutesAreRegistered(t *testing.T) {
 		{http.MethodPost, "/v1/jobs/zero-shot"},
 		{http.MethodGet, "/v1/jobs/1"},
 		{http.MethodPost, "/v1/snapshots/diff"},
+		{http.MethodPost, "/v1/snapshots/1/import"},
+		{http.MethodPost, "/internal/snapshots/1/import"},
+		{http.MethodPost, "/v1/snapshots/1/export"},
 		{http.MethodGet, "/v1/review/candidates"},
 		{http.MethodPost, "/v1/artifacts/packages"},
 		{http.MethodGet, "/v1/artifacts/resolve?format=yolo&version=v1"},
+		{http.MethodPost, "/internal/jobs/1/heartbeat"},
+		{http.MethodPost, "/internal/jobs/1/progress"},
+		{http.MethodPost, "/internal/jobs/1/events"},
+		{http.MethodPost, "/internal/jobs/1/complete"},
+		{http.MethodPost, "/internal/artifacts/1/complete"},
 	}
 
 	for _, tc := range routes {

@@ -38,10 +38,16 @@ type DiffResult struct {
 	CompatibilityScore float64   `json:"compatibility_score"`
 }
 
-type Service struct{}
+type Service struct {
+	repo Repository
+}
 
 func NewService() *Service {
-	return &Service{}
+	return NewServiceWithRepository(nil)
+}
+
+func NewServiceWithRepository(repo Repository) *Service {
+	return &Service{repo: repo}
 }
 
 func groupKey(itemID, categoryID int64) string {
@@ -149,6 +155,21 @@ func (s *Service) DiffSnapshots(before, after []Annotation, iouThreshold float64
 	out.CompatibilityScore = compatibilityScore(len(before), len(after), len(out.Adds), len(out.Removes), out.Updates)
 
 	return out
+}
+
+func (s *Service) DiffBySnapshotIDs(beforeSnapshotID, afterSnapshotID int64, iouThreshold float64) (DiffResult, error) {
+	if s.repo == nil {
+		return DiffResult{}, fmt.Errorf("annotation repository is not configured")
+	}
+	before, err := s.repo.ListEffectiveAnnotations(beforeSnapshotID)
+	if err != nil {
+		return DiffResult{}, err
+	}
+	after, err := s.repo.ListEffectiveAnnotations(afterSnapshotID)
+	if err != nil {
+		return DiffResult{}, err
+	}
+	return s.DiffSnapshots(before, after, iouThreshold), nil
 }
 
 func compatibilityScore(beforeCount, afterCount, addedCount, removedCount int, updates []Change) float64 {
