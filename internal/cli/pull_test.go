@@ -1,9 +1,8 @@
 package cli
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,26 +11,44 @@ import (
 )
 
 type fakeSource struct {
-	pkg PulledArtifact
-	err error
+	resolved    ResolvedArtifact
+	resolveErr  error
+	downloadErr error
+	download    func(context.Context, ResolvedArtifact, string) error
 }
 
-func (f fakeSource) FetchArtifact(dataset, format, version string) (PulledArtifact, error) {
-	return f.pkg, f.err
+func (f fakeSource) ResolveArtifact(_ string, _ string, _ string) (ResolvedArtifact, error) {
+	return f.resolved, f.resolveErr
+}
+
+func (f fakeSource) DownloadArchive(ctx context.Context, artifact ResolvedArtifact, tempPath string) error {
+	if f.download != nil {
+		return f.download(ctx, artifact, tempPath)
+	}
+	return f.downloadErr
 }
 
 type recordingSource struct {
-	dataset string
-	format  string
-	version string
-	pkg     PulledArtifact
+	dataset     string
+	format      string
+	version     string
+	resolved    ResolvedArtifact
+	archivePath string
 }
 
-func (r *recordingSource) FetchArtifact(dataset, format, version string) (PulledArtifact, error) {
+func (r *recordingSource) ResolveArtifact(dataset, format, version string) (ResolvedArtifact, error) {
 	r.dataset = dataset
 	r.format = format
 	r.version = version
-	return r.pkg, nil
+	return r.resolved, nil
+}
+
+func (r *recordingSource) DownloadArchive(_ context.Context, _ ResolvedArtifact, tempPath string) error {
+	body, err := os.ReadFile(r.archivePath)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(tempPath, body, 0o644)
 }
 
 func TestVerifyManifestFailsOnChecksumMismatch(t *testing.T) {
@@ -41,26 +58,34 @@ func TestVerifyManifestFailsOnChecksumMismatch(t *testing.T) {
 		t.Fatalf("write temp file: %v", err)
 	}
 
-	err := VerifyFile(p, "deadbeef")
+	err := VerifyFile(p, "sha256:deadbeef")
 	if err == nil {
 		t.Fatal("expected checksum mismatch")
 	}
 }
 
+func TestVerifyFileRejectsNonSHA256Checksum(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write sample: %v", err)
+	}
+	if err := VerifyFile(path, "md5:deadbeef"); err == nil {
+		t.Fatal("expected non-sha256 checksum to be rejected")
+	}
+}
+
 func TestPullWritesVerifyReport(t *testing.T) {
 	dir := t.TempDir()
-	client := NewPullClientWithSource(dir, fakeSource{
-		pkg: PulledArtifact{
-			ArtifactID: 1,
-			Version:    "v1",
-			Entries: []ArtifactEntry{
-				{
-					Path:     "labels/0001.txt",
-					Body:     []byte("0 0.5 0.5 0.2 0.2\n"),
-					Checksum: "fe1d19931e4f3092800a55299efc6f6e0b806bed3838aa14aebbc94ba55aa549",
-				},
-			},
+	archivePath := writeTestArchive(t, testArchive{
+		Version: "v1",
+		Files: map[string][]byte{
+			"labels/0001.txt": []byte("0 0.5 0.5 0.2 0.2\n"),
 		},
+	})
+	client := NewPullClientWithSource(dir, fakeSource{
+		resolved: ResolvedArtifact{ArtifactID: 1, Version: "v1", DownloadURL: "http://example.test/v1/artifacts/1/download"},
+		download: copyArchiveDownloader(t, archivePath),
 	})
 
 	err := client.Pull(PullOptions{Dataset: "smoke-dataset", Format: "yolo", Version: "v1", AllowPartial: false, OutputDir: dir})
@@ -99,18 +124,18 @@ func TestPullWritesVerifyReport(t *testing.T) {
 
 func TestPullAllowPartialControlsChecksumMismatch(t *testing.T) {
 	dir := t.TempDir()
-	client := NewPullClientWithSource(dir, fakeSource{
-		pkg: PulledArtifact{
-			ArtifactID: 2,
-			Version:    "v2",
-			Entries: []ArtifactEntry{
-				{
-					Path:     "labels/0001.txt",
-					Body:     []byte("0 0.5 0.5 0.2 0.2\n"),
-					Checksum: "deadbeef",
-				},
-			},
+	archivePath := writeTestArchive(t, testArchive{
+		Version: "v2",
+		Files: map[string][]byte{
+			"labels/0001.txt": []byte("0 0.5 0.5 0.2 0.2\n"),
 		},
+		ManifestChecksums: map[string]string{
+			"labels/0001.txt": "sha256:deadbeef",
+		},
+	})
+	client := NewPullClientWithSource(dir, fakeSource{
+		resolved: ResolvedArtifact{ArtifactID: 2, Version: "v2", DownloadURL: "http://example.test/v1/artifacts/2/download"},
+		download: copyArchiveDownloader(t, archivePath),
 	})
 
 	err := client.Pull(PullOptions{
@@ -136,6 +161,23 @@ func TestPullAllowPartialControlsChecksumMismatch(t *testing.T) {
 	}
 }
 
+func TestPullDownloadsArchiveExtractsManifestAndCleansTempArchive(t *testing.T) {
+	dir := t.TempDir()
+	client := NewPullClientWithSource(dir, newArtifactDownloadSource(t))
+
+	err := client.Pull(PullOptions{Format: "yolo", Version: "v1", OutputDir: dir})
+	if err != nil {
+		t.Fatalf("pull returned error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "pulled-v1", "train", "images", "a.jpg")); err != nil {
+		t.Fatalf("missing extracted image: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "pull-v1.tar.gz.part")); !os.IsNotExist(err) {
+		t.Fatalf("expected temporary archive cleanup, got err=%v", err)
+	}
+}
+
 func TestPullWithoutSourceFails(t *testing.T) {
 	dir := t.TempDir()
 	client := NewPullClient(dir)
@@ -157,18 +199,15 @@ func TestHelpTextShowsDatasetVersionFormatAndAllowPartial(t *testing.T) {
 
 func TestPullPassesDatasetToSource(t *testing.T) {
 	dir := t.TempDir()
-	source := &recordingSource{
-		pkg: PulledArtifact{
-			ArtifactID: 7,
-			Version:    "v3",
-			Entries: []ArtifactEntry{
-				{
-					Path:     "labels/0001.txt",
-					Body:     []byte("0 0.5 0.5 0.2 0.2\n"),
-					Checksum: "fe1d19931e4f3092800a55299efc6f6e0b806bed3838aa14aebbc94ba55aa549",
-				},
-			},
+	archivePath := writeTestArchive(t, testArchive{
+		Version: "v3",
+		Files: map[string][]byte{
+			"train/labels/a.txt": []byte("0 0.5 0.5 0.2 0.2\n"),
 		},
+	})
+	source := &recordingSource{
+		resolved:    ResolvedArtifact{ArtifactID: 7, Version: "v3", DownloadURL: "http://example.test/v1/artifacts/7/download"},
+		archivePath: archivePath,
 	}
 	client := NewPullClientWithSource(dir, source)
 
@@ -186,107 +225,30 @@ func TestPullPassesDatasetToSource(t *testing.T) {
 	}
 }
 
-func TestAPIArtifactSourceFetchesBundleEntries(t *testing.T) {
+func TestAPIArtifactSourceResolveArtifactIncludesDatasetQuery(t *testing.T) {
 	source := NewAPIArtifactSource("http://artifact.test")
 	source.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		switch req.URL.Path {
-		case "/v1/artifacts/resolve":
-			if req.URL.Query().Get("dataset") != "smoke-dataset" {
-				return jsonResponse(http.StatusBadRequest, `{"error":"missing dataset query"}`), nil
-			}
-			return jsonResponse(http.StatusOK, `{"id":5,"version":"v1"}`), nil
-		case "/v1/artifacts/5":
-			return jsonResponse(http.StatusOK, `{"id":5,"version":"v1","entries":[{"path":"labels/0001.txt","body":"MCAwLjUgMC41IDAuMiAwLjIK","checksum":"fe1d19931e4f3092800a55299efc6f6e0b806bed3838aa14aebbc94ba55aa549"}]}`), nil
-		default:
-			return jsonResponse(http.StatusNotFound, `{"error":"not found"}`), nil
+		if req.URL.Path != "/v1/artifacts/resolve" {
+			return jsonResponse(http.StatusNotFound, map[string]string{"error": "not found"}), nil
 		}
+		if req.URL.Query().Get("dataset") != "smoke-dataset" {
+			return jsonResponse(http.StatusBadRequest, map[string]string{"error": "missing dataset query"}), nil
+		}
+		return jsonResponse(http.StatusOK, map[string]any{
+			"id":           5,
+			"version":      "v1",
+			"download_url": "/v1/artifacts/5/download",
+		}), nil
 	})}
 
-	pkg, err := source.FetchArtifact("smoke-dataset", "yolo", "v1")
+	resolved, err := source.ResolveArtifact("smoke-dataset", "yolo", "v1")
 	if err != nil {
-		t.Fatalf("fetch artifact: %v", err)
+		t.Fatalf("resolve artifact: %v", err)
 	}
-	if len(pkg.Entries) == 0 {
-		t.Fatalf("expected bundle entries, got %+v", pkg)
+	if resolved.ArtifactID != 5 || resolved.Version != "v1" {
+		t.Fatalf("unexpected resolved artifact: %+v", resolved)
 	}
-	if pkg.Entries[0].Path == "" || len(pkg.Entries[0].Body) == 0 {
-		t.Fatalf("expected populated bundle entry, got %+v", pkg.Entries[0])
-	}
-}
-
-func TestAPIArtifactSourceDownloadsFromPresignedArtifactURL(t *testing.T) {
-	source := NewAPIArtifactSource("http://artifact.test")
-	source.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		switch req.URL.Path {
-		case "/v1/artifacts/resolve":
-			return jsonResponse(http.StatusOK, `{"id":9,"version":"v2"}`), nil
-		case "/v1/artifacts/9":
-			return jsonResponse(http.StatusOK, `{"id":9,"version":"v2","status":"ready","entries":[]}`), nil
-		case "/v1/artifacts/9/presign":
-			return jsonResponse(http.StatusOK, `{"url":"http://artifact.test/download/9"}`), nil
-		case "/download/9":
-			return jsonResponse(http.StatusOK, `{"artifact_id":9,"version":"v2","entries":[{"path":"labels/0001.txt","body":"MCAwLjUgMC41IDAuMiAwLjIK","checksum":"fe1d19931e4f3092800a55299efc6f6e0b806bed3838aa14aebbc94ba55aa549"}]}`), nil
-		default:
-			return jsonResponse(http.StatusNotFound, `{"error":"not found"}`), nil
-		}
-	})}
-
-	pkg, err := source.FetchArtifact("smoke-dataset", "yolo", "v2")
-	if err != nil {
-		t.Fatalf("fetch artifact: %v", err)
-	}
-	if pkg.ArtifactID != 9 || pkg.Version != "v2" {
-		t.Fatalf("unexpected pulled package identity: %+v", pkg)
-	}
-	if len(pkg.Entries) != 1 || pkg.Entries[0].Path != "labels/0001.txt" {
-		t.Fatalf("expected downloaded package entries, got %+v", pkg)
-	}
-}
-
-func TestAPIArtifactSourceWaitsForReadyArtifactBeforePresign(t *testing.T) {
-	source := NewAPIArtifactSource("http://artifact.test")
-	var artifactFetches int
-	source.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		switch req.URL.Path {
-		case "/v1/artifacts/resolve":
-			return jsonResponse(http.StatusOK, `{"id":11,"version":"v3"}`), nil
-		case "/v1/artifacts/11":
-			artifactFetches++
-			if artifactFetches == 1 {
-				return jsonResponse(http.StatusOK, `{"id":11,"version":"v3","status":"queued","entries":[]}`), nil
-			}
-			return jsonResponse(http.StatusOK, `{"id":11,"version":"v3","status":"ready","entries":[]}`), nil
-		case "/v1/artifacts/11/presign":
-			return jsonResponse(http.StatusOK, `{"url":"http://artifact.test/download/11"}`), nil
-		case "/download/11":
-			return jsonResponse(http.StatusOK, `{"artifact_id":11,"version":"v3","entries":[{"path":"labels/0001.txt","body":"MCAwLjUgMC41IDAuMiAwLjIK","checksum":"fe1d19931e4f3092800a55299efc6f6e0b806bed3838aa14aebbc94ba55aa549"}]}`), nil
-		default:
-			return jsonResponse(http.StatusNotFound, `{"error":"not found"}`), nil
-		}
-	})}
-
-	pkg, err := source.FetchArtifact("smoke-dataset", "yolo", "v3")
-	if err != nil {
-		t.Fatalf("fetch artifact: %v", err)
-	}
-	if artifactFetches < 2 {
-		t.Fatalf("expected source to poll artifact readiness, got %d fetches", artifactFetches)
-	}
-	if pkg.ArtifactID != 11 || len(pkg.Entries) != 1 {
-		t.Fatalf("expected downloaded package after readiness poll, got %+v", pkg)
-	}
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
-
-func jsonResponse(status int, body string) *http.Response {
-	return &http.Response{
-		StatusCode: status,
-		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Body:       io.NopCloser(bytes.NewBufferString(body)),
+	if resolved.DownloadURL != "http://artifact.test/v1/artifacts/5/download" {
+		t.Fatalf("unexpected absolute download url: %s", resolved.DownloadURL)
 	}
 }

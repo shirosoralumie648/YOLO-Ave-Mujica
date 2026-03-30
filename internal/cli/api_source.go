@@ -1,33 +1,32 @@
 package cli
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 )
 
+type ResolvedArtifact struct {
+	ArtifactID  int64
+	Version     string
+	DownloadURL string
+}
+
 type APIArtifactSource struct {
-	BaseURL         string
-	HTTPClient      *http.Client
-	PollInterval    time.Duration
-	MaxPollAttempts int
+	BaseURL    string
+	HTTPClient *http.Client
 }
 
 func NewAPIArtifactSource(baseURL string) *APIArtifactSource {
 	return &APIArtifactSource{BaseURL: baseURL}
 }
 
-func (s *APIArtifactSource) FetchArtifact(dataset, format, version string) (PulledArtifact, error) {
-	client := s.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
-
+func (s *APIArtifactSource) ResolveArtifact(dataset, format, version string) (ResolvedArtifact, error) {
+	client := s.httpClient()
 	resolveURL := fmt.Sprintf("%s/v1/artifacts/resolve?format=%s&version=%s",
 		strings.TrimRight(s.BaseURL, "/"),
 		url.QueryEscape(format),
@@ -38,90 +37,48 @@ func (s *APIArtifactSource) FetchArtifact(dataset, format, version string) (Pull
 	}
 
 	var artifact struct {
-		ID      int64  `json:"id"`
-		Version string `json:"version"`
+		ID          int64  `json:"id"`
+		Version     string `json:"version"`
+		DownloadURL string `json:"download_url"`
 	}
 	if err := fetchJSON(client, resolveURL, &artifact); err != nil {
-		return PulledArtifact{}, err
+		return ResolvedArtifact{}, err
 	}
 
-	artifactURL := fmt.Sprintf("%s/v1/artifacts/%d", strings.TrimRight(s.BaseURL, "/"), artifact.ID)
-	var detail struct {
-		ID      int64           `json:"id"`
-		Version string          `json:"version"`
-		Status  string          `json:"status"`
-		Entries []ArtifactEntry `json:"entries"`
+	downloadURL := artifact.DownloadURL
+	if downloadURL == "" {
+		downloadURL = fmt.Sprintf("/v1/artifacts/%d/download", artifact.ID)
 	}
-
-	maxPollAttempts := s.MaxPollAttempts
-	if maxPollAttempts <= 0 {
-		maxPollAttempts = 10
-	}
-	pollInterval := s.PollInterval
-	if pollInterval <= 0 {
-		pollInterval = 10 * time.Millisecond
-	}
-
-	for attempt := 0; attempt < maxPollAttempts; attempt++ {
-		if err := fetchJSON(client, artifactURL, &detail); err != nil {
-			return PulledArtifact{}, err
-		}
-		if detail.ID == 0 {
-			detail.ID = artifact.ID
-		}
-		if detail.Version == "" {
-			detail.Version = artifact.Version
-		}
-		if len(detail.Entries) > 0 {
-			return PulledArtifact{
-				ArtifactID: detail.ID,
-				Version:    detail.Version,
-				Entries:    detail.Entries,
-			}, nil
-		}
-		if detail.Status == "ready" {
-			break
-		}
-		if attempt == maxPollAttempts-1 {
-			return PulledArtifact{}, fmt.Errorf("artifact %d is not ready", detail.ID)
-		}
-		time.Sleep(pollInterval)
-	}
-
-	presignURL := fmt.Sprintf("%s/v1/artifacts/%d/presign", strings.TrimRight(s.BaseURL, "/"), detail.ID)
-	var presign struct {
-		URL string `json:"url"`
-	}
-	if err := postJSON(client, presignURL, map[string]any{"ttl_seconds": 120}, &presign); err != nil {
-		return PulledArtifact{}, err
-	}
-	if presign.URL == "" {
-		return PulledArtifact{}, fmt.Errorf("artifact %d presign url is empty", detail.ID)
-	}
-
-	var downloaded struct {
-		ArtifactID int64           `json:"artifact_id"`
-		Version    string          `json:"version"`
-		Entries    []ArtifactEntry `json:"entries"`
-	}
-	if err := fetchJSON(client, presign.URL, &downloaded); err != nil {
-		return PulledArtifact{}, err
-	}
-	if downloaded.ArtifactID == 0 {
-		downloaded.ArtifactID = detail.ID
-	}
-	if downloaded.Version == "" {
-		downloaded.Version = detail.Version
-	}
-	if len(downloaded.Entries) == 0 {
-		return PulledArtifact{}, fmt.Errorf("artifact %d has no downloadable entries", detail.ID)
-	}
-
-	return PulledArtifact{
-		ArtifactID: downloaded.ArtifactID,
-		Version:    downloaded.Version,
-		Entries:    downloaded.Entries,
+	return ResolvedArtifact{
+		ArtifactID:  artifact.ID,
+		Version:     artifact.Version,
+		DownloadURL: s.absoluteURL(downloadURL),
 	}, nil
+}
+
+func (s *APIArtifactSource) DownloadArchive(ctx context.Context, artifact ResolvedArtifact, tempPath string) error {
+	return downloadArchiveToTemp(ctx, s.httpClient(), s.absoluteURL(artifact.DownloadURL), tempPath)
+}
+
+func (s *APIArtifactSource) httpClient() *http.Client {
+	if s.HTTPClient != nil {
+		return s.HTTPClient
+	}
+	return http.DefaultClient
+}
+
+func (s *APIArtifactSource) absoluteURL(target string) string {
+	if target == "" {
+		return target
+	}
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+		return target
+	}
+	base := strings.TrimRight(s.BaseURL, "/")
+	if strings.HasPrefix(target, "/") {
+		return base + target
+	}
+	return base + "/" + target
 }
 
 func fetchJSON(client *http.Client, targetURL string, out any) error {
@@ -134,31 +91,6 @@ func fetchJSON(client *http.Client, targetURL string, out any) error {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("unexpected status %d for %s: %s", resp.StatusCode, targetURL, string(body))
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
-}
-
-func postJSON(client *http.Client, targetURL string, in any, out any) error {
-	body, err := json.Marshal(in)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequest(http.MethodPost, targetURL, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		payload, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status %d for %s: %s", resp.StatusCode, targetURL, string(payload))
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

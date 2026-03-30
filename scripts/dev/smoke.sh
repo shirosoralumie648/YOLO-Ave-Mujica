@@ -11,30 +11,28 @@ export API_BASE_URL="${API_BASE_URL:-http://localhost:8080}"
 
 api_base="${API_BASE_URL%/}"
 api_log="/tmp/api-server.log"
-worker_log="/tmp/packager-worker.log"
 importer_log="/tmp/importer-worker.log"
 started_local="false"
-started_worker="false"
+started_importer="false"
 pid=""
-worker_pid=""
 importer_pid=""
-pull_workdir=""
+pull_dir=""
+cli_bin=""
 
 cleanup() {
-  if [[ -n "$importer_pid" ]]; then
+  if [[ "$started_importer" == "true" && -n "$importer_pid" ]]; then
     kill "$importer_pid" >/dev/null 2>&1 || true
     wait "$importer_pid" 2>/dev/null || true
-  fi
-  if [[ "$started_worker" == "true" && -n "$worker_pid" ]]; then
-    kill "$worker_pid" >/dev/null 2>&1 || true
-    wait "$worker_pid" 2>/dev/null || true
   fi
   if [[ "$started_local" == "true" && -n "$pid" ]]; then
     kill "$pid" >/dev/null 2>&1 || true
     wait "$pid" 2>/dev/null || true
   fi
-  if [[ -n "$pull_workdir" && -d "$pull_workdir" ]]; then
-    rm -rf "$pull_workdir"
+  if [[ -n "$pull_dir" ]]; then
+    rm -rf "$pull_dir" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$cli_bin" ]]; then
+    rm -f "$cli_bin" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -45,11 +43,7 @@ fail() {
     echo "--- api-server.log ---" >&2
     tail -n 20 "$api_log" >&2 || true
   fi
-  if [[ "$started_worker" == "true" && -f "$worker_log" ]]; then
-    echo "--- packager-worker.log ---" >&2
-    tail -n 20 "$worker_log" >&2 || true
-  fi
-  if [[ -n "$importer_pid" && -f "$importer_log" ]]; then
+  if [[ "$started_importer" == "true" && -f "$importer_log" ]]; then
     echo "--- importer-worker.log ---" >&2
     tail -n 20 "$importer_log" >&2 || true
   fi
@@ -100,7 +94,6 @@ done
 GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go run ./cmd/s3-bootstrap >/dev/null || fail "s3 bucket bootstrap failed"
 make migrate-up >/dev/null || fail "database migration failed"
 
-# If no API is running, start a temporary local one just for this smoke check.
 if ! curl -fsS "${api_base}/healthz" >/dev/null 2>&1; then
   : > "$api_log"
   GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go run ./cmd/api-server >"$api_log" 2>&1 &
@@ -112,17 +105,19 @@ if ! curl -fsS "${api_base}/healthz" >/dev/null 2>&1; then
     fi
     sleep 0.25
   done
-  : > "$worker_log"
-  PYTHONPATH=. API_BASE_URL="${api_base}" REDIS_ADDR="${REDIS_ADDR}" python3 -m workers.packager.main >"$worker_log" 2>&1 &
-  worker_pid=$!
-  started_worker="true"
-  : > "$importer_log"
-  PYTHONPATH=. API_BASE_URL="${api_base}" REDIS_ADDR="${REDIS_ADDR}" python3 -m workers.importer.main >"$importer_log" 2>&1 &
-  importer_pid=$!
 fi
 
 require_endpoint "healthz" "${api_base}/healthz"
 require_endpoint "readyz" "${api_base}/readyz"
+
+: > "$importer_log"
+PYTHONPATH=. API_BASE_URL="${api_base}" REDIS_ADDR="${REDIS_ADDR}" python3 -m workers.importer.main >"$importer_log" 2>&1 &
+importer_pid=$!
+started_importer="true"
+sleep 0.5
+if ! kill -0 "$importer_pid" >/dev/null 2>&1; then
+  fail "importer worker exited before smoke requests began"
+fi
 
 dataset_response="$(curl -fsS -X POST "${api_base}/v1/datasets" \
   -H 'Content-Type: application/json' \
@@ -142,7 +137,6 @@ if [[ "$scan_response" != *"added_items"* ]]; then
 fi
 
 items_response="$(curl -fsS "${api_base}/v1/datasets/${dataset_id}/items")" || fail "items list request failed"
-
 if [[ "$items_response" != *"train/a.jpg"* ]]; then
   fail "items response missing scanned key: $items_response"
 fi
@@ -190,10 +184,13 @@ if [[ "$import_dataset_id" != "$dataset_id" || "$import_snapshot_id" != "$snapsh
 fi
 
 import_job_detail=""
-for _ in $(seq 1 40); do
+for _ in $(seq 1 120); do
   import_job_detail="$(curl -fsS "${api_base}/v1/jobs/${import_job_id}")" || fail "snapshot import job status request failed"
   if [[ "$import_job_detail" == *"\"status\":\"succeeded\""* ]]; then
     break
+  fi
+  if [[ "$import_job_detail" == *"\"status\":\"failed\""* ]]; then
+    fail "snapshot import job ${import_job_id} failed: ${import_job_detail}"
   fi
   sleep 0.25
 done
@@ -201,9 +198,16 @@ if [[ "$import_job_detail" != *"\"status\":\"succeeded\""* ]]; then
   fail "snapshot import job ${import_job_id} did not complete successfully: ${import_job_detail}"
 fi
 
+artifact_seed_response="$(GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go run ./cmd/dev-seed-artifact-smoke --dataset-id "${dataset_id}")" || fail "artifact smoke seed failed"
+seed_snapshot_id="$(json_int_field "$artifact_seed_response" "snapshot_id")"
+if [[ -n "$seed_snapshot_id" ]]; then
+  snapshot_id="$seed_snapshot_id"
+fi
+
+artifact_version="v-smoke-${dataset_id}"
 export_response="$(curl -fsS -X POST "${api_base}/v1/snapshots/${snapshot_id}/export" \
   -H 'Content-Type: application/json' \
-  -d "{\"dataset_id\":${dataset_id},\"format\":\"yolo\",\"version\":\"v1\"}")" || fail "snapshot export request failed"
+  -d "{\"dataset_id\":${dataset_id},\"format\":\"yolo\",\"version\":\"${artifact_version}\"}")" || fail "snapshot export request failed"
 
 artifact_id="$(json_int_field "$export_response" "artifact_id")"
 package_job_id="$(json_int_field "$export_response" "job_id")"
@@ -211,8 +215,22 @@ if [[ -z "$artifact_id" || -z "$package_job_id" ]]; then
   fail "snapshot export response missing job_id or artifact_id: $export_response"
 fi
 
-resolve_response="$(curl -fsS "${api_base}/v1/artifacts/resolve?dataset=smoke-dataset&format=yolo&version=v1")" || fail "artifact resolve request failed"
+artifact_detail=""
+for _ in $(seq 1 60); do
+  artifact_detail="$(curl -fsS "${api_base}/v1/artifacts/${artifact_id}")" || fail "artifact detail request failed"
+  if [[ "$artifact_detail" == *"\"status\":\"ready\""* ]]; then
+    break
+  fi
+  if [[ "$artifact_detail" == *"\"status\":\"failed\""* ]]; then
+    fail "artifact ${artifact_id} build failed: ${artifact_detail}"
+  fi
+  sleep 0.5
+done
+if [[ "$artifact_detail" != *"\"status\":\"ready\""* ]]; then
+  fail "artifact ${artifact_id} did not become ready: ${artifact_detail}"
+fi
 
+resolve_response="$(curl -fsS "${api_base}/v1/artifacts/resolve?dataset=smoke-dataset&format=yolo&version=${artifact_version}")" || fail "artifact resolve request failed"
 resolved_artifact_id="$(json_int_field "$resolve_response" "id")"
 if [[ -z "$resolved_artifact_id" ]]; then
   fail "artifact resolve response missing id: $resolve_response"
@@ -221,38 +239,17 @@ if [[ "$resolved_artifact_id" != "$artifact_id" ]]; then
   fail "artifact resolve id ${resolved_artifact_id} does not match exported artifact ${artifact_id}"
 fi
 
-artifact_detail=""
-for _ in $(seq 1 40); do
-  artifact_detail="$(curl -fsS "${api_base}/v1/artifacts/${artifact_id}")" || fail "artifact detail request failed"
-  if [[ "$artifact_detail" == *"\"status\":\"ready\""* ]]; then
-    break
-  fi
-  sleep 0.25
-done
-if [[ "$artifact_detail" != *"\"status\":\"ready\""* ]]; then
-  fail "artifact ${artifact_id} did not become ready: ${artifact_detail}"
-fi
-
-pull_workdir="$(mktemp -d)"
-cli_bin=""
-if command -v platform-cli >/dev/null 2>&1; then
-  cli_bin="$(command -v platform-cli)"
-else
-  cli_bin="${pull_workdir}/platform-cli"
-  GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go build -o "$cli_bin" ./cmd/platform-cli || fail "platform-cli build failed"
-fi
+pull_dir="$(mktemp -d /tmp/platform-pull.XXXXXX)"
+cli_bin="$(mktemp /tmp/platform-cli-smoke.XXXXXX)"
+GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go build -o "$cli_bin" ./cmd/platform-cli >/dev/null || fail "platform-cli build failed"
 
 (
-  cd "$pull_workdir"
-  API_BASE_URL="${api_base}" "$cli_bin" pull --dataset smoke-dataset --format yolo --version v1
-) || fail "platform-cli pull failed"
+  cd "$pull_dir"
+  API_BASE_URL="${api_base}" "$cli_bin" pull --dataset smoke-dataset --format yolo --version "${artifact_version}" >/dev/null
+) || fail "artifact pull failed"
 
-if [[ ! -f "${pull_workdir}/verify-report.json" ]]; then
-  fail "platform-cli pull did not produce verify-report.json"
-fi
-if [[ ! -f "${pull_workdir}/pulled-v1/manifest.json" ]]; then
-  fail "platform-cli pull did not produce pulled-v1/manifest.json"
-fi
-if [[ ! -f "${pull_workdir}/pulled-v1/labels/0001.txt" ]]; then
-  fail "platform-cli pull did not produce pulled label files"
-fi
+[[ -f "${pull_dir}/verify-report.json" ]] || fail "missing verify-report.json"
+[[ -f "${pull_dir}/pulled-${artifact_version}/manifest.json" ]] || fail "missing pulled manifest"
+[[ -f "${pull_dir}/pulled-${artifact_version}/data.yaml" ]] || fail "missing pulled data.yaml"
+[[ -f "${pull_dir}/pulled-${artifact_version}/train/images/a.jpg" ]] || fail "missing pulled train image"
+[[ -f "${pull_dir}/pulled-${artifact_version}/train/labels/a.txt" ]] || fail "missing pulled train label"

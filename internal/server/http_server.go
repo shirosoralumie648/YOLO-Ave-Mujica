@@ -55,6 +55,7 @@ type ArtifactRoutes struct {
 	ResolveArtifact  http.HandlerFunc
 	ExportSnapshot   http.HandlerFunc
 	CompleteArtifact http.HandlerFunc
+	DownloadArtifact http.HandlerFunc
 }
 
 type Modules struct {
@@ -173,6 +174,7 @@ func NewHTTPServerWithModules(m Modules) *HTTPServer {
 		r.Post("/snapshots/{id}/export", handlerOrNotImplemented(m.Artifacts.ExportSnapshot))
 		r.Get("/artifacts/resolve", handlerOrNotImplemented(m.Artifacts.ResolveArtifact))
 		r.Get("/artifacts/{id}", handlerOrNotImplemented(m.Artifacts.GetArtifact))
+		r.Get("/artifacts/{id}/download", handlerOrNotImplemented(m.Artifacts.DownloadArtifact))
 		r.Post("/artifacts/{id}/presign", handlerOrNotImplemented(m.Artifacts.PresignArtifact))
 	})
 

@@ -63,7 +63,7 @@ func TestBuildModulesWithHandlersUsesInjectedReviewAndArtifacts(t *testing.T) {
 	reviewHandler := review.NewHandler(reviewSvc)
 
 	artifactSvc := artifacts.NewService()
-	_, artifactID, err := artifactSvc.CreatePackageJob(artifacts.PackageRequest{
+	artifact, err := artifactSvc.CreatePackageJob(artifacts.PackageRequest{
 		DatasetID:  1,
 		SnapshotID: 2,
 		Format:     "yolo",
@@ -87,7 +87,7 @@ func TestBuildModulesWithHandlersUsesInjectedReviewAndArtifacts(t *testing.T) {
 	artifactReq := httptest.NewRequest(http.MethodGet, "/v1/artifacts/1", nil)
 	artifactRec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(artifactRec, artifactReq)
-	if artifactRec.Code != http.StatusOK || !strings.Contains(artifactRec.Body.String(), `"id":`+strconv.FormatInt(artifactID, 10)) {
+	if artifactRec.Code != http.StatusOK || !strings.Contains(artifactRec.Body.String(), `"id":`+strconv.FormatInt(artifact.ID, 10)) {
 		t.Fatalf("expected injected artifact handler to serve artifact, got %d %s", artifactRec.Code, artifactRec.Body.String())
 	}
 }

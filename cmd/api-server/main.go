@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os/signal"
@@ -32,7 +33,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	modules, cleanup, sweepTick, err := buildModules(cfg)
+	modules, cleanup, sweepTick, err := buildModules(ctx, cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -45,8 +46,7 @@ func main() {
 	}
 }
 
-func buildModules(cfg config.Config) (server.Modules, func(), func(time.Time) error, error) {
-	ctx := context.Background()
+func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(), func(time.Time) error, error) {
 	pool, err := store.NewPostgresPool(ctx, cfg)
 	if err != nil {
 		return server.Modules{}, nil, nil, err
@@ -77,20 +77,28 @@ func buildModules(cfg config.Config) (server.Modules, func(), func(time.Time) er
 	jobSweeper := jobs.NewSweeper(jobsRepo, jobs.NewRedisPublisher(redisClient), 3)
 
 	versioningHandler := versioning.NewHandler(versioning.NewServiceWithRepository(versioning.NewPostgresRepository(pool)))
-	reviewRepo := review.NewPostgresRepository(pool)
-	reviewHandler := review.NewHandler(review.NewServiceWithRepository(reviewRepo))
+	reviewHandler := review.NewHandler(review.NewServiceWithRepository(review.NewPostgresRepository(pool)))
+
 	artifactRepo := artifacts.NewPostgresRepository(pool)
-	artifactSvc := artifacts.NewServiceWithRepositoryAndStorageAndBucket(
-		artifactRepo,
-		cfg.S3Bucket,
-		func(uri string, body []byte, contentType string) (int64, error) {
-			return storage.UploadURI(s3Client, uri, body, contentType)
-		},
-		func(uri string, ttlSeconds int) (string, error) {
-			return storage.PresignURI(s3Client, uri, time.Duration(ttlSeconds)*time.Second)
-		},
-	)
-	artifactHandler := artifacts.NewHandlerWithJobs(artifactSvc, jobsSvc)
+	artifactQuery := artifacts.NewExportQuery(pool)
+	artifactStorage := artifacts.NewFilesystemStorage(cfg.ArtifactStorageDir)
+	artifactSource := artifacts.ObjectSourceFunc(func(ctx context.Context, objectKey string) ([]byte, error) {
+		obj, err := s3Client.GetObject(ctx, cfg.S3Bucket, objectKey, minio.GetObjectOptions{})
+		if err != nil {
+			return nil, err
+		}
+		defer obj.Close()
+		return io.ReadAll(obj)
+	})
+	artifactBuilder := artifacts.NewBuilder(artifactSource)
+	artifactService := artifacts.NewServiceWithDependencies(artifactRepo, artifactQuery, artifactBuilder, artifactStorage)
+	if _, err := artifactService.MarkStaleBuildsFailed(ctx, "startup_recovery"); err != nil {
+		_ = redisClient.Close()
+		pool.Close()
+		return server.Modules{}, nil, nil, err
+	}
+	artifactService.StartBuildRunner(ctx, cfg.ArtifactBuildConcurrency)
+	artifactHandler := artifacts.NewHandler(artifactService)
 
 	modules := buildModulesWithHandlers(reviewHandler, artifactHandler)
 	modules.DataHub = server.DataHubRoutes{
@@ -187,6 +195,7 @@ func buildModulesWithHandlers(reviewHandler *review.Handler, artifactHandler *ar
 			PresignArtifact:  artifactHandler.PresignArtifact,
 			ResolveArtifact:  artifactHandler.ResolveArtifact,
 			CompleteArtifact: artifactHandler.CompleteArtifact,
+			DownloadArtifact: artifactHandler.DownloadArtifact,
 		}
 	}
 	return modules

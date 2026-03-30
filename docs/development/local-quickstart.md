@@ -16,6 +16,8 @@ export S3_ENDPOINT=localhost:9000
 export S3_ACCESS_KEY=minioadmin
 export S3_SECRET_KEY=minioadmin
 export S3_BUCKET=platform-dev
+export ARTIFACT_STORAGE_DIR=/tmp/platform-artifacts
+export ARTIFACT_BUILD_CONCURRENCY=2
 make migrate-up
 ```
 
@@ -44,15 +46,17 @@ The smoke script verifies:
 - object presign response shape
 - zero-shot job creation response shape with the created snapshot id
 - snapshot import response shape with resolved dataset/snapshot linkage
-- snapshot export response shape
+- snapshot export/build response shape
 - dataset-aware artifact resolve response shape
-- `platform-cli pull --dataset smoke-dataset --format yolo --version v1`
+- `platform-cli pull --dataset smoke-dataset --format yolo --version v-smoke-<dataset_id>` archive download, extraction, and verification
 
 `/readyz` checks PostgreSQL, Redis, and MinIO endpoint access with the configured credentials, so a `503` means the process is alive but one or more runtime dependencies are still unavailable.
 
 If API is not running, it launches a temporary local API instance automatically after verifying PostgreSQL, Redis, MinIO, and the baseline migration are available. In heavily sandboxed environments, binding `:8080` may require elevated permissions even for local smoke runs.
 
-`platform-cli pull --dataset smoke-dataset --format yolo --version v1` writes `verify-report.json` with an `environment_context` block (`os`, `arch`, `cli_version`, `storage_driver`) so local verification mismatches are easier to compare across machines.
+`ARTIFACT_STORAGE_DIR` defaults to `/tmp/platform-artifacts`, and `ARTIFACT_BUILD_CONCURRENCY` defaults to `2`.
+
+`platform-cli pull` writes `verify-report.json` with an `environment_context` block (`os`, `arch`, `cli_version`, `storage_driver`) so local verification mismatches are easier to compare across machines.
 
 ## Stop local dependencies
 

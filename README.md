@@ -11,7 +11,7 @@ This branch focuses on the platform foundation layer:
 - Job primitives (state machine, idempotent create model, lane dispatch, lease sweeper)
 - Review, diff, and artifact HTTP modules
 - Artifact packager helpers (`label_map`, `manifest`, `data.yaml`)
-- Worker-side partial-success, heartbeat, and cleaning primitives
+- Worker-side partial-success, heartbeat, import, and cleaning primitives
 - Local smoke and quickstart docs
 
 Detailed architecture and implementation planning docs:
@@ -42,6 +42,8 @@ export S3_ENDPOINT=localhost:9000
 export S3_ACCESS_KEY=minioadmin
 export S3_SECRET_KEY=minioadmin
 export S3_BUCKET=platform-dev
+export ARTIFACT_STORAGE_DIR=/tmp/platform-artifacts
+export ARTIFACT_BUILD_CONCURRENCY=2
 make migrate-up
 make test
 bash scripts/dev/smoke.sh
@@ -53,11 +55,13 @@ Notes:
 - `make up-dev/down-dev` are Docker-backed; if Docker is missing you need PostgreSQL, Redis, and MinIO already running locally.
 - `make up-dev` also bootstraps the default MinIO bucket (`platform-dev`) used by the local smoke path.
 - `make migrate-up` applies the canonical baseline schema and seeds the default `project_id=1` used by the current smoke path.
+- `ARTIFACT_STORAGE_DIR` defaults to `/tmp/platform-artifacts` and stores atomically promoted package directories plus `package.yolo.tar.gz`.
+- `ARTIFACT_BUILD_CONCURRENCY` defaults to `2` and bounds in-process artifact build concurrency.
 - `make test` runs Go tests plus Python worker unit tests.
 - `/readyz` reflects dependency readiness for PostgreSQL, Redis, and MinIO endpoint access with the configured credentials, while `/healthz` remains pure process liveness.
-- `scripts/dev/smoke.sh` checks health/readiness and exercises dataset create, dataset scan, item listing, snapshot creation, object presign, zero-shot job creation, snapshot import, snapshot export, dataset-aware artifact resolve, and `platform-cli pull`. It can start a temporary local API process if one is not already running.
+- `scripts/dev/smoke.sh` checks health/readiness and exercises dataset create, dataset scan, item listing, snapshot creation, snapshot import completion, artifact export/build, dataset-aware artifact resolve, and `platform-cli pull`. It can start a temporary local API process if one is not already running.
 - `POST /v1/snapshots/{id}/import` queues a `snapshot-import` job and returns `job_id`, `status`, `dataset_id`, and `snapshot_id`.
-- `platform-cli pull --dataset <name> --format <format> --version <version>` downloads inline bundle entries from the API-backed artifact flow and writes `verify-report.json` with `environment_context` fields for OS, architecture, CLI version, and the active storage driver.
+- `platform-cli pull --dataset <name> --format <format> --version <version>` downloads the archive-backed artifact flow and writes `verify-report.json` with `environment_context` fields for OS, architecture, CLI version, and the active storage driver.
 
 ## Implemented API Surface (MVP Skeleton)
 
@@ -81,6 +85,7 @@ Notes:
 - `POST /v1/artifacts/packages`
 - `GET /v1/artifacts/resolve`
 - `GET /v1/artifacts/{id}`
+- `GET /v1/artifacts/{id}/download`
 - `POST /v1/artifacts/{id}/presign`
 - `GET /healthz`
 - `GET /readyz`
