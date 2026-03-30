@@ -2,34 +2,34 @@
 
 A production-oriented MVP foundation for dataset indexing, annotation workflow orchestration, and training artifact delivery.
 
-## Current Scope
+## Documentation
 
-This branch focuses on the platform foundation layer:
+- English local quickstart: `docs/development/local-quickstart.md`
+- 简体中文总览: `README.zh-CN.md`
+- 简体中文本地开发: `docs/development/local-quickstart.zh-CN.md`
+- 简体中文架构说明: `docs/development/architecture.zh-CN.md`
 
-- Go control plane skeleton (`api-server`, `platform-cli`)
-- Data Hub basics (dataset/scan/items/snapshot APIs + object presign)
-- Job primitives (state machine, idempotent create model, lane dispatch, lease sweeper)
+## Current MVP Scope
+
+- Go control plane entry points: `api-server`, `platform-cli`
+- Data Hub APIs for dataset creation, scans, snapshots, item listing, and object presign
+- Job primitives for idempotent create, lane dispatch, lease recovery, and event listing
 - Review, diff, and artifact HTTP modules
-- Artifact packager helpers (`label_map`, `manifest`, `data.yaml`)
-- Worker-side partial-success, heartbeat, and cleaning primitives
-- Local smoke and quickstart docs
+- Artifact packaging, resolve, archive download, and CLI pull verification
+- Python worker-side primitives for heartbeats, partial success accounting, and cleaning rules
 
-Detailed architecture and implementation planning docs:
-
-- [MVP architecture spec](docs/superpowers/specs/2026-03-28-yolo-platform-mvp-design.md)
-- [MVP foundation plan](docs/superpowers/plans/2026-03-28-yolo-platform-mvp-foundation-plan.md)
-- [Local quickstart](docs/development/local-quickstart.md)
+Detailed planning docs remain available under `docs/superpowers/` for implementation history and design context.
 
 ## Repository Layout
 
 ```text
-cmd/                Entry points for api-server and platform-cli
-internal/           Go domain modules (server/datahub/jobs/artifacts/cli/...)
-workers/            Python worker-side primitives and tests
+cmd/                Entry points for api-server, platform-cli, migration, and local helpers
+internal/           Go domain modules and runtime wiring
+workers/            Python worker-side helper primitives and tests
 migrations/         SQL schema bootstrap
-deploy/docker/      Local compose file
-scripts/dev/        Smoke script and local helpers
-docs/               Specs, plans, and development docs
+deploy/docker/      Local PostgreSQL, Redis, and MinIO compose stack
+scripts/dev/        Local smoke checks and helper scripts
+docs/               Development docs, specs, and plans
 ```
 
 ## Quick Start
@@ -47,22 +47,11 @@ export ARTIFACT_BUILD_CONCURRENCY=2
 make migrate-up
 make test
 bash scripts/dev/smoke.sh
-make down-dev
 ```
 
-Notes:
+See `docs/development/local-quickstart.md` for the full local runbook.
 
-- `make up-dev/down-dev` are Docker-backed; if Docker is missing you need PostgreSQL, Redis, and MinIO already running locally.
-- `make up-dev` also bootstraps the default MinIO bucket (`platform-dev`) used by the local smoke path.
-- `make migrate-up` applies the canonical baseline schema and seeds the default `project_id=1` used by the current smoke path.
-- `ARTIFACT_STORAGE_DIR` defaults to `/tmp/platform-artifacts` and stores atomically promoted package directories plus `package.yolo.tar.gz`.
-- `ARTIFACT_BUILD_CONCURRENCY` defaults to `2` and bounds in-process artifact build concurrency.
-- `make test` runs Go tests plus Python worker unit tests.
-- `/readyz` reflects dependency readiness for PostgreSQL, Redis, and MinIO endpoint access with the configured credentials, while `/healthz` remains pure process liveness.
-- `scripts/dev/smoke.sh` checks health/readiness and exercises dataset create, dataset scan, item listing, object presign, zero-shot job creation, artifact package build, and `platform-cli pull`. It can start a temporary local API process if one is not already running.
-- `platform-cli pull` writes `verify-report.json` with `environment_context` fields for OS, architecture, CLI version, and the active storage driver.
-
-## Implemented API Surface (MVP Skeleton)
+## Implemented API Surface
 
 - `POST /v1/datasets`
 - `POST /v1/datasets/{id}/scan`
@@ -87,6 +76,12 @@ Notes:
 - `GET /healthz`
 - `GET /readyz`
 
+## CLI Artifact Delivery
+
+`platform-cli pull --format <format> --version <version>` resolves a ready artifact, downloads the package archive, extracts it locally, and verifies every file declared in `manifest.json`.
+
+The pull workflow writes `verify-report.json` with an `environment_context` block containing `os`, `arch`, `cli_version`, and `storage_driver`.
+
 ## Testing
 
 Run all Go tests:
@@ -95,14 +90,11 @@ Run all Go tests:
 GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go test ./...
 ```
 
-Run worker test directly:
+Run the worker unit tests:
 
 ```bash
-PYTHONPATH=. python3 -m unittest workers.tests.test_partial_success -v
-```
-
-Additional worker tests:
-
-```bash
-PYTHONPATH=. python3 -m unittest workers.tests.test_job_client workers.tests.test_cleaning_rules -v
+PYTHONPATH=. python3 -m unittest \
+  workers.tests.test_partial_success \
+  workers.tests.test_job_client \
+  workers.tests.test_cleaning_rules -v
 ```
