@@ -3,15 +3,24 @@ package jobs
 import "time"
 
 const (
-	StatusQueued              = "queued"
-	StatusRunning             = "running"
-	StatusSucceeded           = "succeeded"
+	// StatusQueued means the job has been accepted and is waiting for a worker.
+	StatusQueued = "queued"
+	// StatusRunning means a worker currently holds the lease and is executing the job.
+	StatusRunning = "running"
+	// StatusSucceeded means all tracked work completed without item-level failures.
+	StatusSucceeded = "succeeded"
+	// StatusSucceededWithErrors means some items failed but the overall job still produced useful output.
 	StatusSucceededWithErrors = "succeeded_with_errors"
-	StatusFailed              = "failed"
-	StatusCanceled            = "canceled"
-	StatusRetryWaiting        = "retry_waiting"
+	// StatusFailed means the job terminated without a successful result.
+	StatusFailed = "failed"
+	// StatusCanceled means execution stopped due to an external cancellation request.
+	StatusCanceled = "canceled"
+	// StatusRetryWaiting means the job is paused until it becomes eligible for retry.
+	StatusRetryWaiting = "retry_waiting"
 )
 
+// Job is the canonical persisted runtime record for asynchronous work.
+// It stores routing information, execution counters, lease state, and terminal errors.
 type Job struct {
 	ID                   int64
 	ProjectID            int64

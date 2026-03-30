@@ -5,6 +5,7 @@ import (
 	"errors"
 )
 
+// PresignFunc resolves a short-lived object URL for a dataset item.
 type PresignFunc func(datasetID int64, objectKey string, ttlSeconds int) (string, error)
 
 type ScannedObject struct {
@@ -28,6 +29,7 @@ type Service struct {
 	scanner ObjectScanner
 }
 
+// Dataset is the minimal dataset record exposed by the MVP control plane.
 type Dataset struct {
 	ID        int64  `json:"id"`
 	ProjectID int64  `json:"project_id"`
@@ -36,6 +38,8 @@ type Dataset struct {
 	Prefix    string `json:"prefix"`
 }
 
+// Snapshot represents a logical dataset version that downstream jobs and
+// artifact exports can reference.
 type Snapshot struct {
 	ID              int64  `json:"id"`
 	DatasetID       int64  `json:"dataset_id"`
@@ -44,6 +48,7 @@ type Snapshot struct {
 	Note            string `json:"note,omitempty"`
 }
 
+// CreateDatasetInput contains the fields required to register a new dataset.
 type CreateDatasetInput struct {
 	ProjectID int64  `json:"project_id"`
 	Name      string `json:"name"`
@@ -51,17 +56,20 @@ type CreateDatasetInput struct {
 	Prefix    string `json:"prefix"`
 }
 
+// CreateSnapshotInput describes optional ancestry and notes for a new snapshot.
 type CreateSnapshotInput struct {
 	BasedOnSnapshotID *int64 `json:"based_on_snapshot_id,omitempty"`
 	Note              string `json:"note,omitempty"`
 }
 
+// PresignInput identifies which dataset object should receive a short-lived URL.
 type PresignInput struct {
 	DatasetID  int64  `json:"dataset_id"`
 	ObjectKey  string `json:"object_key"`
 	TTLSeconds int    `json:"ttl_seconds"`
 }
 
+// DatasetItem is the stored object metadata returned by dataset listing endpoints.
 type DatasetItem struct {
 	ID        int64  `json:"id"`
 	DatasetID int64  `json:"dataset_id"`
@@ -69,31 +77,12 @@ type DatasetItem struct {
 	ETag      string `json:"etag"`
 }
 
-type ImportedAnnotation struct {
-	ObjectKey    string
-	CategoryName string
-	BBoxX        float64
-	BBoxY        float64
-	BBoxW        float64
-	BBoxH        float64
-}
-
-type ImportSnapshotInput struct {
-	Format    string
-	SourceURI string
-	Entries   []ImportedAnnotation
-}
-
-type ImportSnapshotResult struct {
-	DatasetID           int64
-	SnapshotID          int64
-	ImportedAnnotations int
-}
-
+// NewService builds the Data Hub service with the default in-memory repository.
 func NewService(presign PresignFunc) *Service {
 	return NewServiceWithRepository(presign, nil)
 }
 
+// NewServiceWithRepository builds the Data Hub service with an explicit repository.
 func NewServiceWithRepository(presign PresignFunc, repo Repository) *Service {
 	return NewServiceWithRepositoryAndScanner(presign, repo, nil)
 }
@@ -109,6 +98,7 @@ func NewServiceWithRepositoryAndScanner(presign PresignFunc, repo Repository, sc
 	}
 }
 
+// CreateDataset validates and persists a new dataset record.
 func (s *Service) CreateDataset(in CreateDatasetInput) (Dataset, error) {
 	if in.ProjectID <= 0 {
 		return Dataset{}, errors.New("project_id must be > 0")
@@ -119,18 +109,17 @@ func (s *Service) CreateDataset(in CreateDatasetInput) (Dataset, error) {
 	return s.repo.CreateDataset(context.Background(), in)
 }
 
+// CreateSnapshot persists a new logical version for the given dataset.
 func (s *Service) CreateSnapshot(datasetID int64, in CreateSnapshotInput) (Snapshot, error) {
 	return s.repo.CreateSnapshot(context.Background(), datasetID, in)
 }
 
-func (s *Service) GetSnapshot(snapshotID int64) (Snapshot, error) {
-	return s.repo.GetSnapshot(context.Background(), snapshotID)
-}
-
+// ListSnapshots returns all known snapshots for a dataset.
 func (s *Service) ListSnapshots(datasetID int64) ([]Snapshot, error) {
 	return s.repo.ListSnapshots(context.Background(), datasetID)
 }
 
+// ScanDataset records object keys discovered under a dataset prefix.
 func (s *Service) ScanDataset(datasetID int64, objectKeys []string) (int, error) {
 	if len(objectKeys) > 0 {
 		return s.repo.InsertItems(context.Background(), datasetID, objectKeys)
@@ -149,57 +138,12 @@ func (s *Service) ScanDataset(datasetID int64, objectKeys []string) (int, error)
 	return s.repo.InsertItems(context.Background(), datasetID, objectKeys)
 }
 
+// ListItems returns the stored objects associated with a dataset.
 func (s *Service) ListItems(datasetID int64) ([]DatasetItem, error) {
 	return s.repo.ListItems(context.Background(), datasetID)
 }
 
-func (s *Service) ImportSnapshot(snapshotID int64, in ImportSnapshotInput) (ImportSnapshotResult, error) {
-	if in.Format == "" {
-		return ImportSnapshotResult{}, errors.New("format is required")
-	}
-	if len(in.Entries) == 0 {
-		return ImportSnapshotResult{}, errors.New("entries are required")
-	}
-
-	snapshot, err := s.repo.GetSnapshot(context.Background(), snapshotID)
-	if err != nil {
-		return ImportSnapshotResult{}, err
-	}
-	dataset, err := s.repo.GetDataset(context.Background(), snapshot.DatasetID)
-	if err != nil {
-		return ImportSnapshotResult{}, err
-	}
-
-	imported := 0
-	for _, entry := range in.Entries {
-		if entry.ObjectKey == "" || entry.CategoryName == "" {
-			return ImportSnapshotResult{}, errors.New("object_key and category_name are required")
-		}
-		if entry.BBoxW <= 0 || entry.BBoxH <= 0 {
-			return ImportSnapshotResult{}, errors.New("bbox_w and bbox_h must be > 0")
-		}
-
-		item, err := s.repo.GetItemByObjectKey(context.Background(), dataset.ID, entry.ObjectKey)
-		if err != nil {
-			return ImportSnapshotResult{}, err
-		}
-		categoryID, err := s.repo.EnsureCategory(context.Background(), dataset.ProjectID, entry.CategoryName)
-		if err != nil {
-			return ImportSnapshotResult{}, err
-		}
-		if err := s.repo.CreateAnnotation(context.Background(), snapshot.ID, dataset.ID, item.ID, item.ObjectKey, categoryID, entry.CategoryName, entry.BBoxX, entry.BBoxY, entry.BBoxW, entry.BBoxH); err != nil {
-			return ImportSnapshotResult{}, err
-		}
-		imported++
-	}
-
-	return ImportSnapshotResult{
-		DatasetID:           dataset.ID,
-		SnapshotID:          snapshot.ID,
-		ImportedAnnotations: imported,
-	}, nil
-}
-
+// PresignObject produces a short-lived object URL for dataset consumers.
 func (s *Service) PresignObject(in PresignInput) (string, error) {
 	if s.presign == nil {
 		return "", errors.New("presign function is not configured")
