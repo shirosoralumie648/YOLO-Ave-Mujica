@@ -42,6 +42,8 @@ export S3_ENDPOINT=localhost:9000
 export S3_ACCESS_KEY=minioadmin
 export S3_SECRET_KEY=minioadmin
 export S3_BUCKET=platform-dev
+export ARTIFACT_STORAGE_DIR=/tmp/platform-artifacts
+export ARTIFACT_BUILD_CONCURRENCY=2
 make migrate-up
 make test
 bash scripts/dev/smoke.sh
@@ -53,9 +55,11 @@ Notes:
 - `make up-dev/down-dev` are Docker-backed; if Docker is missing you need PostgreSQL, Redis, and MinIO already running locally.
 - `make up-dev` also bootstraps the default MinIO bucket (`platform-dev`) used by the local smoke path.
 - `make migrate-up` applies the canonical baseline schema and seeds the default `project_id=1` used by the current smoke path.
+- `ARTIFACT_STORAGE_DIR` defaults to `/tmp/platform-artifacts` and stores atomically promoted package directories plus `package.yolo.tar.gz`.
+- `ARTIFACT_BUILD_CONCURRENCY` defaults to `2` and bounds in-process artifact build concurrency.
 - `make test` runs Go tests plus Python worker unit tests.
 - `/readyz` reflects dependency readiness for PostgreSQL, Redis, and MinIO endpoint access with the configured credentials, while `/healthz` remains pure process liveness.
-- `scripts/dev/smoke.sh` checks health/readiness and exercises dataset create, dataset scan, item listing, object presign, and zero-shot job creation. It can start a temporary local API process if one is not already running.
+- `scripts/dev/smoke.sh` checks health/readiness and exercises dataset create, dataset scan, item listing, object presign, zero-shot job creation, artifact package build, and `platform-cli pull`. It can start a temporary local API process if one is not already running.
 - `platform-cli pull` writes `verify-report.json` with `environment_context` fields for OS, architecture, CLI version, and the active storage driver.
 
 ## Implemented API Surface (MVP Skeleton)
@@ -78,6 +82,7 @@ Notes:
 - `POST /v1/artifacts/packages`
 - `GET /v1/artifacts/resolve`
 - `GET /v1/artifacts/{id}`
+- `GET /v1/artifacts/{id}/download`
 - `POST /v1/artifacts/{id}/presign`
 - `GET /healthz`
 - `GET /readyz`

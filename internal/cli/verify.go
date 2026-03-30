@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strings"
 )
 
 type EnvironmentContext struct {
@@ -27,12 +28,16 @@ type VerifyReport struct {
 }
 
 func VerifyFile(path string, expectedSHA256 string) error {
+	parts := strings.SplitN(expectedSHA256, ":", 2)
+	if len(parts) != 2 || parts[0] != "sha256" {
+		return fmt.Errorf("unsupported checksum algorithm %q", expectedSHA256)
+	}
 	got, err := fileSHA256(path)
 	if err != nil {
 		return err
 	}
-	if got != expectedSHA256 {
-		return fmt.Errorf("checksum mismatch: got %s expected %s", got, expectedSHA256)
+	if got != parts[1] {
+		return fmt.Errorf("checksum mismatch: got sha256:%s expected %s", got, expectedSHA256)
 	}
 	return nil
 }

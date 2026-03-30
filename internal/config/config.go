@@ -3,37 +3,42 @@ package config
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 )
 
 type Config struct {
-	HTTPAddr        string
-	DatabaseURL     string
-	RedisAddr       string
-	S3Endpoint      string
-	S3AccessKey     string
-	S3SecretKey     string
-	S3Bucket        string
-	APIBaseURL      string
-	ShutdownTimeout time.Duration
-	SweeperInterval time.Duration
-	LeaseSeconds    int
+	HTTPAddr                 string
+	DatabaseURL              string
+	RedisAddr                string
+	S3Endpoint               string
+	S3AccessKey              string
+	S3SecretKey              string
+	S3Bucket                 string
+	APIBaseURL               string
+	ArtifactStorageDir       string
+	ArtifactBuildConcurrency int
+	ShutdownTimeout          time.Duration
+	SweeperInterval          time.Duration
+	LeaseSeconds             int
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		HTTPAddr:        envOrDefault("HTTP_ADDR", ":8080"),
-		DatabaseURL:     os.Getenv("DATABASE_URL"),
-		RedisAddr:       envOrDefault("REDIS_ADDR", "localhost:6379"),
-		S3Endpoint:      os.Getenv("S3_ENDPOINT"),
-		S3AccessKey:     os.Getenv("S3_ACCESS_KEY"),
-		S3SecretKey:     os.Getenv("S3_SECRET_KEY"),
-		S3Bucket:        os.Getenv("S3_BUCKET"),
-		APIBaseURL:      envOrDefault("API_BASE_URL", "http://localhost:8080"),
-		ShutdownTimeout: durationOrDefault("SHUTDOWN_TIMEOUT", 10*time.Second),
-		SweeperInterval: durationOrDefault("SWEEPER_INTERVAL", 5*time.Second),
-		LeaseSeconds:    intOrDefault("LEASE_SECONDS", 30),
+		HTTPAddr:                 envOrDefault("HTTP_ADDR", ":8080"),
+		DatabaseURL:              os.Getenv("DATABASE_URL"),
+		RedisAddr:                envOrDefault("REDIS_ADDR", "localhost:6379"),
+		S3Endpoint:               os.Getenv("S3_ENDPOINT"),
+		S3AccessKey:              os.Getenv("S3_ACCESS_KEY"),
+		S3SecretKey:              os.Getenv("S3_SECRET_KEY"),
+		S3Bucket:                 os.Getenv("S3_BUCKET"),
+		APIBaseURL:               envOrDefault("API_BASE_URL", "http://localhost:8080"),
+		ArtifactStorageDir:       envOrDefault("ARTIFACT_STORAGE_DIR", filepath.Join(os.TempDir(), "platform-artifacts")),
+		ArtifactBuildConcurrency: intOrDefault("ARTIFACT_BUILD_CONCURRENCY", 2),
+		ShutdownTimeout:          durationOrDefault("SHUTDOWN_TIMEOUT", 10*time.Second),
+		SweeperInterval:          durationOrDefault("SWEEPER_INTERVAL", 5*time.Second),
+		LeaseSeconds:             intOrDefault("LEASE_SECONDS", 30),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")

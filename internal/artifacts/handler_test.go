@@ -1,6 +1,7 @@
 package artifacts
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +26,7 @@ func TestCreatePackageReturnsJobID(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	srv.Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "job_id") {
+	if rec.Code != http.StatusAccepted || !strings.Contains(rec.Body.String(), "job_id") {
 		t.Fatalf("expected async package response, got %d %s", rec.Code, rec.Body.String())
 	}
 }
@@ -44,7 +45,7 @@ func TestCreatePackageReturnsArtifactIDThatCanBeFetchedAndPresigned(t *testing.T
 	createReq := httptest.NewRequest(http.MethodPost, "/v1/artifacts/packages", strings.NewReader(`{"dataset_id":1,"snapshot_id":2,"format":"yolo"}`))
 	createRec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(createRec, createReq)
-	if createRec.Code != http.StatusOK {
+	if createRec.Code != http.StatusAccepted {
 		t.Fatalf("create package failed: %d body=%s", createRec.Code, createRec.Body.String())
 	}
 
@@ -65,6 +66,9 @@ func TestCreatePackageReturnsArtifactIDThatCanBeFetchedAndPresigned(t *testing.T
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("get artifact failed: %d body=%s", getRec.Code, getRec.Body.String())
 	}
+	if !strings.Contains(getRec.Body.String(), `"status":"pending"`) {
+		t.Fatalf("expected pending artifact after queueing, got body=%s", getRec.Body.String())
+	}
 
 	presignReq := httptest.NewRequest(http.MethodPost, "/v1/artifacts/1/presign", strings.NewReader(`{"ttl_seconds":60}`))
 	presignRec := httptest.NewRecorder()
@@ -75,7 +79,8 @@ func TestCreatePackageReturnsArtifactIDThatCanBeFetchedAndPresigned(t *testing.T
 }
 
 func TestResolveArtifactByFormatAndVersion(t *testing.T) {
-	svc := NewService()
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(repo)
 	h := NewHandler(svc)
 	srv := server.NewHTTPServerWithModules(server.Modules{
 		Artifacts: server.ArtifactRoutes{
@@ -86,11 +91,26 @@ func TestResolveArtifactByFormatAndVersion(t *testing.T) {
 		},
 	})
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v1/artifacts/packages", strings.NewReader(`{"dataset_id":1,"snapshot_id":2,"format":"yolo","version":"v1"}`))
-	createRec := httptest.NewRecorder()
-	srv.Handler.ServeHTTP(createRec, createReq)
-	if createRec.Code != http.StatusOK {
-		t.Fatalf("create package failed: %d body=%s", createRec.Code, createRec.Body.String())
+	created, err := repo.Create(context.Background(), Artifact{
+		ProjectID:    1,
+		DatasetID:    1,
+		SnapshotID:   2,
+		ArtifactType: "dataset-export",
+		Format:       "yolo",
+		Version:      "v1",
+		Status:       StatusPending,
+	})
+	if err != nil {
+		t.Fatalf("create artifact: %v", err)
+	}
+	if _, err := repo.UpdateBuildResult(context.Background(), created.ID, BuildResult{
+		Status:      StatusReady,
+		URI:         "artifact://v1/package.yolo.tar.gz",
+		ManifestURI: "artifact://v1/manifest.json",
+		Checksum:    "sha256:abc123",
+		Size:        123,
+	}); err != nil {
+		t.Fatalf("mark artifact ready: %v", err)
 	}
 
 	resolveReq := httptest.NewRequest(http.MethodGet, "/v1/artifacts/resolve?format=yolo&version=v1", nil)

@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/minio/minio-go/v7"
 	"yolo-ave-mujica/internal/artifacts"
 	"yolo-ave-mujica/internal/config"
 	"yolo-ave-mujica/internal/datahub"
@@ -31,7 +33,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	modules, cleanup, sweepTick, err := buildModules(cfg)
+	modules, cleanup, sweepTick, err := buildModules(ctx, cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -44,8 +46,7 @@ func main() {
 	}
 }
 
-func buildModules(cfg config.Config) (server.Modules, func(), func(time.Time) error, error) {
-	ctx := context.Background()
+func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(), func(time.Time) error, error) {
 	pool, err := store.NewPostgresPool(ctx, cfg)
 	if err != nil {
 		return server.Modules{}, nil, nil, err
@@ -71,7 +72,26 @@ func buildModules(cfg config.Config) (server.Modules, func(), func(time.Time) er
 
 	versioningHandler := versioning.NewHandler(versioning.NewService())
 	reviewHandler := review.NewHandler(review.NewService())
-	artifactHandler := artifacts.NewHandler(artifacts.NewService())
+	artifactRepo := artifacts.NewPostgresRepository(pool)
+	artifactQuery := artifacts.NewExportQuery(pool)
+	artifactStorage := artifacts.NewFilesystemStorage(cfg.ArtifactStorageDir)
+	artifactSource := artifacts.ObjectSourceFunc(func(ctx context.Context, objectKey string) ([]byte, error) {
+		obj, err := s3Client.GetObject(ctx, cfg.S3Bucket, objectKey, minio.GetObjectOptions{})
+		if err != nil {
+			return nil, err
+		}
+		defer obj.Close()
+		return io.ReadAll(obj)
+	})
+	artifactBuilder := artifacts.NewBuilder(artifactSource)
+	artifactService := artifacts.NewServiceWithDependencies(artifactRepo, artifactQuery, artifactBuilder, artifactStorage)
+	if _, err := artifactService.MarkStaleBuildsFailed(ctx, "startup_recovery"); err != nil {
+		_ = redisClient.Close()
+		pool.Close()
+		return server.Modules{}, nil, nil, err
+	}
+	artifactService.StartBuildRunner(ctx, cfg.ArtifactBuildConcurrency)
+	artifactHandler := artifacts.NewHandler(artifactService)
 
 	modules := server.Modules{
 		DataHub: server.DataHubRoutes{
@@ -98,10 +118,11 @@ func buildModules(cfg config.Config) (server.Modules, func(), func(time.Time) er
 			RejectCandidate: reviewHandler.RejectCandidate,
 		},
 		Artifacts: server.ArtifactRoutes{
-			CreatePackage:   artifactHandler.CreatePackage,
-			GetArtifact:     artifactHandler.GetArtifact,
-			PresignArtifact: artifactHandler.PresignArtifact,
-			ResolveArtifact: artifactHandler.ResolveArtifact,
+			CreatePackage:    artifactHandler.CreatePackage,
+			GetArtifact:      artifactHandler.GetArtifact,
+			PresignArtifact:  artifactHandler.PresignArtifact,
+			ResolveArtifact:  artifactHandler.ResolveArtifact,
+			DownloadArtifact: artifactHandler.DownloadArtifact,
 		},
 		ReadyChecks: []server.ReadyCheck{
 			func(ctx context.Context) error {

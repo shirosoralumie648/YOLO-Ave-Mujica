@@ -43,18 +43,19 @@ type ReviewRoutes struct {
 }
 
 type ArtifactRoutes struct {
-	CreatePackage   http.HandlerFunc
-	GetArtifact     http.HandlerFunc
-	PresignArtifact http.HandlerFunc
-	ResolveArtifact http.HandlerFunc
+	CreatePackage    http.HandlerFunc
+	GetArtifact      http.HandlerFunc
+	PresignArtifact  http.HandlerFunc
+	ResolveArtifact  http.HandlerFunc
+	DownloadArtifact http.HandlerFunc
 }
 
 type Modules struct {
-	DataHub    DataHubRoutes
-	Jobs       JobRoutes
-	Versioning VersioningRoutes
-	Review     ReviewRoutes
-	Artifacts  ArtifactRoutes
+	DataHub     DataHubRoutes
+	Jobs        JobRoutes
+	Versioning  VersioningRoutes
+	Review      ReviewRoutes
+	Artifacts   ArtifactRoutes
 	ReadyChecks []ReadyCheck
 }
 
@@ -155,6 +156,7 @@ func NewHTTPServerWithModules(m Modules) *HTTPServer {
 		r.Post("/artifacts/packages", handlerOrNotImplemented(m.Artifacts.CreatePackage))
 		r.Get("/artifacts/resolve", handlerOrNotImplemented(m.Artifacts.ResolveArtifact))
 		r.Get("/artifacts/{id}", handlerOrNotImplemented(m.Artifacts.GetArtifact))
+		r.Get("/artifacts/{id}/download", handlerOrNotImplemented(m.Artifacts.DownloadArtifact))
 		r.Post("/artifacts/{id}/presign", handlerOrNotImplemented(m.Artifacts.PresignArtifact))
 	})
 
