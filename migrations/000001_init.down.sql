@@ -1,0 +1,12 @@
+drop table if exists audit_logs;
+drop table if exists artifacts;
+drop table if exists job_events;
+drop table if exists jobs;
+drop table if exists annotation_changes;
+drop table if exists annotation_candidates;
+drop table if exists annotations;
+drop table if exists categories;
+drop table if exists dataset_snapshots;
+drop table if exists dataset_items;
+drop table if exists datasets;
+drop table if exists projects;

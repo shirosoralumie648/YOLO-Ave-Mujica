@@ -51,6 +51,31 @@ func (h *Handler) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, snap)
 }
 
+type scanDatasetRequest struct {
+	ObjectKeys []string `json:"object_keys"`
+}
+
+func (h *Handler) ScanDataset(w http.ResponseWriter, r *http.Request) {
+	datasetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var in scanDatasetRequest
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	added, err := h.svc.ScanDataset(datasetID, in.ObjectKeys)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"added_items": added})
+}
+
 func (h *Handler) ListSnapshots(w http.ResponseWriter, r *http.Request) {
 	datasetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
@@ -64,6 +89,21 @@ func (h *Handler) ListSnapshots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": snaps})
+}
+
+func (h *Handler) ListItems(w http.ResponseWriter, r *http.Request) {
+	datasetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	items, err := h.svc.ListItems(datasetID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (h *Handler) PresignObject(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,193 @@
+openapi: 3.1.0
+info:
+  title: YOLO Platform MVP API
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      responses:
+        "200":
+          description: OK
+  /readyz:
+    get:
+      summary: Readiness probe
+      responses:
+        "200":
+          description: Ready
+  /v1/datasets:
+    post:
+      summary: Create dataset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_id, name, bucket]
+      responses:
+        "200":
+          description: Dataset created
+  /v1/datasets/{id}/scan:
+    post:
+      summary: Scan dataset object keys
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Scan accepted
+  /v1/datasets/{id}/snapshots:
+    post:
+      summary: Create snapshot
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Snapshot created
+    get:
+      summary: List snapshots
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Snapshot list
+  /v1/datasets/{id}/items:
+    get:
+      summary: List indexed dataset items
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Item list
+  /v1/objects/presign:
+    post:
+      summary: Create object read presign URL
+      responses:
+        "200":
+          description: Signed URL
+  /v1/jobs/zero-shot:
+    post:
+      summary: Queue zero-shot job
+      responses:
+        "200":
+          description: Job accepted
+  /v1/jobs/video-extract:
+    post:
+      summary: Queue video extraction job
+      responses:
+        "200":
+          description: Job accepted
+  /v1/jobs/cleaning:
+    post:
+      summary: Queue cleaning job
+      responses:
+        "200":
+          description: Job accepted
+  /v1/jobs/{job_id}:
+    get:
+      summary: Get job status
+      parameters:
+        - in: path
+          name: job_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Job details
+  /v1/jobs/{job_id}/events:
+    get:
+      summary: Get job event timeline
+      parameters:
+        - in: path
+          name: job_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Job event list
+  /v1/snapshots/diff:
+    post:
+      summary: Diff snapshots
+      responses:
+        "200":
+          description: Diff result
+  /v1/review/candidates:
+    get:
+      summary: List pending review candidates
+      responses:
+        "200":
+          description: Candidate list
+  /v1/review/candidates/{id}/accept:
+    post:
+      summary: Accept candidate
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Candidate accepted
+  /v1/review/candidates/{id}/reject:
+    post:
+      summary: Reject candidate
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Candidate rejected
+  /v1/artifacts/packages:
+    post:
+      summary: Queue artifact package build
+      responses:
+        "200":
+          description: Package job accepted
+  /v1/artifacts/{id}:
+    get:
+      summary: Get artifact metadata
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Artifact details
+  /v1/artifacts/{id}/presign:
+    post:
+      summary: Create artifact download presign URL
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Signed artifact URL

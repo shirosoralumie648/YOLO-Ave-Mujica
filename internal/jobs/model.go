@@ -15,10 +15,13 @@ const (
 type Job struct {
 	ID                   int64
 	ProjectID            int64
+	DatasetID            int64
+	SnapshotID           int64
 	JobType              string
 	Status               string
 	RequiredResourceType string
 	IdempotencyKey       string
+	WorkerID             string
 	Payload              map[string]any
 	TotalItems           int
 	SucceededItems       int
@@ -26,4 +29,8 @@ type Job struct {
 	CreatedAt            time.Time
 	StartedAt            *time.Time
 	FinishedAt           *time.Time
+	LeaseUntil           *time.Time
+	RetryCount           int
+	ErrorCode            string
+	ErrorMsg             string
 }
