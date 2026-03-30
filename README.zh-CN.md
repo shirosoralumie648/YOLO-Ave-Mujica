@@ -1,11 +1,13 @@
 # YOLO-Ave-Mujica
 
-一个面向生产场景的 MVP 仓库，用于验证数据集索引、标注工作流编排，以及训练产物导出与交付链路。
+一个面向生产场景的 YOLO 平台基础仓库，当前重点是打通 Data Hub、任务驱动的标注协作、审核流、训练任务与产物交付。
 
 ## 当前仓库包含什么
 
 - Go 控制面入口：`api-server`、`platform-cli`
+- Vite + React + TypeScript Web 控制台：`Task Overview`、`Task Queue`、`Task Detail`
 - Data Hub 能力：数据集创建、扫描、快照、条目列表、对象预签名
+- 项目任务与任务总览接口
 - Jobs 能力：任务创建、幂等、分发、租约恢复、事件查询
 - Review 和 Versioning 基础接口
 - Artifacts 能力：导出包构建、状态查询、版本解析、下载与校验
@@ -43,7 +45,23 @@ export S3_BUCKET=platform-dev
 export ARTIFACT_STORAGE_DIR=/tmp/platform-artifacts
 export ARTIFACT_BUILD_CONCURRENCY=2
 make migrate-up
+make web-install
+make api-dev
+```
+
+再开一个终端：
+
+```bash
+make web-dev
+```
+
+默认前端地址是 `http://127.0.0.1:5173`，会把 `/v1/*` 代理到 `http://127.0.0.1:8080`。默认首页是 `/projects/1/overview`。
+
+常用验证命令：
+
+```bash
 make test
+make web-build
 bash scripts/dev/smoke.sh
 ```
 
@@ -51,6 +69,10 @@ bash scripts/dev/smoke.sh
 
 ## 当前 API 能力
 
+- `GET /v1/projects/{id}/overview`
+- `GET /v1/projects/{id}/tasks`
+- `POST /v1/projects/{id}/tasks`
+- `GET /v1/tasks/{id}`
 - `POST /v1/datasets`
 - `POST /v1/datasets/{id}/scan`
 - `POST /v1/datasets/{id}/snapshots`
@@ -86,4 +108,9 @@ PYTHONPATH=. python3 -m unittest \
   workers.tests.test_partial_success \
   workers.tests.test_job_client \
   workers.tests.test_cleaning_rules -v
+```
+
+```bash
+cd apps/web && npm test
+cd apps/web && npm run build
 ```

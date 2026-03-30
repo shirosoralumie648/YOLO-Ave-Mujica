@@ -17,6 +17,18 @@ type HTTPServer struct {
 // ReadyCheck reports whether a required runtime dependency is ready for traffic.
 type ReadyCheck func(ctx context.Context) error
 
+// OverviewRoutes groups handlers for project-level operational summaries.
+type OverviewRoutes struct {
+	GetProjectOverview http.HandlerFunc
+}
+
+// TaskRoutes groups handlers for project task creation and inspection.
+type TaskRoutes struct {
+	ListProjectTasks  http.HandlerFunc
+	CreateProjectTask http.HandlerFunc
+	GetTask           http.HandlerFunc
+}
+
 // DataHubRoutes groups handlers for dataset and object-management endpoints.
 type DataHubRoutes struct {
 	CreateDataset          http.HandlerFunc
@@ -68,6 +80,8 @@ type ArtifactRoutes struct {
 // Modules collects optional route groups so the server can keep a stable MVP
 // route surface while individual modules are delivered incrementally.
 type Modules struct {
+	Overview    OverviewRoutes
+	Tasks       TaskRoutes
 	DataHub     DataHubRoutes
 	Jobs        JobRoutes
 	Versioning  VersioningRoutes
@@ -160,6 +174,11 @@ func NewHTTPServerWithModules(m Modules) *HTTPServer {
 	})
 
 	r.Route("/v1", func(r chi.Router) {
+		r.Get("/projects/{id}/overview", handlerOrNotImplemented(m.Overview.GetProjectOverview))
+		r.Get("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.ListProjectTasks))
+		r.Post("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.CreateProjectTask))
+		r.Get("/tasks/{id}", handlerOrNotImplemented(m.Tasks.GetTask))
+
 		r.Post("/datasets", handlerOrNotImplemented(m.DataHub.CreateDataset))
 		r.Post("/datasets/{id}/scan", handlerOrNotImplemented(m.DataHub.ScanDataset))
 		r.Post("/datasets/{id}/snapshots", handlerOrNotImplemented(m.DataHub.CreateSnapshot))

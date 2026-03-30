@@ -12,6 +12,14 @@ func okHandler(w http.ResponseWriter, _ *http.Request) {
 
 func newFakeModules() Modules {
 	return Modules{
+		Overview: OverviewRoutes{
+			GetProjectOverview: okHandler,
+		},
+		Tasks: TaskRoutes{
+			ListProjectTasks: okHandler,
+			CreateProjectTask: okHandler,
+			GetTask: okHandler,
+		},
 		DataHub: DataHubRoutes{
 			CreateDataset:          okHandler,
 			ScanDataset:            okHandler,
@@ -61,6 +69,10 @@ func TestMVPRoutesAreRegistered(t *testing.T) {
 		path   string
 	}{
 		{http.MethodPost, "/v1/datasets"},
+		{http.MethodGet, "/v1/projects/1/overview"},
+		{http.MethodGet, "/v1/projects/1/tasks"},
+		{http.MethodPost, "/v1/projects/1/tasks"},
+		{http.MethodGet, "/v1/tasks/1"},
 		{http.MethodPost, "/v1/datasets/1/scan"},
 		{http.MethodGet, "/v1/datasets/1/items"},
 		{http.MethodPost, "/v1/jobs/zero-shot"},

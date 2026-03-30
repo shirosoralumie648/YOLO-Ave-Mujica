@@ -1,4 +1,4 @@
-.PHONY: up-dev down-dev test migrate-up migrate-down migrate-version
+.PHONY: up-dev down-dev test migrate-up migrate-down migrate-version api-dev web-install web-dev web-test web-build
 
 up-dev:
 	@if command -v docker >/dev/null 2>&1; then \
@@ -31,9 +31,25 @@ migrate-version:
 	@DATABASE_URL=$${DATABASE_URL:?DATABASE_URL is required} \
 		GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go run ./cmd/migrate -command version
 
+api-dev:
+	GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go run ./cmd/api-server
+
+web-install:
+	cd apps/web && npm install
+
+web-dev:
+	cd apps/web && npm run dev
+
+web-test:
+	cd apps/web && npm test
+
+web-build:
+	cd apps/web && npm run build
+
 test:
 	GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go test ./...
 	PYTHONPATH=. python3 -m unittest \
 		workers.tests.test_partial_success \
 		workers.tests.test_job_client \
 		workers.tests.test_cleaning_rules -v
+	cd apps/web && npm test

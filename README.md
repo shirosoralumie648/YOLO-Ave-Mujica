@@ -1,6 +1,6 @@
 # YOLO-Ave-Mujica
 
-A production-oriented MVP foundation for dataset indexing, annotation workflow orchestration, and training artifact delivery.
+A production-oriented YOLO platform foundation for Data Hub, task-first annotation operations, review flow, training jobs, and artifact delivery.
 
 ## Documentation
 
@@ -9,8 +9,10 @@ A production-oriented MVP foundation for dataset indexing, annotation workflow o
 - 简体中文本地开发: `docs/development/local-quickstart.zh-CN.md`
 - 简体中文架构说明: `docs/development/architecture.zh-CN.md`
 
+- Vite + React + TypeScript web console with `Task Overview`, `Task Queue`, and `Task Detail`
 - Go control plane skeleton (`api-server`, `platform-cli`)
 - Data Hub basics (dataset/scan/items/snapshot APIs + object presign)
+- Task Overview and project task APIs
 - Job primitives (state machine, idempotent create model, lane dispatch, lease sweeper)
 - Review, diff, and artifact HTTP modules
 - Artifact packager helpers (`label_map`, `manifest`, `data.yaml`)
@@ -51,7 +53,23 @@ export S3_BUCKET=platform-dev
 export ARTIFACT_STORAGE_DIR=/tmp/platform-artifacts
 export ARTIFACT_BUILD_CONCURRENCY=2
 make migrate-up
+make web-install
+make api-dev
+```
+
+In another terminal:
+
+```bash
+make web-dev
+```
+
+The web console opens on `http://127.0.0.1:5173` and proxies `/v1/*` to `http://127.0.0.1:8080` by default. The default entry route is `/projects/1/overview`.
+
+Run verification with:
+
+```bash
 make test
+make web-build
 bash scripts/dev/smoke.sh
 ```
 
@@ -59,6 +77,10 @@ See `docs/development/local-quickstart.md` for the full local runbook.
 
 ## Implemented API Surface
 
+- `GET /v1/projects/{id}/overview`
+- `GET /v1/projects/{id}/tasks`
+- `POST /v1/projects/{id}/tasks`
+- `GET /v1/tasks/{id}`
 - `POST /v1/datasets`
 - `POST /v1/datasets/{id}/scan`
 - `POST /v1/datasets/{id}/snapshots`
@@ -105,4 +127,11 @@ PYTHONPATH=. python3 -m unittest \
   workers.tests.test_partial_success \
   workers.tests.test_job_client \
   workers.tests.test_cleaning_rules -v
+```
+
+Run the web console tests:
+
+```bash
+cd apps/web && npm test
+cd apps/web && npm run build
 ```
