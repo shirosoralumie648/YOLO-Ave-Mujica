@@ -77,6 +77,27 @@ type DatasetItem struct {
 	ETag      string `json:"etag"`
 }
 
+type ImportedAnnotation struct {
+	ObjectKey    string
+	CategoryName string
+	BBoxX        float64
+	BBoxY        float64
+	BBoxW        float64
+	BBoxH        float64
+}
+
+type ImportSnapshotInput struct {
+	Format    string
+	SourceURI string
+	Entries   []ImportedAnnotation
+}
+
+type ImportSnapshotResult struct {
+	DatasetID           int64
+	SnapshotID          int64
+	ImportedAnnotations int
+}
+
 // NewService builds the Data Hub service with the default in-memory repository.
 func NewService(presign PresignFunc) *Service {
 	return NewServiceWithRepository(presign, nil)
@@ -114,6 +135,11 @@ func (s *Service) CreateSnapshot(datasetID int64, in CreateSnapshotInput) (Snaps
 	return s.repo.CreateSnapshot(context.Background(), datasetID, in)
 }
 
+// GetSnapshot loads a single snapshot by identifier.
+func (s *Service) GetSnapshot(snapshotID int64) (Snapshot, error) {
+	return s.repo.GetSnapshot(context.Background(), snapshotID)
+}
+
 // ListSnapshots returns all known snapshots for a dataset.
 func (s *Service) ListSnapshots(datasetID int64) ([]Snapshot, error) {
 	return s.repo.ListSnapshots(context.Background(), datasetID)
@@ -141,6 +167,66 @@ func (s *Service) ScanDataset(datasetID int64, objectKeys []string) (int, error)
 // ListItems returns the stored objects associated with a dataset.
 func (s *Service) ListItems(datasetID int64) ([]DatasetItem, error) {
 	return s.repo.ListItems(context.Background(), datasetID)
+}
+
+// ImportSnapshot persists canonical annotations for an existing snapshot.
+func (s *Service) ImportSnapshot(snapshotID int64, in ImportSnapshotInput) (ImportSnapshotResult, error) {
+	if in.Format == "" {
+		return ImportSnapshotResult{}, errors.New("format is required")
+	}
+	if len(in.Entries) == 0 {
+		return ImportSnapshotResult{}, errors.New("entries are required")
+	}
+
+	snapshot, err := s.repo.GetSnapshot(context.Background(), snapshotID)
+	if err != nil {
+		return ImportSnapshotResult{}, err
+	}
+	dataset, err := s.repo.GetDataset(context.Background(), snapshot.DatasetID)
+	if err != nil {
+		return ImportSnapshotResult{}, err
+	}
+
+	imported := 0
+	for _, entry := range in.Entries {
+		if entry.ObjectKey == "" || entry.CategoryName == "" {
+			return ImportSnapshotResult{}, errors.New("object_key and category_name are required")
+		}
+		if entry.BBoxW <= 0 || entry.BBoxH <= 0 {
+			return ImportSnapshotResult{}, errors.New("bbox_w and bbox_h must be > 0")
+		}
+
+		item, err := s.repo.GetItemByObjectKey(context.Background(), dataset.ID, entry.ObjectKey)
+		if err != nil {
+			return ImportSnapshotResult{}, err
+		}
+		categoryID, err := s.repo.EnsureCategory(context.Background(), dataset.ProjectID, entry.CategoryName)
+		if err != nil {
+			return ImportSnapshotResult{}, err
+		}
+		if err := s.repo.CreateAnnotation(
+			context.Background(),
+			snapshot.ID,
+			dataset.ID,
+			item.ID,
+			item.ObjectKey,
+			categoryID,
+			entry.CategoryName,
+			entry.BBoxX,
+			entry.BBoxY,
+			entry.BBoxW,
+			entry.BBoxH,
+		); err != nil {
+			return ImportSnapshotResult{}, err
+		}
+		imported++
+	}
+
+	return ImportSnapshotResult{
+		DatasetID:           dataset.ID,
+		SnapshotID:          snapshot.ID,
+		ImportedAnnotations: imported,
+	}, nil
 }
 
 // PresignObject produces a short-lived object URL for dataset consumers.
