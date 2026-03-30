@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -28,12 +29,16 @@ func (h *Handler) CreatePackage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jobID, artifactID, err := h.svc.CreatePackageJob(in)
+	artifact, err := h.svc.CreatePackageJob(in)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"job_id": jobID, "artifact_id": artifactID, "status": "queued"})
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"job_id":      artifact.ID,
+		"artifact_id": artifact.ID,
+		"status":      artifact.Status,
+	})
 }
 
 func (h *Handler) GetArtifact(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +88,31 @@ func (h *Handler) ResolveArtifact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, artifact)
+	writeJSON(w, http.StatusOK, struct {
+		Artifact
+		DownloadURL string `json:"download_url"`
+	}{
+		Artifact:    artifact,
+		DownloadURL: "/v1/artifacts/" + strconv.FormatInt(artifact.ID, 10) + "/download",
+	})
+}
+
+func (h *Handler) DownloadArtifact(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	reader, _, artifact, err := h.svc.OpenArtifactArchive(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	defer reader.Close()
+
+	w.Header().Set("Content-Disposition", `attachment; filename="package.`+artifact.Format+`.tar.gz"`)
+	http.ServeContent(w, r, "package."+artifact.Format+".tar.gz", time.Time{}, reader)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

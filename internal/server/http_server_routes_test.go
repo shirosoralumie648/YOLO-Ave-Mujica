@@ -36,10 +36,11 @@ func newFakeModules() Modules {
 			RejectCandidate: okHandler,
 		},
 		Artifacts: ArtifactRoutes{
-			CreatePackage:   okHandler,
-			GetArtifact:     okHandler,
-			PresignArtifact: okHandler,
-			ResolveArtifact: okHandler,
+			CreatePackage:    okHandler,
+			GetArtifact:      okHandler,
+			PresignArtifact:  okHandler,
+			ResolveArtifact:  okHandler,
+			DownloadArtifact: okHandler,
 		},
 	}
 }
@@ -60,6 +61,7 @@ func TestMVPRoutesAreRegistered(t *testing.T) {
 		{http.MethodGet, "/v1/review/candidates"},
 		{http.MethodPost, "/v1/artifacts/packages"},
 		{http.MethodGet, "/v1/artifacts/resolve?format=yolo&version=v1"},
+		{http.MethodGet, "/v1/artifacts/1/download"},
 	}
 
 	for _, tc := range routes {

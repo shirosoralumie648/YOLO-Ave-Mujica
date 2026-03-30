@@ -13,11 +13,19 @@ api_base="${API_BASE_URL%/}"
 api_log="/tmp/api-server.log"
 started_local="false"
 pid=""
+pull_dir=""
+cli_bin=""
 
 cleanup() {
   if [[ "$started_local" == "true" && -n "$pid" ]]; then
     kill "$pid" >/dev/null 2>&1 || true
     wait "$pid" 2>/dev/null || true
+  fi
+  if [[ -n "$pull_dir" ]]; then
+    rm -rf "$pull_dir" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$cli_bin" ]]; then
+    rm -f "$cli_bin" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -124,3 +132,51 @@ job_response="$(curl -fsS -X POST "${api_base}/v1/jobs/zero-shot" \
 if [[ "$job_response" != *"job_id"* ]]; then
   fail "job create response missing job_id: $job_response"
 fi
+
+artifact_seed_response="$(GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go run ./cmd/dev-seed-artifact-smoke --dataset-id "${dataset_id}")" || fail "artifact smoke seed failed"
+
+snapshot_id="$(printf '%s' "$artifact_seed_response" | tr -d '\n' | sed -n 's/.*"snapshot_id":[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
+if [[ -z "$snapshot_id" ]]; then
+  fail "artifact seed response missing snapshot_id: $artifact_seed_response"
+fi
+
+artifact_version="v-smoke-${dataset_id}"
+artifact_response="$(curl -fsS -X POST "${api_base}/v1/artifacts/packages" \
+  -H 'Content-Type: application/json' \
+  -d "{\"dataset_id\":${dataset_id},\"snapshot_id\":${snapshot_id},\"format\":\"yolo\",\"version\":\"${artifact_version}\"}")" || fail "artifact package request failed"
+
+artifact_id="$(printf '%s' "$artifact_response" | tr -d '\n' | sed -n 's/.*"artifact_id":[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
+if [[ -z "$artifact_id" ]]; then
+  fail "artifact package response missing artifact_id: $artifact_response"
+fi
+
+artifact_ready="false"
+for _ in $(seq 1 60); do
+  artifact_status="$(curl -fsS "${api_base}/v1/artifacts/${artifact_id}")" || fail "artifact status request failed"
+  if [[ "$artifact_status" == *'"status":"ready"'* ]]; then
+    artifact_ready="true"
+    break
+  fi
+  if [[ "$artifact_status" == *'"status":"failed"'* ]]; then
+    fail "artifact build failed: $artifact_status"
+  fi
+  sleep 0.5
+done
+
+if [[ "$artifact_ready" != "true" ]]; then
+  fail "artifact did not become ready: $artifact_status"
+fi
+
+pull_dir="$(mktemp -d /tmp/platform-pull.XXXXXX)"
+cli_bin="$(mktemp /tmp/platform-cli-smoke.XXXXXX)"
+
+GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go build -o "$cli_bin" ./cmd/platform-cli >/dev/null || fail "platform-cli build failed"
+
+(
+  cd "$pull_dir"
+  API_BASE_URL="${api_base}" "$cli_bin" pull --format yolo --version "${artifact_version}" >/dev/null
+) || fail "artifact pull failed"
+
+[[ -f "${pull_dir}/pulled-${artifact_version}/data.yaml" ]] || fail "missing pulled data.yaml"
+[[ -f "${pull_dir}/pulled-${artifact_version}/train/images/a.jpg" ]] || fail "missing pulled train image"
+[[ -f "${pull_dir}/pulled-${artifact_version}/train/labels/a.txt" ]] || fail "missing pulled train label"

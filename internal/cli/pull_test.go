@@ -1,19 +1,30 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
 type fakeSource struct {
-	pkg PulledArtifact
-	err error
+	resolved    ResolvedArtifact
+	resolveErr  error
+	downloadErr error
+	download    func(context.Context, ResolvedArtifact, string) error
 }
 
-func (f fakeSource) FetchArtifact(format, version string) (PulledArtifact, error) {
-	return f.pkg, f.err
+func (f fakeSource) ResolveArtifact(format, version string) (ResolvedArtifact, error) {
+	return f.resolved, f.resolveErr
+}
+
+func (f fakeSource) DownloadArchive(ctx context.Context, artifact ResolvedArtifact, tempPath string) error {
+	if f.download != nil {
+		return f.download(ctx, artifact, tempPath)
+	}
+	return f.downloadErr
 }
 
 func TestVerifyManifestFailsOnChecksumMismatch(t *testing.T) {
@@ -23,26 +34,34 @@ func TestVerifyManifestFailsOnChecksumMismatch(t *testing.T) {
 		t.Fatalf("write temp file: %v", err)
 	}
 
-	err := VerifyFile(p, "deadbeef")
+	err := VerifyFile(p, "sha256:deadbeef")
 	if err == nil {
 		t.Fatal("expected checksum mismatch")
 	}
 }
 
+func TestVerifyFileRejectsNonSHA256Checksum(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write sample: %v", err)
+	}
+	if err := VerifyFile(path, "md5:deadbeef"); err == nil {
+		t.Fatal("expected non-sha256 checksum to be rejected")
+	}
+}
+
 func TestPullWritesVerifyReport(t *testing.T) {
 	dir := t.TempDir()
-	client := NewPullClientWithSource(dir, fakeSource{
-		pkg: PulledArtifact{
-			ArtifactID: 1,
-			Version:    "v1",
-			Entries: []ArtifactEntry{
-				{
-					Path:     "labels/0001.txt",
-					Body:     []byte("0 0.5 0.5 0.2 0.2\n"),
-					Checksum: "fe1d19931e4f3092800a55299efc6f6e0b806bed3838aa14aebbc94ba55aa549",
-				},
-			},
+	archivePath := writeTestArchive(t, testArchive{
+		Version: "v1",
+		Files: map[string][]byte{
+			"labels/0001.txt": []byte("0 0.5 0.5 0.2 0.2\n"),
 		},
+	})
+	client := NewPullClientWithSource(dir, fakeSource{
+		resolved: ResolvedArtifact{ArtifactID: 1, Version: "v1", DownloadURL: "http://example.test/v1/artifacts/1/download"},
+		download: copyArchiveDownloader(t, archivePath),
 	})
 
 	err := client.Pull(PullOptions{Format: "yolo", Version: "v1", AllowPartial: false, OutputDir: dir})
@@ -81,18 +100,18 @@ func TestPullWritesVerifyReport(t *testing.T) {
 
 func TestPullAllowPartialControlsChecksumMismatch(t *testing.T) {
 	dir := t.TempDir()
-	client := NewPullClientWithSource(dir, fakeSource{
-		pkg: PulledArtifact{
-			ArtifactID: 2,
-			Version:    "v2",
-			Entries: []ArtifactEntry{
-				{
-					Path:     "labels/0001.txt",
-					Body:     []byte("0 0.5 0.5 0.2 0.2\n"),
-					Checksum: "deadbeef",
-				},
-			},
+	archivePath := writeTestArchive(t, testArchive{
+		Version: "v2",
+		Files: map[string][]byte{
+			"labels/0001.txt": []byte("0 0.5 0.5 0.2 0.2\n"),
 		},
+		ManifestChecksums: map[string]string{
+			"labels/0001.txt": "sha256:deadbeef",
+		},
+	})
+	client := NewPullClientWithSource(dir, fakeSource{
+		resolved: ResolvedArtifact{ArtifactID: 2, Version: "v2", DownloadURL: "http://example.test/v1/artifacts/2/download"},
+		download: copyArchiveDownloader(t, archivePath),
 	})
 
 	err := client.Pull(PullOptions{
@@ -113,6 +132,23 @@ func TestPullAllowPartialControlsChecksumMismatch(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("expected allow-partial flow to succeed, got %v", err)
+	}
+}
+
+func TestPullDownloadsArchiveExtractsManifestAndCleansTempArchive(t *testing.T) {
+	dir := t.TempDir()
+	client := NewPullClientWithSource(dir, newArtifactDownloadSource(t))
+
+	err := client.Pull(PullOptions{Format: "yolo", Version: "v1", OutputDir: dir})
+	if err != nil {
+		t.Fatalf("pull returned error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "pulled-v1", "train", "images", "a.jpg")); err != nil {
+		t.Fatalf("missing extracted image: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "pull-v1.tar.gz.part")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected temporary archive cleanup, got err=%v", err)
 	}
 }
 

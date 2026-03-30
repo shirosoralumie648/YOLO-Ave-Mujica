@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -35,20 +38,19 @@ func (c *PullClient) OutputDir() string {
 	return c.outputDir
 }
 
-type ArtifactEntry struct {
-	Path     string
-	Body     []byte
-	Checksum string
-}
-
-type PulledArtifact struct {
-	ArtifactID int64
-	Version    string
-	Entries    []ArtifactEntry
-}
-
 type ArtifactSource interface {
-	FetchArtifact(format, version string) (PulledArtifact, error)
+	ResolveArtifact(format, version string) (ResolvedArtifact, error)
+	DownloadArchive(ctx context.Context, artifact ResolvedArtifact, tempPath string) error
+}
+
+type manifestDocument struct {
+	Version string          `json:"version"`
+	Entries []ManifestEntry `json:"entries"`
+}
+
+type ManifestEntry struct {
+	Path     string `json:"path"`
+	Checksum string `json:"checksum"`
 }
 
 // NewRootCommand returns a minimal command dispatcher for MVP CLI flows.
@@ -135,46 +137,51 @@ func (c *PullClient) Pull(opts PullOptions) error {
 		outDir = wd
 	}
 
-	pulled, err := c.source.FetchArtifact(opts.Format, opts.Version)
+	resolved, err := c.source.ResolveArtifact(opts.Format, opts.Version)
 	if err != nil {
 		return err
 	}
-	if pulled.Version == "" {
-		pulled.Version = opts.Version
+	if resolved.Version == "" {
+		resolved.Version = opts.Version
 	}
 
-	artifactDir := filepath.Join(outDir, "pulled-"+pulled.Version)
-	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	tempArchivePath := filepath.Join(outDir, fmt.Sprintf("pull-%s.tar.gz.part", resolved.Version))
+	defer os.Remove(tempArchivePath)
+
+	if err := c.source.DownloadArchive(ctx, resolved, tempArchivePath); err != nil {
+		return err
+	}
+
+	artifactDir := filepath.Join(outDir, "pulled-"+resolved.Version)
+	_ = os.RemoveAll(artifactDir)
+	if err := extractTarGz(tempArchivePath, artifactDir); err != nil {
+		return err
+	}
+
+	manifest, err := loadManifest(filepath.Join(artifactDir, "manifest.json"))
+	if err != nil {
 		return err
 	}
 
 	failedFiles := 0
 	var verifyErr error
-	manifestEntries := make([]map[string]any, 0, len(pulled.Entries))
-	for _, entry := range pulled.Entries {
-		targetPath := filepath.Join(artifactDir, entry.Path)
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(targetPath, entry.Body, 0o644); err != nil {
-			return err
-		}
+	for _, entry := range manifest.Entries {
+		targetPath := filepath.Join(artifactDir, filepath.FromSlash(entry.Path))
 		if err := VerifyFile(targetPath, entry.Checksum); err != nil {
 			failedFiles++
 			if verifyErr == nil {
 				verifyErr = err
 			}
 		}
-		manifestEntries = append(manifestEntries, map[string]any{
-			"path":     entry.Path,
-			"checksum": entry.Checksum,
-		})
 	}
 
 	report := VerifyReport{
-		ArtifactID:         pulled.ArtifactID,
-		Snapshot:           pulled.Version,
-		TotalFiles:         len(pulled.Entries),
+		ArtifactID:         resolved.ArtifactID,
+		Snapshot:           resolved.Version,
+		TotalFiles:         len(manifest.Entries),
 		FailedFiles:        failedFiles,
 		VerifiedAt:         time.Now().UTC().Format(time.RFC3339),
 		EnvironmentContext: buildEnvironmentContext(c.source),
@@ -184,17 +191,20 @@ func (c *PullClient) Pull(opts PullOptions) error {
 		return err
 	}
 
-	manifestPath := filepath.Join(artifactDir, "manifest.json")
-	manifestPayload, _ := json.MarshalIndent(map[string]any{
-		"version": pulled.Version,
-		"entries": manifestEntries,
-	}, "", "  ")
-	if err := os.WriteFile(manifestPath, manifestPayload, 0o644); err != nil {
-		return err
-	}
-
 	if verifyErr != nil && !opts.AllowPartial {
 		return verifyErr
 	}
 	return nil
+}
+
+func loadManifest(path string) (manifestDocument, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return manifestDocument{}, err
+	}
+	var manifest manifestDocument
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return manifestDocument{}, err
+	}
+	return manifest, nil
 }
