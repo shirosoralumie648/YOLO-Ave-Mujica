@@ -2,12 +2,14 @@ from typing import Any, Dict, Iterable, List, Set
 
 
 def classify_bbox(item: Dict[str, Any]) -> str:
+    """Classify a single annotation box as valid or invalid using width and height only."""
     if item.get("bbox_w", 0) <= 0 or item.get("bbox_h", 0) <= 0:
         return "invalid_bbox"
     return "ok"
 
 
 def run_rules(items: Iterable[Dict[str, Any]], taxonomy: Set[str], dark_threshold: float = 0.2) -> Dict[str, Any]:
+    """Run MVP cleaning rules and return summary counts, detailed issues, and removal candidates."""
     summary = {
         "invalid_bbox": 0,
         "category_mismatch": 0,

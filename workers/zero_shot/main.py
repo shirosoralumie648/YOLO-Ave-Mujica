@@ -4,7 +4,7 @@ from workers.common.job_client import emit_terminal
 
 
 def summarize_batch(total: int, ok: int, failed: int):
-    """Return terminal job status and counters for batch-oriented workers."""
+    """Convert batch counters into the terminal job status expected by the control plane."""
     if failed == 0:
         return "succeeded", {"total_items": total, "succeeded_items": ok, "failed_items": failed}
     if ok > 0:
@@ -13,6 +13,7 @@ def summarize_batch(total: int, ok: int, failed: int):
 
 
 def build_terminal_event(job_id: int, total: int, ok: int, failed: int):
+    """Build the terminal worker payload using the local worker identity fallback."""
     status, summary = summarize_batch(total=total, ok=ok, failed=failed)
     worker_id = os.getenv("WORKER_ID", "zero-shot-local")
     return emit_terminal(
