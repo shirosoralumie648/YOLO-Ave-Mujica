@@ -5,6 +5,7 @@ import (
 	"errors"
 )
 
+// PresignFunc resolves a short-lived object URL for a dataset item.
 type PresignFunc func(datasetID int64, objectKey string, ttlSeconds int) (string, error)
 
 // Service currently uses in-memory maps to keep MVP behavior deterministic in tests.
@@ -14,6 +15,7 @@ type Service struct {
 	presign PresignFunc
 }
 
+// Dataset is the minimal dataset record exposed by the MVP control plane.
 type Dataset struct {
 	ID        int64  `json:"id"`
 	ProjectID int64  `json:"project_id"`
@@ -22,6 +24,8 @@ type Dataset struct {
 	Prefix    string `json:"prefix"`
 }
 
+// Snapshot represents a logical dataset version that downstream jobs and
+// artifact exports can reference.
 type Snapshot struct {
 	ID              int64  `json:"id"`
 	DatasetID       int64  `json:"dataset_id"`
@@ -30,6 +34,7 @@ type Snapshot struct {
 	Note            string `json:"note,omitempty"`
 }
 
+// CreateDatasetInput contains the fields required to register a new dataset.
 type CreateDatasetInput struct {
 	ProjectID int64  `json:"project_id"`
 	Name      string `json:"name"`
@@ -37,17 +42,20 @@ type CreateDatasetInput struct {
 	Prefix    string `json:"prefix"`
 }
 
+// CreateSnapshotInput describes optional ancestry and notes for a new snapshot.
 type CreateSnapshotInput struct {
 	BasedOnSnapshotID *int64 `json:"based_on_snapshot_id,omitempty"`
 	Note              string `json:"note,omitempty"`
 }
 
+// PresignInput identifies which dataset object should receive a short-lived URL.
 type PresignInput struct {
 	DatasetID  int64  `json:"dataset_id"`
 	ObjectKey  string `json:"object_key"`
 	TTLSeconds int    `json:"ttl_seconds"`
 }
 
+// DatasetItem is the stored object metadata returned by dataset listing endpoints.
 type DatasetItem struct {
 	ID        int64  `json:"id"`
 	DatasetID int64  `json:"dataset_id"`
@@ -55,10 +63,12 @@ type DatasetItem struct {
 	ETag      string `json:"etag"`
 }
 
+// NewService builds the Data Hub service with the default in-memory repository.
 func NewService(presign PresignFunc) *Service {
 	return NewServiceWithRepository(presign, nil)
 }
 
+// NewServiceWithRepository builds the Data Hub service with an explicit repository.
 func NewServiceWithRepository(presign PresignFunc, repo Repository) *Service {
 	if repo == nil {
 		repo = NewInMemoryRepository()
@@ -69,6 +79,7 @@ func NewServiceWithRepository(presign PresignFunc, repo Repository) *Service {
 	}
 }
 
+// CreateDataset validates and persists a new dataset record.
 func (s *Service) CreateDataset(in CreateDatasetInput) (Dataset, error) {
 	if in.ProjectID <= 0 {
 		return Dataset{}, errors.New("project_id must be > 0")
@@ -79,22 +90,27 @@ func (s *Service) CreateDataset(in CreateDatasetInput) (Dataset, error) {
 	return s.repo.CreateDataset(context.Background(), in)
 }
 
+// CreateSnapshot persists a new logical version for the given dataset.
 func (s *Service) CreateSnapshot(datasetID int64, in CreateSnapshotInput) (Snapshot, error) {
 	return s.repo.CreateSnapshot(context.Background(), datasetID, in)
 }
 
+// ListSnapshots returns all known snapshots for a dataset.
 func (s *Service) ListSnapshots(datasetID int64) ([]Snapshot, error) {
 	return s.repo.ListSnapshots(context.Background(), datasetID)
 }
 
+// ScanDataset records object keys discovered under a dataset prefix.
 func (s *Service) ScanDataset(datasetID int64, objectKeys []string) (int, error) {
 	return s.repo.InsertItems(context.Background(), datasetID, objectKeys)
 }
 
+// ListItems returns the stored objects associated with a dataset.
 func (s *Service) ListItems(datasetID int64) ([]DatasetItem, error) {
 	return s.repo.ListItems(context.Background(), datasetID)
 }
 
+// PresignObject produces a short-lived object URL for dataset consumers.
 func (s *Service) PresignObject(in PresignInput) (string, error) {
 	if s.presign == nil {
 		return "", errors.New("presign function is not configured")

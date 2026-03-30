@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// PackageRequest describes a dataset-export build request accepted by the API.
 type PackageRequest struct {
 	ProjectID    int64             `json:"project_id"`
 	DatasetID    int64             `json:"dataset_id"`
@@ -17,6 +18,7 @@ type PackageRequest struct {
 	LabelMapJSON map[string]string `json:"label_map_json,omitempty"`
 }
 
+// Artifact tracks the lifecycle and downloadable metadata of an export package.
 type Artifact struct {
 	ID           int64             `json:"id"`
 	ProjectID    int64             `json:"project_id"`
@@ -35,6 +37,7 @@ type Artifact struct {
 	CreatedAt    time.Time         `json:"created_at"`
 }
 
+// Service coordinates artifact creation, background building, and archive access.
 type Service struct {
 	repo    Repository
 	query   *ExportQuery
@@ -43,14 +46,17 @@ type Service struct {
 	runner  *BuildRunner
 }
 
+// NewService builds an artifact service backed by in-memory defaults.
 func NewService() *Service {
 	return NewServiceWithDependencies(nil, nil, nil, nil)
 }
 
+// NewServiceWithRepository builds an artifact service with an explicit repository.
 func NewServiceWithRepository(repo Repository) *Service {
 	return NewServiceWithDependencies(repo, nil, nil, nil)
 }
 
+// NewServiceWithDependencies wires the artifact service with explicit build and storage dependencies.
 func NewServiceWithDependencies(repo Repository, query *ExportQuery, builder *Builder, storage ArtifactStorage) *Service {
 	if repo == nil {
 		repo = NewInMemoryRepository()
@@ -63,15 +69,18 @@ func NewServiceWithDependencies(repo Repository, query *ExportQuery, builder *Bu
 	}
 }
 
+// StartBuildRunner enables asynchronous artifact builds inside the API process.
 func (s *Service) StartBuildRunner(ctx context.Context, concurrency int) {
 	s.runner = NewBuildRunner(concurrency, s.buildArtifact)
 	s.runner.Start(ctx)
 }
 
+// MarkStaleBuildsFailed converts interrupted builds into a terminal failure state.
 func (s *Service) MarkStaleBuildsFailed(ctx context.Context, reason string) (int64, error) {
 	return s.repo.MarkStaleBuildsFailed(ctx, reason)
 }
 
+// CreatePackageJob validates the request and records a new artifact build job.
 func (s *Service) CreatePackageJob(in PackageRequest) (Artifact, error) {
 	if in.DatasetID <= 0 || in.SnapshotID <= 0 {
 		return Artifact{}, errors.New("dataset_id and snapshot_id are required")
@@ -107,6 +116,7 @@ func (s *Service) CreatePackageJob(in PackageRequest) (Artifact, error) {
 	return artifact, nil
 }
 
+// GetArtifact loads a single artifact by identifier.
 func (s *Service) GetArtifact(id int64) (Artifact, error) {
 	a, ok, err := s.repo.Get(context.Background(), id)
 	if err != nil {
@@ -118,6 +128,7 @@ func (s *Service) GetArtifact(id int64) (Artifact, error) {
 	return a, nil
 }
 
+// ResolveArtifact finds the ready artifact published under a format/version pair.
 func (s *Service) ResolveArtifact(format, version string) (Artifact, error) {
 	a, ok, err := s.repo.FindReadyByFormatVersion(context.Background(), format, version)
 	if err != nil {
@@ -129,6 +140,7 @@ func (s *Service) ResolveArtifact(format, version string) (Artifact, error) {
 	return a, nil
 }
 
+// PresignArtifact returns a short-lived download URL for an existing artifact.
 func (s *Service) PresignArtifact(id int64, ttlSeconds int) (string, error) {
 	a, err := s.GetArtifact(id)
 	if err != nil {
@@ -140,6 +152,7 @@ func (s *Service) PresignArtifact(id int64, ttlSeconds int) (string, error) {
 	return fmt.Sprintf("https://signed.local/artifacts/%d?ttl=%d&uri=%s", a.ID, ttlSeconds, a.URI), nil
 }
 
+// OpenArtifactArchive opens a ready artifact archive for HTTP download.
 func (s *Service) OpenArtifactArchive(ctx context.Context, id int64) (ReadSeekCloser, int64, Artifact, error) {
 	if s.storage == nil {
 		return nil, 0, Artifact{}, fmt.Errorf("artifact storage is not configured")
@@ -171,6 +184,8 @@ func (s *Service) buildArtifact(ctx context.Context, artifactID int64) error {
 		return fmt.Errorf("artifact %d not found", artifactID)
 	}
 
+	// Move to the building state before touching the filesystem so callers can
+	// distinguish queued records from active build attempts.
 	if _, err := s.repo.UpdateStatus(ctx, artifactID, StatusBuilding, ""); err != nil {
 		return err
 	}

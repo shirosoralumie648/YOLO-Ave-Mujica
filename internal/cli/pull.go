@@ -12,8 +12,10 @@ import (
 	"time"
 )
 
+// RootCommand is the minimal CLI dispatcher for MVP artifact delivery commands.
 type RootCommand struct{}
 
+// PullOptions configures artifact resolution, download, and local verification.
 type PullOptions struct {
 	Format       string
 	Version      string
@@ -21,23 +23,30 @@ type PullOptions struct {
 	OutputDir    string
 }
 
+// PullClient resolves an artifact, downloads its archive, extracts it, and
+// writes a local verification report for the pulled contents.
 type PullClient struct {
 	outputDir string
 	source    ArtifactSource
 }
 
+// NewPullClient builds a pull client that writes output under the provided directory.
 func NewPullClient(outputDir string) *PullClient {
 	return NewPullClientWithSource(outputDir, nil)
 }
 
+// NewPullClientWithSource builds a pull client with an explicit artifact source implementation.
 func NewPullClientWithSource(outputDir string, source ArtifactSource) *PullClient {
 	return &PullClient{outputDir: outputDir, source: source}
 }
 
+// OutputDir returns the default extraction directory configured for this client.
 func (c *PullClient) OutputDir() string {
 	return c.outputDir
 }
 
+// ArtifactSource abstracts where pull fetches artifacts from so tests can
+// replace the live HTTP implementation with deterministic fixtures.
 type ArtifactSource interface {
 	ResolveArtifact(format, version string) (ResolvedArtifact, error)
 	DownloadArchive(ctx context.Context, artifact ResolvedArtifact, tempPath string) error
@@ -48,6 +57,7 @@ type manifestDocument struct {
 	Entries []ManifestEntry `json:"entries"`
 }
 
+// ManifestEntry describes a single file and checksum in the pulled artifact manifest.
 type ManifestEntry struct {
 	Path     string `json:"path"`
 	Checksum string `json:"checksum"`
@@ -117,6 +127,7 @@ func runPull(args []string) error {
 	})
 }
 
+// Pull downloads, extracts, and verifies the requested artifact version.
 func (c *PullClient) Pull(opts PullOptions) error {
 	if opts.Format == "" || opts.Version == "" {
 		return fmt.Errorf("format and version are required")
@@ -169,6 +180,8 @@ func (c *PullClient) Pull(opts PullOptions) error {
 	failedFiles := 0
 	var verifyErr error
 	for _, entry := range manifest.Entries {
+		// Verify every manifest entry so local pulls can detect partial or corrupt
+		// artifact contents before consumers start using the extracted package.
 		targetPath := filepath.Join(artifactDir, filepath.FromSlash(entry.Path))
 		if err := VerifyFile(targetPath, entry.Checksum); err != nil {
 			failedFiles++
@@ -197,6 +210,7 @@ func (c *PullClient) Pull(opts PullOptions) error {
 	return nil
 }
 
+// loadManifest reads the extracted manifest document from disk.
 func loadManifest(path string) (manifestDocument, error) {
 	body, err := os.ReadFile(path)
 	if err != nil {

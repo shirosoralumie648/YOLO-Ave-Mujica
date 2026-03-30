@@ -9,12 +9,15 @@ import (
 	"yolo-ave-mujica/internal/jobs"
 )
 
+// HTTPServer owns the root handler for the control-plane HTTP surface.
 type HTTPServer struct {
 	Handler http.Handler
 }
 
+// ReadyCheck reports whether a required runtime dependency is ready for traffic.
 type ReadyCheck func(ctx context.Context) error
 
+// DataHubRoutes groups handlers for dataset and object-management endpoints.
 type DataHubRoutes struct {
 	CreateDataset  http.HandlerFunc
 	ScanDataset    http.HandlerFunc
@@ -24,6 +27,7 @@ type DataHubRoutes struct {
 	PresignObject  http.HandlerFunc
 }
 
+// JobRoutes groups handlers for asynchronous job creation and inspection.
 type JobRoutes struct {
 	CreateZeroShot     http.HandlerFunc
 	CreateVideoExtract http.HandlerFunc
@@ -32,16 +36,19 @@ type JobRoutes struct {
 	ListEvents         http.HandlerFunc
 }
 
+// VersioningRoutes groups handlers for snapshot diff operations.
 type VersioningRoutes struct {
 	DiffSnapshots http.HandlerFunc
 }
 
+// ReviewRoutes groups handlers for review candidate listing and decisions.
 type ReviewRoutes struct {
 	ListCandidates  http.HandlerFunc
 	AcceptCandidate http.HandlerFunc
 	RejectCandidate http.HandlerFunc
 }
 
+// ArtifactRoutes groups handlers for artifact creation, resolution, and download.
 type ArtifactRoutes struct {
 	CreatePackage    http.HandlerFunc
 	GetArtifact      http.HandlerFunc
@@ -50,6 +57,8 @@ type ArtifactRoutes struct {
 	DownloadArtifact http.HandlerFunc
 }
 
+// Modules collects optional route groups so the server can keep a stable MVP
+// route surface while individual modules are delivered incrementally.
 type Modules struct {
 	DataHub     DataHubRoutes
 	Jobs        JobRoutes
@@ -64,7 +73,7 @@ func NewHTTPServer() *HTTPServer {
 	return NewHTTPServerWithModules(Modules{})
 }
 
-// NewHTTPServerWithDataHub optionally wires Data Hub APIs when a handler is provided.
+// NewHTTPServerWithDataHub wires only the Data Hub routes for focused setups and tests.
 func NewHTTPServerWithDataHub(dataHubHandler *datahub.Handler) *HTTPServer {
 	var dataHubRoutes DataHubRoutes
 	if dataHubHandler != nil {
@@ -80,7 +89,7 @@ func NewHTTPServerWithDataHub(dataHubHandler *datahub.Handler) *HTTPServer {
 	return NewHTTPServerWithModules(Modules{DataHub: dataHubRoutes})
 }
 
-// NewHTTPServerWithDataHubAndJobs wires Data Hub and Job APIs for local runtime.
+// NewHTTPServerWithDataHubAndJobs wires the Data Hub and Job routes used by the local runtime.
 func NewHTTPServerWithDataHubAndJobs(dataHubHandler *datahub.Handler, jobsHandler *jobs.Handler) *HTTPServer {
 	var dataHubRoutes DataHubRoutes
 
@@ -111,7 +120,8 @@ func NewHTTPServerWithDataHubAndJobs(dataHubHandler *datahub.Handler, jobsHandle
 }
 
 // NewHTTPServerWithModules wires all MVP route groups.
-// Handlers left unset return 501 to keep route shape stable during incremental delivery.
+// Handlers left unset return 501 so clients can rely on route shape before
+// every backing module is fully implemented.
 func NewHTTPServerWithModules(m Modules) *HTTPServer {
 	r := chi.NewRouter()
 
@@ -168,6 +178,8 @@ func handlerOrNotImplemented(h http.HandlerFunc) http.HandlerFunc {
 		return h
 	}
 	return func(w http.ResponseWriter, _ *http.Request) {
+		// Keep unimplemented routes visible to clients instead of silently
+		// disappearing from the MVP surface.
 		http.Error(w, http.StatusText(http.StatusNotImplemented), http.StatusNotImplemented)
 	}
 }

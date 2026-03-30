@@ -46,7 +46,10 @@ func main() {
 	}
 }
 
+// buildModules wires the control-plane modules around the shared runtime dependencies.
 func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(), func(time.Time) error, error) {
+	// Build shared infrastructure first because every domain module depends on
+	// PostgreSQL, Redis, or object storage clients created here.
 	pool, err := store.NewPostgresPool(ctx, cfg)
 	if err != nil {
 		return server.Modules{}, nil, nil, err
@@ -85,11 +88,15 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	})
 	artifactBuilder := artifacts.NewBuilder(artifactSource)
 	artifactService := artifacts.NewServiceWithDependencies(artifactRepo, artifactQuery, artifactBuilder, artifactStorage)
+	// Recover unfinished builds before serving traffic so stale "building"
+	// rows do not survive an unclean restart indefinitely.
 	if _, err := artifactService.MarkStaleBuildsFailed(ctx, "startup_recovery"); err != nil {
 		_ = redisClient.Close()
 		pool.Close()
 		return server.Modules{}, nil, nil, err
 	}
+	// Start the in-process build runner only after startup recovery has
+	// finished so newly queued work starts from a known-good baseline.
 	artifactService.StartBuildRunner(ctx, cfg.ArtifactBuildConcurrency)
 	artifactHandler := artifacts.NewHandler(artifactService)
 
@@ -158,6 +165,7 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	}, jobSweeper.Tick, nil
 }
 
+// startBackgroundLoop runs a lightweight periodic callback until shutdown.
 func startBackgroundLoop(ctx context.Context, interval time.Duration, tick func(time.Time) error) {
 	if tick == nil || interval <= 0 {
 		return
@@ -172,6 +180,8 @@ func startBackgroundLoop(ctx context.Context, interval time.Duration, tick func(
 			case <-ctx.Done():
 				return
 			case now := <-ticker.C:
+				// The shared loop currently drives job sweeping, but keeping it
+				// generic makes future periodic runtime tasks easy to add.
 				if err := tick(now); err != nil {
 					log.Printf("background loop tick failed: %v", err)
 				}
