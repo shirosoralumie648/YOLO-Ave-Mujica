@@ -2,10 +2,10 @@ package overview
 
 import (
 	"errors"
+	"math"
 	"sort"
+	"time"
 
-	"yolo-ave-mujica/internal/jobs"
-	"yolo-ave-mujica/internal/review"
 	"yolo-ave-mujica/internal/tasks"
 )
 
@@ -14,28 +14,28 @@ type TaskSource interface {
 }
 
 type ReviewSource interface {
-	ListCandidates() []review.Candidate
+	PendingCandidateCount(projectID int64) (int, error)
 }
 
 type JobSource interface {
-	ListJobs(projectID int64) ([]jobs.Job, error)
+	FailedRecentJobCount(projectID int64) (int, error)
 }
 
 type BlockerCard struct {
-	TaskID   int64  `json:"task_id"`
-	Title    string `json:"title"`
-	Assignee string `json:"assignee"`
-	Reason   string `json:"reason"`
+	TaskID  int64  `json:"task_id"`
+	Title   string `json:"title"`
+	Reason  string `json:"reason"`
+	Status  string `json:"status"`
+	Minutes int64  `json:"minutes_idle"`
 }
 
 type Overview struct {
-	ProjectID        int64         `json:"project_id"`
-	OpenTasks        int           `json:"open_tasks"`
-	BlockedTasks     int           `json:"blocked_tasks"`
-	ReviewBacklog    int           `json:"review_backlog"`
-	FailedRecentJobs int           `json:"failed_recent_jobs"`
-	Blockers         []BlockerCard `json:"blockers"`
-	LongestIdleTask  *tasks.Task   `json:"longest_idle_task,omitempty"`
+	OpenTaskCount      int           `json:"open_task_count"`
+	BlockedTaskCount   int           `json:"blocked_task_count"`
+	ReviewBacklogCount int           `json:"review_backlog_count"`
+	FailedRecentJobs   int           `json:"failed_recent_jobs"`
+	Blockers           []BlockerCard `json:"blockers"`
+	LongestIdleTask    *tasks.Task   `json:"longest_idle_task,omitempty"`
 }
 
 type Service struct {
@@ -58,8 +58,7 @@ func (s *Service) BuildOverview(projectID int64) (Overview, error) {
 	}
 
 	out := Overview{
-		ProjectID: projectID,
-		Blockers:  []BlockerCard{},
+		Blockers: []BlockerCard{},
 	}
 
 	if s.tasks != nil {
@@ -67,21 +66,24 @@ func (s *Service) BuildOverview(projectID int64) (Overview, error) {
 		if err != nil {
 			return Overview{}, err
 		}
+		now := time.Now().UTC()
 		for _, item := range items {
 			if item.Status != tasks.StatusDone {
-				out.OpenTasks++
+				out.OpenTaskCount++
 				if out.LongestIdleTask == nil || item.LastActivityAt.Before(out.LongestIdleTask.LastActivityAt) {
 					taskCopy := item
 					out.LongestIdleTask = &taskCopy
 				}
 			}
 			if item.Status == tasks.StatusBlocked {
-				out.BlockedTasks++
+				idleMinutes := int64(math.Max(0, now.Sub(item.LastActivityAt).Minutes()))
+				out.BlockedTaskCount++
 				out.Blockers = append(out.Blockers, BlockerCard{
-					TaskID:   item.ID,
-					Title:    item.Title,
-					Assignee: item.Assignee,
-					Reason:   item.BlockerReason,
+					TaskID:  item.ID,
+					Title:   item.Title,
+					Reason:  item.BlockerReason,
+					Status:  item.Status,
+					Minutes: idleMinutes,
 				})
 			}
 		}
@@ -89,24 +91,19 @@ func (s *Service) BuildOverview(projectID int64) (Overview, error) {
 	}
 
 	if s.reviews != nil {
-		candidates := s.reviews.ListCandidates()
-		for _, candidate := range candidates {
-			if candidate.ReviewStatus == "" || candidate.ReviewStatus == "pending" {
-				out.ReviewBacklog++
-			}
-		}
-	}
-
-	if s.jobs != nil {
-		jobItems, err := s.jobs.ListJobs(projectID)
+		pending, err := s.reviews.PendingCandidateCount(projectID)
 		if err != nil {
 			return Overview{}, err
 		}
-		for _, job := range jobItems {
-			if job.Status == jobs.StatusFailed {
-				out.FailedRecentJobs++
-			}
+		out.ReviewBacklogCount = pending
+	}
+
+	if s.jobs != nil {
+		failed, err := s.jobs.FailedRecentJobCount(projectID)
+		if err != nil {
+			return Overview{}, err
 		}
+		out.FailedRecentJobs = failed
 	}
 
 	return out, nil

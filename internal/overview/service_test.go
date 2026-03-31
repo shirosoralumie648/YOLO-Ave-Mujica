@@ -4,8 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"yolo-ave-mujica/internal/jobs"
-	"yolo-ave-mujica/internal/review"
 	"yolo-ave-mujica/internal/tasks"
 )
 
@@ -18,25 +16,19 @@ func (f fakeTaskSource) ListTasks(_ int64, _ tasks.ListTasksFilter) ([]tasks.Tas
 }
 
 type fakeReviewSource struct {
-	items []review.Candidate
+	pending int
 }
 
-func (f fakeReviewSource) ListCandidates() []review.Candidate {
-	return f.items
+func (f fakeReviewSource) PendingCandidateCount(_ int64) (int, error) {
+	return f.pending, nil
 }
 
 type fakeJobSource struct {
-	items []jobs.Job
+	failed int
 }
 
-func (f fakeJobSource) ListJobs(projectID int64) ([]jobs.Job, error) {
-	out := make([]jobs.Job, 0, len(f.items))
-	for _, item := range f.items {
-		if item.ProjectID == projectID {
-			out = append(out, item)
-		}
-	}
-	return out, nil
+func (f fakeJobSource) FailedRecentJobCount(_ int64) (int, error) {
+	return f.failed, nil
 }
 
 func TestServiceBuildOverviewIncludesLongestIdleAndBlockers(t *testing.T) {
@@ -47,42 +39,27 @@ func TestServiceBuildOverviewIncludesLongestIdleAndBlockers(t *testing.T) {
 				{
 					ID:             1,
 					ProjectID:      1,
-					Title:          "Label batch A",
-					Status:         tasks.StatusInProgress,
-					Assignee:       "annotator-1",
-					LastActivityAt: now.Add(-2 * time.Hour),
-				},
-				{
-					ID:             2,
-					ProjectID:      1,
 					Title:          "Fix missing masks",
 					Status:         tasks.StatusBlocked,
-					Assignee:       "annotator-2",
+					Assignee:       "annotator-1",
 					BlockerReason:  "missing source images",
 					LastActivityAt: now.Add(-5 * time.Hour),
 				},
 				{
-					ID:             3,
+					ID:             2,
 					ProjectID:      1,
-					Title:          "Done task",
-					Status:         tasks.StatusDone,
-					Assignee:       "annotator-3",
-					LastActivityAt: now.Add(-8 * time.Hour),
+					Title:          "Label batch A",
+					Status:         tasks.StatusQueued,
+					Assignee:       "annotator-2",
+					LastActivityAt: now.Add(-2 * time.Hour),
 				},
 			},
 		},
 		fakeReviewSource{
-			items: []review.Candidate{
-				{ID: 10, ReviewStatus: "pending"},
-				{ID: 11, ReviewStatus: "pending"},
-			},
+			pending: 5,
 		},
 		fakeJobSource{
-			items: []jobs.Job{
-				{ID: 20, ProjectID: 1, Status: jobs.StatusFailed},
-				{ID: 21, ProjectID: 1, Status: jobs.StatusSucceeded},
-				{ID: 22, ProjectID: 2, Status: jobs.StatusFailed},
-			},
+			failed: 2,
 		},
 	)
 
@@ -91,25 +68,25 @@ func TestServiceBuildOverviewIncludesLongestIdleAndBlockers(t *testing.T) {
 		t.Fatalf("build overview: %v", err)
 	}
 
-	if got.OpenTasks != 2 {
-		t.Fatalf("expected open_tasks=2, got %d", got.OpenTasks)
+	if got.OpenTaskCount != 2 {
+		t.Fatalf("expected open_task_count=2, got %d", got.OpenTaskCount)
 	}
-	if got.BlockedTasks != 1 {
-		t.Fatalf("expected blocked_tasks=1, got %d", got.BlockedTasks)
+	if got.BlockedTaskCount != 1 {
+		t.Fatalf("expected blocked_task_count=1, got %d", got.BlockedTaskCount)
 	}
-	if got.ReviewBacklog != 2 {
-		t.Fatalf("expected review_backlog=2, got %d", got.ReviewBacklog)
+	if got.ReviewBacklogCount != 5 {
+		t.Fatalf("expected review_backlog_count=5, got %d", got.ReviewBacklogCount)
 	}
-	if got.FailedRecentJobs != 1 {
-		t.Fatalf("expected failed_recent_jobs=1, got %d", got.FailedRecentJobs)
+	if got.FailedRecentJobs != 2 {
+		t.Fatalf("expected failed_recent_jobs=2, got %d", got.FailedRecentJobs)
 	}
 	if len(got.Blockers) != 1 {
 		t.Fatalf("expected 1 blocker card, got %d", len(got.Blockers))
 	}
-	if got.Blockers[0].TaskID != 2 || got.Blockers[0].Reason != "missing source images" {
+	if got.Blockers[0].TaskID != 1 || got.Blockers[0].Reason != "missing source images" {
 		t.Fatalf("unexpected blocker card: %+v", got.Blockers[0])
 	}
-	if got.LongestIdleTask == nil || got.LongestIdleTask.ID != 2 {
-		t.Fatalf("expected longest idle task id 2, got %+v", got.LongestIdleTask)
+	if got.LongestIdleTask == nil || got.LongestIdleTask.ID != 1 {
+		t.Fatalf("expected longest idle task id 1, got %+v", got.LongestIdleTask)
 	}
 }
