@@ -68,3 +68,9 @@ Smoke 脚本会验证以下链路：
 ```bash
 make down-dev
 ```
+
+### 运行 Web 控制台
+
+1. `make web-install`
+2. `make web-dev`
+3. 打开 Vite 输出的本地地址，并保持 API 服务运行在 `http://localhost:8080`

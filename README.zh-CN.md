@@ -87,3 +87,9 @@ PYTHONPATH=. python3 -m unittest \
   workers.tests.test_job_client \
   workers.tests.test_cleaning_rules -v
 ```
+
+### 运行 Web 控制台
+
+1. `make web-install`
+2. `make web-dev`
+3. 打开 Vite 输出的本地地址，并保持 API 服务运行在 `http://localhost:8080`

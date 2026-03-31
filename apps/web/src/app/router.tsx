@@ -1,15 +1,8 @@
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppShell } from "./layout/app-shell";
 import { TaskOverviewPage } from "../features/overview/task-overview-page";
-
-function PlaceholderPage({ title }: { title: string }) {
-  return (
-    <section>
-      <h1>{title}</h1>
-      <p>Page scaffold.</p>
-    </section>
-  );
-}
+import { TaskListPage } from "../features/tasks/task-list-page";
+import { TaskDetailPage } from "../features/tasks/task-detail-page";
 
 export const router = createBrowserRouter([
   {
@@ -21,8 +14,8 @@ export const router = createBrowserRouter([
     element: <AppShell />,
     children: [
       { path: "overview", element: <TaskOverviewPage /> },
-      { path: "tasks", element: <PlaceholderPage title="Tasks" /> },
-      { path: "tasks/:taskId", element: <PlaceholderPage title="Task Detail" /> },
+      { path: "tasks", element: <TaskListPage /> },
+      { path: "tasks/:taskId", element: <TaskDetailPage /> },
     ],
   },
 ]);

@@ -1,4 +1,4 @@
-.PHONY: up-dev down-dev test migrate-up migrate-down migrate-version
+.PHONY: up-dev down-dev test migrate-up migrate-down migrate-version web-install web-dev web-test web-build
 
 up-dev:
 	@if command -v docker >/dev/null 2>&1; then \
@@ -37,3 +37,15 @@ test:
 		workers.tests.test_partial_success \
 		workers.tests.test_job_client \
 		workers.tests.test_cleaning_rules -v
+
+web-install:
+	cd apps/web && npm install
+
+web-dev:
+	cd apps/web && npm run dev
+
+web-test:
+	cd apps/web && npm test
+
+web-build:
+	cd apps/web && npm run build

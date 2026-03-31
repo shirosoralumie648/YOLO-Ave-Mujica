@@ -70,3 +70,9 @@ If the API is not already running, the smoke script starts a temporary local API
 ```bash
 make down-dev
 ```
+
+### Run the web console
+
+1. `make web-install`
+2. `make web-dev`
+3. Open the Vite URL and keep the API server running on `http://localhost:8080`

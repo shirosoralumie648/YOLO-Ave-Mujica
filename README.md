@@ -106,3 +106,9 @@ PYTHONPATH=. python3 -m unittest \
   workers.tests.test_job_client \
   workers.tests.test_cleaning_rules -v
 ```
+
+### Run the web console
+
+1. `make web-install`
+2. `make web-dev`
+3. Open the Vite URL and keep the API server running on `http://localhost:8080`
