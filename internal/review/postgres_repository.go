@@ -48,6 +48,21 @@ func (r *PostgresRepository) ListPending() ([]Candidate, error) {
 	return items, rows.Err()
 }
 
+func (r *PostgresRepository) PendingCandidateCount(projectID int64) (int, error) {
+	var count int
+	err := r.pool.QueryRow(context.Background(), `
+		select count(*)
+		from annotation_candidates ac
+		join datasets d on d.id = ac.dataset_id
+		where ac.review_status = 'pending'
+		  and d.project_id = $1
+	`, projectID).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (r *PostgresRepository) Accept(candidateID int64, reviewer string) error {
 	return r.transitionCandidate(candidateID, reviewer, "accepted", "review.accept", true)
 }

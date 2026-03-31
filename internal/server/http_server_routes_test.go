@@ -16,9 +16,9 @@ func newFakeModules() Modules {
 			GetProjectOverview: okHandler,
 		},
 		Tasks: TaskRoutes{
-			ListProjectTasks: okHandler,
+			ListProjectTasks:  okHandler,
 			CreateProjectTask: okHandler,
-			GetTask: okHandler,
+			GetTask:           okHandler,
 		},
 		DataHub: DataHubRoutes{
 			CreateDataset:          okHandler,

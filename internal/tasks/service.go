@@ -26,6 +26,12 @@ func (s *Service) CreateTask(in CreateTaskInput) (Task, error) {
 	if in.ProjectID <= 0 {
 		return Task{}, errors.New("project_id must be > 0")
 	}
+	if in.DatasetID != nil && *in.DatasetID <= 0 {
+		return Task{}, errors.New("dataset_id must be > 0")
+	}
+	if in.SnapshotID != nil && *in.SnapshotID <= 0 {
+		return Task{}, errors.New("snapshot_id must be > 0")
+	}
 	in.Title = strings.TrimSpace(in.Title)
 	if in.Title == "" {
 		return Task{}, errors.New("title is required")

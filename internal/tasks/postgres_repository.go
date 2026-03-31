@@ -2,8 +2,11 @@ package tasks
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,6 +19,10 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 }
 
 func (r *PostgresRepository) CreateTask(ctx context.Context, in CreateTaskInput) (Task, error) {
+	if err := r.validateSnapshotProject(ctx, in.ProjectID, in.SnapshotID); err != nil {
+		return Task{}, err
+	}
+
 	var task Task
 	var datasetID, snapshotID *int64
 	var dueAt *time.Time
@@ -48,6 +55,27 @@ func (r *PostgresRepository) CreateTask(ctx context.Context, in CreateTaskInput)
 	task.SnapshotID = snapshotID
 	task.DueAt = dueAt
 	return task, nil
+}
+
+func (r *PostgresRepository) validateSnapshotProject(ctx context.Context, projectID int64, snapshotID *int64) error {
+	if snapshotID == nil {
+		return nil
+	}
+
+	var matched bool
+	err := r.pool.QueryRow(ctx, `
+		select true
+		from dataset_snapshots ds
+		join datasets d on d.id = ds.dataset_id
+		where ds.id = $1 and d.project_id = $2
+	`, *snapshotID, projectID).Scan(&matched)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	return fmt.Errorf("snapshot %d does not belong to project %d", *snapshotID, projectID)
 }
 
 func (r *PostgresRepository) ListProjectTasks(ctx context.Context, projectID int64) ([]Task, error) {
