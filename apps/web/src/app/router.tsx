@@ -1,6 +1,6 @@
 import { createBrowserRouter, Navigate } from "react-router-dom";
-
 import { AppShell } from "./layout/app-shell";
+import { TaskOverviewPage } from "../features/overview/task-overview-page";
 
 function PlaceholderPage({ title }: { title: string }) {
   return (
@@ -20,7 +20,7 @@ export const router = createBrowserRouter([
     path: "/projects/:projectId",
     element: <AppShell />,
     children: [
-      { path: "overview", element: <PlaceholderPage title="Overview" /> },
+      { path: "overview", element: <TaskOverviewPage /> },
       { path: "tasks", element: <PlaceholderPage title="Tasks" /> },
       { path: "tasks/:taskId", element: <PlaceholderPage title="Task Detail" /> },
     ],
