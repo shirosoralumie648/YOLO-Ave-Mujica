@@ -81,3 +81,12 @@ func (s *Service) GetCandidate(id int64) (Candidate, bool) {
 	}
 	return Candidate{}, false
 }
+
+func (s *Service) PendingCandidateCount(projectID int64) (int, error) {
+	if repo, ok := s.repo.(interface {
+		PendingCandidateCount(projectID int64) (int, error)
+	}); ok {
+		return repo.PendingCandidateCount(projectID)
+	}
+	return len(s.ListCandidates()), nil
+}

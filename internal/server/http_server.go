@@ -54,6 +54,18 @@ type ReviewRoutes struct {
 	RejectCandidate http.HandlerFunc
 }
 
+// TaskRoutes groups handlers for project task list/create and task detail.
+type TaskRoutes struct {
+	ListTasks  http.HandlerFunc
+	CreateTask http.HandlerFunc
+	GetTask    http.HandlerFunc
+}
+
+// OverviewRoutes groups handlers for project overview cards.
+type OverviewRoutes struct {
+	GetProjectOverview http.HandlerFunc
+}
+
 // ArtifactRoutes groups handlers for artifact creation, resolution, and download.
 type ArtifactRoutes struct {
 	CreatePackage    http.HandlerFunc
@@ -72,6 +84,8 @@ type Modules struct {
 	Jobs        JobRoutes
 	Versioning  VersioningRoutes
 	Review      ReviewRoutes
+	Tasks       TaskRoutes
+	Overview    OverviewRoutes
 	Artifacts   ArtifactRoutes
 	ReadyChecks []ReadyCheck
 }
@@ -179,6 +193,10 @@ func NewHTTPServerWithModules(m Modules) *HTTPServer {
 		r.Get("/review/candidates", handlerOrNotImplemented(m.Review.ListCandidates))
 		r.Post("/review/candidates/{id}/accept", handlerOrNotImplemented(m.Review.AcceptCandidate))
 		r.Post("/review/candidates/{id}/reject", handlerOrNotImplemented(m.Review.RejectCandidate))
+		r.Get("/projects/{id}/overview", handlerOrNotImplemented(m.Overview.GetProjectOverview))
+		r.Get("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.ListTasks))
+		r.Post("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.CreateTask))
+		r.Get("/tasks/{id}", handlerOrNotImplemented(m.Tasks.GetTask))
 
 		r.Post("/artifacts/packages", handlerOrNotImplemented(m.Artifacts.CreatePackage))
 		r.Post("/snapshots/{id}/export", handlerOrNotImplemented(m.Artifacts.ExportSnapshot))

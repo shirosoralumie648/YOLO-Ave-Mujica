@@ -16,11 +16,13 @@ import (
 	"yolo-ave-mujica/internal/config"
 	"yolo-ave-mujica/internal/datahub"
 	"yolo-ave-mujica/internal/jobs"
+	"yolo-ave-mujica/internal/overview"
 	"yolo-ave-mujica/internal/queue"
 	"yolo-ave-mujica/internal/review"
 	"yolo-ave-mujica/internal/server"
 	"yolo-ave-mujica/internal/storage"
 	"yolo-ave-mujica/internal/store"
+	"yolo-ave-mujica/internal/tasks"
 	"yolo-ave-mujica/internal/versioning"
 )
 
@@ -80,7 +82,14 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	jobSweeper := jobs.NewSweeper(jobsRepo, jobs.NewRedisPublisher(redisClient), 3)
 
 	versioningHandler := versioning.NewHandler(versioning.NewServiceWithRepository(versioning.NewPostgresRepository(pool)))
-	reviewHandler := review.NewHandler(review.NewServiceWithRepository(review.NewPostgresRepository(pool)))
+	reviewRepo := review.NewPostgresRepository(pool)
+	reviewSvc := review.NewServiceWithRepository(reviewRepo)
+	reviewHandler := review.NewHandler(reviewSvc)
+	taskRepo := tasks.NewPostgresRepository(pool)
+	taskSvc := tasks.NewService(taskRepo)
+	taskHandler := tasks.NewHandler(taskSvc)
+	overviewSvc := overview.NewService(taskSvc, reviewSvc, jobsRepo)
+	overviewHandler := overview.NewHandler(overviewSvc)
 
 	artifactRepo := artifacts.NewPostgresRepository(pool)
 	artifactQuery := artifacts.NewExportQuery(pool)
@@ -107,7 +116,7 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	artifactService.StartBuildRunner(ctx, cfg.ArtifactBuildConcurrency)
 	artifactHandler := artifacts.NewHandler(artifactService)
 
-	modules := buildModulesWithHandlers(reviewHandler, artifactHandler)
+	modules := buildModulesWithHandlers(reviewHandler, artifactHandler, taskHandler, overviewHandler)
 	modules.DataHub = server.DataHubRoutes{
 		CreateDataset:          dataHubHandler.CreateDataset,
 		ScanDataset:            dataHubHandler.ScanDataset,
@@ -185,13 +194,25 @@ func (s s3ObjectScanner) ListObjects(bucket, prefix string) ([]datahub.ScannedOb
 	return out, nil
 }
 
-func buildModulesWithHandlers(reviewHandler *review.Handler, artifactHandler *artifacts.Handler) server.Modules {
+func buildModulesWithHandlers(reviewHandler *review.Handler, artifactHandler *artifacts.Handler, taskHandler *tasks.Handler, overviewHandler *overview.Handler) server.Modules {
 	modules := server.Modules{}
 	if reviewHandler != nil {
 		modules.Review = server.ReviewRoutes{
 			ListCandidates:  reviewHandler.ListCandidates,
 			AcceptCandidate: reviewHandler.AcceptCandidate,
 			RejectCandidate: reviewHandler.RejectCandidate,
+		}
+	}
+	if taskHandler != nil {
+		modules.Tasks = server.TaskRoutes{
+			ListTasks:  taskHandler.ListTasks,
+			CreateTask: taskHandler.CreateTask,
+			GetTask:    taskHandler.GetTask,
+		}
+	}
+	if overviewHandler != nil {
+		modules.Overview = server.OverviewRoutes{
+			GetProjectOverview: overviewHandler.GetProjectOverview,
 		}
 	}
 	if artifactHandler != nil {

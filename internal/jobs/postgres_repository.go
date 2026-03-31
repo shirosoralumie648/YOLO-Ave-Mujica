@@ -289,6 +289,21 @@ func (r *PostgresRepository) ListEvents(jobID int64) ([]Event, error) {
 	return events, rows.Err()
 }
 
+func (r *PostgresRepository) FailedRecentJobCount(projectID int64) (int, error) {
+	var count int
+	err := r.pool.QueryRow(context.Background(), `
+		select count(*)
+		from jobs
+		where project_id = $1
+		  and status = $2
+		  and coalesce(finished_at, created_at) >= now() - interval '24 hours'
+	`, projectID, StatusFailed).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func scanJob(row interface {
 	Scan(dest ...any) error
 }) (*Job, error) {

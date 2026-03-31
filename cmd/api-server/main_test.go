@@ -74,7 +74,7 @@ func TestBuildModulesWithHandlersUsesInjectedReviewAndArtifacts(t *testing.T) {
 	}
 	artifactHandler := artifacts.NewHandler(artifactSvc)
 
-	modules := buildModulesWithHandlers(reviewHandler, artifactHandler)
+	modules := buildModulesWithHandlers(reviewHandler, artifactHandler, nil, nil)
 	srv := server.NewHTTPServerWithModules(modules)
 
 	reviewReq := httptest.NewRequest(http.MethodGet, "/v1/review/candidates", nil)
@@ -89,5 +89,18 @@ func TestBuildModulesWithHandlersUsesInjectedReviewAndArtifacts(t *testing.T) {
 	srv.Handler.ServeHTTP(artifactRec, artifactReq)
 	if artifactRec.Code != http.StatusOK || !strings.Contains(artifactRec.Body.String(), `"id":`+strconv.FormatInt(artifact.ID, 10)) {
 		t.Fatalf("expected injected artifact handler to serve artifact, got %d %s", artifactRec.Code, artifactRec.Body.String())
+	}
+}
+
+func TestBuildModulesWithHandlersCanServeTaskAndOverviewRoutes(t *testing.T) {
+	modules := newTestModules()
+	srv := server.NewHTTPServerWithModules(modules)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects/1/overview", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected overview route to be registered and return 501 with empty modules, got %d", rec.Code)
 	}
 }
