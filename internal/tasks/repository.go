@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -70,6 +71,12 @@ func (r *InMemoryRepository) ListTasks(_ context.Context, projectID int64, filte
 		}
 		out = append(out, task)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].LastActivityAt.Equal(out[j].LastActivityAt) {
+			return out[i].LastActivityAt.Before(out[j].LastActivityAt)
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out, nil
 }
 

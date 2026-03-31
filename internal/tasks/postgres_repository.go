@@ -3,7 +3,10 @@ package tasks
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,6 +19,10 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 }
 
 func (r *PostgresRepository) CreateTask(ctx context.Context, in CreateTaskInput) (Task, error) {
+	if err := r.validateSnapshotProject(ctx, in.ProjectID, in.SnapshotID); err != nil {
+		return Task{}, err
+	}
+
 	row := r.pool.QueryRow(ctx, `
 		insert into tasks (project_id, snapshot_id, title, kind, status, priority, assignee)
 		values ($1, nullif($2, 0), $3, $4, $5, $6, $7)
@@ -24,6 +31,28 @@ func (r *PostgresRepository) CreateTask(ctx context.Context, in CreateTaskInput)
 	`, in.ProjectID, in.SnapshotID, in.Title, in.Kind, in.Status, in.Priority, in.Assignee)
 
 	return scanTask(row)
+}
+
+func (r *PostgresRepository) validateSnapshotProject(ctx context.Context, projectID, snapshotID int64) error {
+	if snapshotID == 0 {
+		return nil
+	}
+
+	var matched bool
+	err := r.pool.QueryRow(ctx, `
+		select true
+		from dataset_snapshots ds
+		join datasets d on d.id = ds.dataset_id
+		where ds.id = $1 and d.project_id = $2
+	`, snapshotID, projectID).Scan(&matched)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+
+	return fmt.Errorf("snapshot %d does not belong to project %d", snapshotID, projectID)
 }
 
 func (r *PostgresRepository) ListTasks(ctx context.Context, projectID int64, filter ListTasksFilter) ([]Task, error) {
