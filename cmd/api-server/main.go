@@ -16,11 +16,13 @@ import (
 	"yolo-ave-mujica/internal/config"
 	"yolo-ave-mujica/internal/datahub"
 	"yolo-ave-mujica/internal/jobs"
+	"yolo-ave-mujica/internal/overview"
 	"yolo-ave-mujica/internal/queue"
 	"yolo-ave-mujica/internal/review"
 	"yolo-ave-mujica/internal/server"
 	"yolo-ave-mujica/internal/storage"
 	"yolo-ave-mujica/internal/store"
+	"yolo-ave-mujica/internal/tasks"
 	"yolo-ave-mujica/internal/versioning"
 )
 
@@ -80,7 +82,19 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	jobSweeper := jobs.NewSweeper(jobsRepo, jobs.NewRedisPublisher(redisClient), 3)
 
 	versioningHandler := versioning.NewHandler(versioning.NewServiceWithRepository(versioning.NewPostgresRepository(pool)))
-	reviewHandler := review.NewHandler(review.NewServiceWithRepository(review.NewPostgresRepository(pool)))
+	reviewRepo := review.NewPostgresRepository(pool)
+	reviewHandler := review.NewHandler(review.NewServiceWithRepository(reviewRepo))
+	taskRepo := tasks.NewPostgresRepository(pool)
+	taskSvc := tasks.NewService(taskRepo)
+	taskHandler := tasks.NewHandler(taskSvc)
+	overviewSvc := overview.NewService(
+		overview.TaskSourceFunc(func(projectID int64, filter tasks.ListTasksFilter) ([]tasks.Task, error) {
+			return taskSvc.ListTasks(context.Background(), projectID, filter)
+		}),
+		reviewRepo,
+		jobsRepo,
+	)
+	overviewHandler := overview.NewHandler(overviewSvc)
 
 	artifactRepo := artifacts.NewPostgresRepository(pool)
 	artifactQuery := artifacts.NewExportQuery(pool)
@@ -110,6 +124,9 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	modules := buildModulesWithHandlers(reviewHandler, artifactHandler)
 	modules.DataHub = server.DataHubRoutes{
 		CreateDataset:          dataHubHandler.CreateDataset,
+		ListDatasets:           dataHubHandler.ListDatasets,
+		GetDatasetDetail:       dataHubHandler.GetDatasetDetail,
+		GetSnapshotDetail:      dataHubHandler.GetSnapshotDetail,
 		ScanDataset:            dataHubHandler.ScanDataset,
 		CreateSnapshot:         dataHubHandler.CreateSnapshot,
 		ListSnapshots:          dataHubHandler.ListSnapshots,
@@ -131,6 +148,15 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	}
 	modules.Versioning = server.VersioningRoutes{
 		DiffSnapshots: versioningHandler.DiffSnapshots,
+	}
+	modules.Tasks = server.TaskRoutes{
+		ListTasks:      taskHandler.ListTasks,
+		CreateTask:     taskHandler.CreateTask,
+		GetTask:        taskHandler.GetTask,
+		TransitionTask: taskHandler.TransitionTask,
+	}
+	modules.Overview = server.OverviewRoutes{
+		GetProjectOverview: overviewHandler.GetProjectOverview,
 	}
 	modules.ReadyChecks = []server.ReadyCheck{
 		func(ctx context.Context) error {

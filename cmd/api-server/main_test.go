@@ -91,3 +91,35 @@ func TestBuildModulesWithHandlersUsesInjectedReviewAndArtifacts(t *testing.T) {
 		t.Fatalf("expected injected artifact handler to serve artifact, got %d %s", artifactRec.Code, artifactRec.Body.String())
 	}
 }
+
+func TestNewTestModulesLeavesTaskAndOverviewRoutesUnwired(t *testing.T) {
+	srv := server.NewHTTPServerWithModules(newTestModules())
+
+	datasetsReq := httptest.NewRequest(http.MethodGet, "/v1/datasets", nil)
+	datasetsRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(datasetsRec, datasetsReq)
+	if datasetsRec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501 for datasets browse route before module wiring, got %d", datasetsRec.Code)
+	}
+
+	snapshotReq := httptest.NewRequest(http.MethodGet, "/v1/snapshots/1", nil)
+	snapshotRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(snapshotRec, snapshotReq)
+	if snapshotRec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501 for snapshot detail route before module wiring, got %d", snapshotRec.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects/1/overview", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501 before task and overview wiring, got %d", rec.Code)
+	}
+
+	transitionReq := httptest.NewRequest(http.MethodPost, "/v1/tasks/1/transition", strings.NewReader(`{"status":"ready"}`))
+	transitionRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(transitionRec, transitionReq)
+	if transitionRec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501 for transition route before task wiring, got %d", transitionRec.Code)
+	}
+}

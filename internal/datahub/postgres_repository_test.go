@@ -134,8 +134,8 @@ func TestPostgresRepositoryBrowseQueries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure category: %v", err)
 	}
-	if err := repo.CreateAnnotation(ctx, child.ID, dataset.ID, item.ID, item.ObjectKey, categoryID, "car", 0.1, 0.2, 0.3, 0.4); err != nil {
-		t.Fatalf("create annotation: %v", err)
+	if err := repo.CreateAnnotation(ctx, parent.ID, dataset.ID, item.ID, item.ObjectKey, categoryID, "car", 0.1, 0.2, 0.3, 0.4); err != nil {
+		t.Fatalf("create inherited annotation: %v", err)
 	}
 
 	items, err := repo.ListDatasets(ctx, projectID)
@@ -199,6 +199,6 @@ func TestPostgresRepositoryBrowseQueries(t *testing.T) {
 		t.Fatalf("expected note=relabel batch, got %s", snapshot.Note)
 	}
 	if snapshot.AnnotationCount != 1 {
-		t.Fatalf("expected annotation_count=1, got %d", snapshot.AnnotationCount)
+		t.Fatalf("expected effective annotation_count=1, got %d", snapshot.AnnotationCount)
 	}
 }

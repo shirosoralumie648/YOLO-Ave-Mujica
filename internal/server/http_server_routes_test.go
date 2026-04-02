@@ -14,6 +14,9 @@ func newFakeModules() Modules {
 	return Modules{
 		DataHub: DataHubRoutes{
 			CreateDataset:          okHandler,
+			ListDatasets:           okHandler,
+			GetDatasetDetail:       okHandler,
+			GetSnapshotDetail:      okHandler,
 			ScanDataset:            okHandler,
 			CreateSnapshot:         okHandler,
 			ListSnapshots:          okHandler,
@@ -61,8 +64,16 @@ func TestMVPRoutesAreRegistered(t *testing.T) {
 		path   string
 	}{
 		{http.MethodPost, "/v1/datasets"},
+		{http.MethodGet, "/v1/datasets"},
+		{http.MethodGet, "/v1/datasets/1"},
 		{http.MethodPost, "/v1/datasets/1/scan"},
 		{http.MethodGet, "/v1/datasets/1/items"},
+		{http.MethodGet, "/v1/snapshots/1"},
+		{http.MethodGet, "/v1/projects/1/overview"},
+		{http.MethodGet, "/v1/projects/1/tasks"},
+		{http.MethodPost, "/v1/projects/1/tasks"},
+		{http.MethodGet, "/v1/tasks/1"},
+		{http.MethodPost, "/v1/tasks/1/transition"},
 		{http.MethodPost, "/v1/jobs/zero-shot"},
 		{http.MethodGet, "/v1/jobs/1"},
 		{http.MethodPost, "/v1/snapshots/diff"},

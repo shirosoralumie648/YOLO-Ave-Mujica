@@ -233,7 +233,7 @@ func (r *InMemoryRepository) GetSnapshotDetail(_ context.Context, snapshotID int
 
 	annotationCount := 0
 	for _, annotation := range r.annotations {
-		if annotation.SnapshotID == snapshotID {
+		if annotation.DatasetID == found.DatasetID && annotation.SnapshotID <= snapshotID {
 			annotationCount++
 		}
 	}

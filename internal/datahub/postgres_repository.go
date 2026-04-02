@@ -186,14 +186,16 @@ func (r *PostgresRepository) GetSnapshotDetail(ctx context.Context, snapshotID i
 			s.version,
 			s.based_on_snapshot_id,
 			coalesce(s.note, ''),
-			d.project_id,
-			d.name,
-			(select count(*)::int
-				from annotations a
-				where a.created_at_snapshot_id = s.id
-					and a.review_status = 'verified'
-			) as annotation_count
-		from dataset_snapshots s
+				d.project_id,
+				d.name,
+				(select count(*)::int
+					from annotations a
+					where a.dataset_id = s.dataset_id
+						and a.created_at_snapshot_id <= s.id
+						and (a.deleted_at_snapshot_id is null or a.deleted_at_snapshot_id > s.id)
+						and a.review_status = 'verified'
+				) as annotation_count
+			from dataset_snapshots s
 		join datasets d on d.id = s.dataset_id
 		where s.id = $1
 	`, snapshotID).Scan(

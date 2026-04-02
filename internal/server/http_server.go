@@ -20,6 +20,9 @@ type ReadyCheck func(ctx context.Context) error
 // DataHubRoutes groups handlers for dataset and object-management endpoints.
 type DataHubRoutes struct {
 	CreateDataset          http.HandlerFunc
+	ListDatasets           http.HandlerFunc
+	GetDatasetDetail       http.HandlerFunc
+	GetSnapshotDetail      http.HandlerFunc
 	ScanDataset            http.HandlerFunc
 	CreateSnapshot         http.HandlerFunc
 	ListSnapshots          http.HandlerFunc
@@ -65,6 +68,19 @@ type ArtifactRoutes struct {
 	DownloadArtifact http.HandlerFunc
 }
 
+// TaskRoutes groups handlers for project-scoped task CRUD endpoints.
+type TaskRoutes struct {
+	ListTasks      http.HandlerFunc
+	CreateTask     http.HandlerFunc
+	GetTask        http.HandlerFunc
+	TransitionTask http.HandlerFunc
+}
+
+// OverviewRoutes groups handlers for the task-first project home payload.
+type OverviewRoutes struct {
+	GetProjectOverview http.HandlerFunc
+}
+
 // Modules collects optional route groups so the server can keep a stable MVP
 // route surface while individual modules are delivered incrementally.
 type Modules struct {
@@ -73,6 +89,8 @@ type Modules struct {
 	Versioning  VersioningRoutes
 	Review      ReviewRoutes
 	Artifacts   ArtifactRoutes
+	Tasks       TaskRoutes
+	Overview    OverviewRoutes
 	ReadyChecks []ReadyCheck
 }
 
@@ -87,6 +105,9 @@ func NewHTTPServerWithDataHub(dataHubHandler *datahub.Handler) *HTTPServer {
 	if dataHubHandler != nil {
 		dataHubRoutes = DataHubRoutes{
 			CreateDataset:          dataHubHandler.CreateDataset,
+			ListDatasets:           dataHubHandler.ListDatasets,
+			GetDatasetDetail:       dataHubHandler.GetDatasetDetail,
+			GetSnapshotDetail:      dataHubHandler.GetSnapshotDetail,
 			ScanDataset:            dataHubHandler.ScanDataset,
 			CreateSnapshot:         dataHubHandler.CreateSnapshot,
 			ListSnapshots:          dataHubHandler.ListSnapshots,
@@ -106,6 +127,9 @@ func NewHTTPServerWithDataHubAndJobs(dataHubHandler *datahub.Handler, jobsHandle
 	if dataHubHandler != nil {
 		dataHubRoutes = DataHubRoutes{
 			CreateDataset:          dataHubHandler.CreateDataset,
+			ListDatasets:           dataHubHandler.ListDatasets,
+			GetDatasetDetail:       dataHubHandler.GetDatasetDetail,
+			GetSnapshotDetail:      dataHubHandler.GetSnapshotDetail,
 			ScanDataset:            dataHubHandler.ScanDataset,
 			CreateSnapshot:         dataHubHandler.CreateSnapshot,
 			ListSnapshots:          dataHubHandler.ListSnapshots,
@@ -161,12 +185,20 @@ func NewHTTPServerWithModules(m Modules) *HTTPServer {
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Post("/datasets", handlerOrNotImplemented(m.DataHub.CreateDataset))
+		r.Get("/datasets", handlerOrNotImplemented(m.DataHub.ListDatasets))
+		r.Get("/datasets/{id}", handlerOrNotImplemented(m.DataHub.GetDatasetDetail))
 		r.Post("/datasets/{id}/scan", handlerOrNotImplemented(m.DataHub.ScanDataset))
 		r.Post("/datasets/{id}/snapshots", handlerOrNotImplemented(m.DataHub.CreateSnapshot))
 		r.Get("/datasets/{id}/snapshots", handlerOrNotImplemented(m.DataHub.ListSnapshots))
 		r.Get("/datasets/{id}/items", handlerOrNotImplemented(m.DataHub.ListItems))
 		r.Post("/objects/presign", handlerOrNotImplemented(m.DataHub.PresignObject))
+		r.Get("/snapshots/{id}", handlerOrNotImplemented(m.DataHub.GetSnapshotDetail))
 		r.Post("/snapshots/{id}/import", handlerOrNotImplemented(m.DataHub.ImportSnapshot))
+		r.Get("/projects/{id}/overview", handlerOrNotImplemented(m.Overview.GetProjectOverview))
+		r.Get("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.ListTasks))
+		r.Post("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.CreateTask))
+		r.Get("/tasks/{id}", handlerOrNotImplemented(m.Tasks.GetTask))
+		r.Post("/tasks/{id}/transition", handlerOrNotImplemented(m.Tasks.TransitionTask))
 
 		r.Post("/jobs/zero-shot", handlerOrNotImplemented(m.Jobs.CreateZeroShot))
 		r.Post("/jobs/video-extract", handlerOrNotImplemented(m.Jobs.CreateVideoExtract))

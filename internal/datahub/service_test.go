@@ -405,6 +405,60 @@ func TestGetSnapshotDetailReturnsDatasetAndAnnotationDetails(t *testing.T) {
 	}
 }
 
+func TestGetSnapshotDetailCountsEffectiveAnnotationsInheritedFromParent(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "yard-night",
+		Bucket:    "platform-dev",
+		Prefix:    "train/night",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/night/a.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+
+	parent, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{Note: "seed"})
+	if err != nil {
+		t.Fatalf("create parent snapshot: %v", err)
+	}
+	if _, err := svc.ImportSnapshot(parent.ID, ImportSnapshotInput{
+		Format: "yolo",
+		Entries: []ImportedAnnotation{
+			{
+				ObjectKey:    "train/night/a.jpg",
+				CategoryName: "car",
+				BBoxX:        0.1,
+				BBoxY:        0.2,
+				BBoxW:        0.3,
+				BBoxH:        0.4,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("import parent annotations: %v", err)
+	}
+
+	child, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{
+		BasedOnSnapshotID: &parent.ID,
+		Note:              "review pass",
+	})
+	if err != nil {
+		t.Fatalf("create child snapshot: %v", err)
+	}
+
+	detail, err := svc.GetSnapshotDetail(child.ID)
+	if err != nil {
+		t.Fatalf("get snapshot detail: %v", err)
+	}
+	if detail.AnnotationCount != 1 {
+		t.Fatalf("expected inherited annotation_count=1, got %d", detail.AnnotationCount)
+	}
+}
+
 func TestListDatasetsDatasetWithNoSnapshotsLeavesLatestSnapshotUnset(t *testing.T) {
 	repo := NewInMemoryRepository()
 	svc := NewServiceWithRepository(nil, repo)
