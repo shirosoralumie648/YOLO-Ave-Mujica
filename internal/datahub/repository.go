@@ -122,7 +122,8 @@ func (r *InMemoryRepository) ListDatasets(_ context.Context, projectID int64) ([
 		}
 		if n := len(r.snapshots[dataset.ID]); n > 0 {
 			latest := r.snapshots[dataset.ID][n-1]
-			summary.LatestSnapshotID = latest.ID
+			latestID := latest.ID
+			summary.LatestSnapshotID = &latestID
 			summary.LatestSnapshotVersion = latest.Version
 		}
 		out = append(out, summary)
@@ -149,7 +150,8 @@ func (r *InMemoryRepository) GetDatasetDetail(_ context.Context, datasetID int64
 	}
 	if n := len(r.snapshots[dataset.ID]); n > 0 {
 		latest := r.snapshots[dataset.ID][n-1]
-		detail.LatestSnapshotID = latest.ID
+		latestID := latest.ID
+		detail.LatestSnapshotID = &latestID
 		detail.LatestSnapshotVersion = latest.Version
 	}
 	return detail, nil

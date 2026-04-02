@@ -49,8 +49,8 @@ func (r *PostgresRepository) ListDatasets(ctx context.Context, projectID int64) 
 			d.prefix,
 			(select count(*)::int from dataset_items i where i.dataset_id = d.id) as item_count,
 			(select count(*)::int from dataset_snapshots s where s.dataset_id = d.id) as snapshot_count,
-			coalesce((select s.id from dataset_snapshots s where s.dataset_id = d.id order by s.id desc limit 1), 0) as latest_snapshot_id,
-			coalesce((select s.version from dataset_snapshots s where s.dataset_id = d.id order by s.id desc limit 1), '') as latest_snapshot_version
+			(select s.id from dataset_snapshots s where s.dataset_id = d.id order by s.id desc limit 1) as latest_snapshot_id,
+			(select s.version from dataset_snapshots s where s.dataset_id = d.id order by s.id desc limit 1) as latest_snapshot_version
 		from datasets d
 		where d.project_id = $1
 		order by d.id asc
@@ -63,6 +63,8 @@ func (r *PostgresRepository) ListDatasets(ctx context.Context, projectID int64) 
 	items := []DatasetSummary{}
 	for rows.Next() {
 		var item DatasetSummary
+		var latestSnapshotID sql.NullInt64
+		var latestSnapshotVersion sql.NullString
 		if err := rows.Scan(
 			&item.ID,
 			&item.ProjectID,
@@ -71,10 +73,17 @@ func (r *PostgresRepository) ListDatasets(ctx context.Context, projectID int64) 
 			&item.Prefix,
 			&item.ItemCount,
 			&item.SnapshotCount,
-			&item.LatestSnapshotID,
-			&item.LatestSnapshotVersion,
+			&latestSnapshotID,
+			&latestSnapshotVersion,
 		); err != nil {
 			return nil, err
+		}
+		if latestSnapshotID.Valid {
+			id := latestSnapshotID.Int64
+			item.LatestSnapshotID = &id
+		}
+		if latestSnapshotVersion.Valid {
+			item.LatestSnapshotVersion = latestSnapshotVersion.String
 		}
 		items = append(items, item)
 	}
@@ -83,6 +92,8 @@ func (r *PostgresRepository) ListDatasets(ctx context.Context, projectID int64) 
 
 func (r *PostgresRepository) GetDatasetDetail(ctx context.Context, datasetID int64) (DatasetDetail, error) {
 	var out DatasetDetail
+	var latestSnapshotID sql.NullInt64
+	var latestSnapshotVersion sql.NullString
 	err := r.pool.QueryRow(ctx, `
 		select
 			d.id,
@@ -92,8 +103,8 @@ func (r *PostgresRepository) GetDatasetDetail(ctx context.Context, datasetID int
 			d.prefix,
 			(select count(*)::int from dataset_items i where i.dataset_id = d.id) as item_count,
 			(select count(*)::int from dataset_snapshots s where s.dataset_id = d.id) as snapshot_count,
-			coalesce((select s.id from dataset_snapshots s where s.dataset_id = d.id order by s.id desc limit 1), 0) as latest_snapshot_id,
-			coalesce((select s.version from dataset_snapshots s where s.dataset_id = d.id order by s.id desc limit 1), '') as latest_snapshot_version
+			(select s.id from dataset_snapshots s where s.dataset_id = d.id order by s.id desc limit 1) as latest_snapshot_id,
+			(select s.version from dataset_snapshots s where s.dataset_id = d.id order by s.id desc limit 1) as latest_snapshot_version
 		from datasets d
 		where d.id = $1
 	`, datasetID).Scan(
@@ -104,11 +115,18 @@ func (r *PostgresRepository) GetDatasetDetail(ctx context.Context, datasetID int
 		&out.Prefix,
 		&out.ItemCount,
 		&out.SnapshotCount,
-		&out.LatestSnapshotID,
-		&out.LatestSnapshotVersion,
+		&latestSnapshotID,
+		&latestSnapshotVersion,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return DatasetDetail{}, wrapNotFound("dataset", datasetID)
+	}
+	if latestSnapshotID.Valid {
+		id := latestSnapshotID.Int64
+		out.LatestSnapshotID = &id
+	}
+	if latestSnapshotVersion.Valid {
+		out.LatestSnapshotVersion = latestSnapshotVersion.String
 	}
 	return out, err
 }

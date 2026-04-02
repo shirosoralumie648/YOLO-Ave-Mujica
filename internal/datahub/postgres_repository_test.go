@@ -152,8 +152,14 @@ func TestPostgresRepositoryBrowseQueries(t *testing.T) {
 	if summary.SnapshotCount != 2 {
 		t.Fatalf("expected snapshot_count=2, got %d", summary.SnapshotCount)
 	}
-	if summary.LatestSnapshotID != child.ID {
-		t.Fatalf("expected latest_snapshot_id=%d, got %d", child.ID, summary.LatestSnapshotID)
+	if summary.ProjectID != projectID {
+		t.Fatalf("expected project_id=%d, got %d", projectID, summary.ProjectID)
+	}
+	if summary.LatestSnapshotID == nil || *summary.LatestSnapshotID != child.ID {
+		t.Fatalf("expected latest_snapshot_id=%d, got %+v", child.ID, summary.LatestSnapshotID)
+	}
+	if summary.LatestSnapshotVersion != child.Version {
+		t.Fatalf("expected latest_snapshot_version=%s, got %s", child.Version, summary.LatestSnapshotVersion)
 	}
 
 	detail, err := repo.GetDatasetDetail(ctx, dataset.ID)
@@ -166,8 +172,14 @@ func TestPostgresRepositoryBrowseQueries(t *testing.T) {
 	if detail.SnapshotCount != 2 {
 		t.Fatalf("expected dataset detail snapshot_count=2, got %d", detail.SnapshotCount)
 	}
-	if detail.LatestSnapshotID != child.ID {
-		t.Fatalf("expected dataset detail latest_snapshot_id=%d, got %d", child.ID, detail.LatestSnapshotID)
+	if detail.ProjectID != projectID {
+		t.Fatalf("expected dataset detail project_id=%d, got %d", projectID, detail.ProjectID)
+	}
+	if detail.LatestSnapshotID == nil || *detail.LatestSnapshotID != child.ID {
+		t.Fatalf("expected dataset detail latest_snapshot_id=%d, got %+v", child.ID, detail.LatestSnapshotID)
+	}
+	if detail.LatestSnapshotVersion != child.Version {
+		t.Fatalf("expected dataset detail latest_snapshot_version=%s, got %s", child.Version, detail.LatestSnapshotVersion)
 	}
 
 	snapshot, err := repo.GetSnapshotDetail(ctx, child.ID)
@@ -176,6 +188,15 @@ func TestPostgresRepositoryBrowseQueries(t *testing.T) {
 	}
 	if snapshot.DatasetName != "yard-day" {
 		t.Fatalf("expected dataset_name=yard-day, got %s", snapshot.DatasetName)
+	}
+	if snapshot.ProjectID != projectID {
+		t.Fatalf("expected snapshot project_id=%d, got %d", projectID, snapshot.ProjectID)
+	}
+	if snapshot.BasedOnSnapshotID == nil || *snapshot.BasedOnSnapshotID != parent.ID {
+		t.Fatalf("expected based_on_snapshot_id=%d, got %+v", parent.ID, snapshot.BasedOnSnapshotID)
+	}
+	if snapshot.Note != "relabel batch" {
+		t.Fatalf("expected note=relabel batch, got %s", snapshot.Note)
 	}
 	if snapshot.AnnotationCount != 1 {
 		t.Fatalf("expected annotation_count=1, got %d", snapshot.AnnotationCount)

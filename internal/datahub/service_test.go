@@ -1,7 +1,10 @@
 package datahub
 
 import (
+	"encoding/json"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -281,8 +284,8 @@ func TestListDatasetsReturnsProjectScopedSummaries(t *testing.T) {
 	if dockNightSummary.SnapshotCount != 2 {
 		t.Fatalf("expected dock-night snapshot_count=2, got %d", dockNightSummary.SnapshotCount)
 	}
-	if dockNightSummary.LatestSnapshotID != dockNightLatest.ID {
-		t.Fatalf("expected dock-night latest_snapshot_id=%d, got %d", dockNightLatest.ID, dockNightSummary.LatestSnapshotID)
+	if dockNightSummary.LatestSnapshotID == nil || *dockNightSummary.LatestSnapshotID != dockNightLatest.ID {
+		t.Fatalf("expected dock-night latest_snapshot_id=%d, got %+v", dockNightLatest.ID, dockNightSummary.LatestSnapshotID)
 	}
 	if dockNightSummary.LatestSnapshotVersion != "v2" {
 		t.Fatalf("expected dock-night latest_snapshot_version=v2, got %s", dockNightSummary.LatestSnapshotVersion)
@@ -326,8 +329,8 @@ func TestGetDatasetDetailReturnsAggregateCountsAndLatestSnapshot(t *testing.T) {
 	if detail.SnapshotCount != 2 {
 		t.Fatalf("expected snapshot_count=2, got %d", detail.SnapshotCount)
 	}
-	if detail.LatestSnapshotID != latest.ID {
-		t.Fatalf("expected latest_snapshot_id=%d, got %d", latest.ID, detail.LatestSnapshotID)
+	if detail.LatestSnapshotID == nil || *detail.LatestSnapshotID != latest.ID {
+		t.Fatalf("expected latest_snapshot_id=%d, got %+v", latest.ID, detail.LatestSnapshotID)
 	}
 	if detail.LatestSnapshotVersion != "v2" {
 		t.Fatalf("expected latest_snapshot_version=v2, got %s", detail.LatestSnapshotVersion)
@@ -399,5 +402,104 @@ func TestGetSnapshotDetailReturnsDatasetAndAnnotationDetails(t *testing.T) {
 	}
 	if detail.AnnotationCount != 1 {
 		t.Fatalf("expected annotation_count=1, got %d", detail.AnnotationCount)
+	}
+}
+
+func TestListDatasetsDatasetWithNoSnapshotsLeavesLatestSnapshotUnset(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "empty-snapshots",
+		Bucket:    "platform-dev",
+		Prefix:    "train/empty",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/empty/a.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+
+	items, err := svc.ListDatasets(1)
+	if err != nil {
+		t.Fatalf("list datasets: %v", err)
+	}
+	summary, ok := findDatasetSummaryByID(items, dataset.ID)
+	if !ok {
+		t.Fatalf("dataset summary not found for dataset %d", dataset.ID)
+	}
+	if summary.SnapshotCount != 0 {
+		t.Fatalf("expected snapshot_count=0, got %d", summary.SnapshotCount)
+	}
+	if summary.LatestSnapshotID != nil {
+		t.Fatalf("expected latest_snapshot_id to be nil, got %+v", summary.LatestSnapshotID)
+	}
+	if summary.LatestSnapshotVersion != "" {
+		t.Fatalf("expected latest_snapshot_version empty, got %q", summary.LatestSnapshotVersion)
+	}
+
+	body, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("marshal summary: %v", err)
+	}
+	if strings.Contains(string(body), "\"latest_snapshot_id\":0") {
+		t.Fatalf("expected latest_snapshot_id to not serialize as 0, body=%s", string(body))
+	}
+
+	detail, err := svc.GetDatasetDetail(dataset.ID)
+	if err != nil {
+		t.Fatalf("get dataset detail: %v", err)
+	}
+	if detail.LatestSnapshotID != nil {
+		t.Fatalf("expected dataset detail latest_snapshot_id nil, got %+v", detail.LatestSnapshotID)
+	}
+}
+
+func TestBrowseReadsReturnNotFoundErrors(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	if _, err := svc.GetDatasetDetail(999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for missing dataset detail, got %v", err)
+	}
+	if _, err := svc.GetSnapshotDetail(999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for missing snapshot detail, got %v", err)
+	}
+}
+
+func TestBrowseMethodsRejectInvalidIdentifiers(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	if _, err := svc.ListDatasets(0); err == nil {
+		t.Fatal("expected error for projectID <= 0")
+	}
+	if _, err := svc.GetDatasetDetail(0); err == nil {
+		t.Fatal("expected error for datasetID <= 0")
+	}
+	if _, err := svc.GetSnapshotDetail(0); err == nil {
+		t.Fatal("expected error for snapshotID <= 0")
+	}
+}
+
+func TestSnapshotDetailJSONAlwaysIncludesNoteField(t *testing.T) {
+	detail := SnapshotDetail{
+		ID:              1,
+		DatasetID:       1,
+		Version:         "v1",
+		ProjectID:       1,
+		DatasetName:     "demo",
+		AnnotationCount: 0,
+		Note:            "",
+	}
+
+	body, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal snapshot detail: %v", err)
+	}
+	if !strings.Contains(string(body), "\"note\":\"\"") {
+		t.Fatalf("expected note field in json, body=%s", string(body))
 	}
 }
