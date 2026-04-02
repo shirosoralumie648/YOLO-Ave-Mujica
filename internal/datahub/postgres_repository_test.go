@@ -66,3 +66,118 @@ func TestPostgresRepositoryRoundTripDatasetScanAndSnapshots(t *testing.T) {
 		t.Fatalf("unexpected snapshot: %+v", got)
 	}
 }
+
+func findDatasetSummary(items []DatasetSummary, datasetID int64) (DatasetSummary, bool) {
+	for _, item := range items {
+		if item.ID == datasetID {
+			return item, true
+		}
+	}
+	return DatasetSummary{}, false
+}
+
+func TestPostgresRepositoryBrowseQueries(t *testing.T) {
+	databaseURL := os.Getenv("INTEGRATION_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("INTEGRATION_DATABASE_URL is required")
+	}
+
+	cfg := config.Config{DatabaseURL: databaseURL}
+	ctx := context.Background()
+	pool, err := store.NewPostgresPool(ctx, cfg)
+	if err != nil {
+		t.Fatalf("new pool: %v", err)
+	}
+	defer pool.Close()
+
+	var projectID int64
+	if err := pool.QueryRow(ctx, `
+		insert into projects (name, owner)
+		values ('integration-browse-project', 'test-owner')
+		returning id
+	`).Scan(&projectID); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+
+	repo := NewPostgresRepository(pool)
+	dataset, err := repo.CreateDataset(ctx, CreateDatasetInput{
+		ProjectID: projectID,
+		Name:      "yard-day",
+		Bucket:    "platform-dev",
+		Prefix:    "train/day",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+
+	if _, err := repo.InsertItems(ctx, dataset.ID, []string{"train/day/a.jpg", "train/day/b.jpg"}); err != nil {
+		t.Fatalf("insert items: %v", err)
+	}
+
+	parent, err := repo.CreateSnapshot(ctx, dataset.ID, CreateSnapshotInput{Note: "baseline"})
+	if err != nil {
+		t.Fatalf("create parent snapshot: %v", err)
+	}
+	child, err := repo.CreateSnapshot(ctx, dataset.ID, CreateSnapshotInput{
+		BasedOnSnapshotID: &parent.ID,
+		Note:              "relabel batch",
+	})
+	if err != nil {
+		t.Fatalf("create child snapshot: %v", err)
+	}
+
+	item, err := repo.GetItemByObjectKey(ctx, dataset.ID, "train/day/a.jpg")
+	if err != nil {
+		t.Fatalf("get item by object key: %v", err)
+	}
+	categoryID, err := repo.EnsureCategory(ctx, projectID, "car")
+	if err != nil {
+		t.Fatalf("ensure category: %v", err)
+	}
+	if err := repo.CreateAnnotation(ctx, child.ID, dataset.ID, item.ID, item.ObjectKey, categoryID, "car", 0.1, 0.2, 0.3, 0.4); err != nil {
+		t.Fatalf("create annotation: %v", err)
+	}
+
+	items, err := repo.ListDatasets(ctx, projectID)
+	if err != nil {
+		t.Fatalf("list datasets: %v", err)
+	}
+	summary, ok := findDatasetSummary(items, dataset.ID)
+	if !ok {
+		t.Fatalf("dataset summary not found for dataset_id=%d in %+v", dataset.ID, items)
+	}
+	if summary.ItemCount != 2 {
+		t.Fatalf("expected item_count=2, got %d", summary.ItemCount)
+	}
+	if summary.SnapshotCount != 2 {
+		t.Fatalf("expected snapshot_count=2, got %d", summary.SnapshotCount)
+	}
+	if summary.LatestSnapshotID != child.ID {
+		t.Fatalf("expected latest_snapshot_id=%d, got %d", child.ID, summary.LatestSnapshotID)
+	}
+
+	detail, err := repo.GetDatasetDetail(ctx, dataset.ID)
+	if err != nil {
+		t.Fatalf("get dataset detail: %v", err)
+	}
+	if detail.ItemCount != 2 {
+		t.Fatalf("expected dataset detail item_count=2, got %d", detail.ItemCount)
+	}
+	if detail.SnapshotCount != 2 {
+		t.Fatalf("expected dataset detail snapshot_count=2, got %d", detail.SnapshotCount)
+	}
+	if detail.LatestSnapshotID != child.ID {
+		t.Fatalf("expected dataset detail latest_snapshot_id=%d, got %d", child.ID, detail.LatestSnapshotID)
+	}
+
+	snapshot, err := repo.GetSnapshotDetail(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("get snapshot detail: %v", err)
+	}
+	if snapshot.DatasetName != "yard-day" {
+		t.Fatalf("expected dataset_name=yard-day, got %s", snapshot.DatasetName)
+	}
+	if snapshot.AnnotationCount != 1 {
+		t.Fatalf("expected annotation_count=1, got %d", snapshot.AnnotationCount)
+	}
+}
