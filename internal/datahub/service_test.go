@@ -444,8 +444,8 @@ func TestListDatasetsDatasetWithNoSnapshotsLeavesLatestSnapshotUnset(t *testing.
 	if err != nil {
 		t.Fatalf("marshal summary: %v", err)
 	}
-	if strings.Contains(string(body), "\"latest_snapshot_id\":0") {
-		t.Fatalf("expected latest_snapshot_id to not serialize as 0, body=%s", string(body))
+	if strings.Contains(string(body), "\"latest_snapshot_id\"") {
+		t.Fatalf("expected latest_snapshot_id field to be omitted when nil, body=%s", string(body))
 	}
 
 	detail, err := svc.GetDatasetDetail(dataset.ID)

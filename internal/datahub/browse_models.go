@@ -8,7 +8,7 @@ type DatasetSummary struct {
 	Prefix                string `json:"prefix"`
 	ItemCount             int    `json:"item_count"`
 	SnapshotCount         int    `json:"snapshot_count"`
-	LatestSnapshotID      *int64 `json:"latest_snapshot_id"`
+	LatestSnapshotID      *int64 `json:"latest_snapshot_id,omitempty"`
 	LatestSnapshotVersion string `json:"latest_snapshot_version,omitempty"`
 }
 
@@ -20,7 +20,7 @@ type DatasetDetail struct {
 	Prefix                string `json:"prefix"`
 	ItemCount             int    `json:"item_count"`
 	SnapshotCount         int    `json:"snapshot_count"`
-	LatestSnapshotID      *int64 `json:"latest_snapshot_id"`
+	LatestSnapshotID      *int64 `json:"latest_snapshot_id,omitempty"`
 	LatestSnapshotVersion string `json:"latest_snapshot_version,omitempty"`
 }
 
