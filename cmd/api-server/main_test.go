@@ -61,7 +61,22 @@ func TestStartBackgroundLoopInvokesTick(t *testing.T) {
 
 func TestBuildModulesWithHandlersUsesInjectedReviewPublishAndArtifacts(t *testing.T) {
 	reviewSvc := review.NewService()
-	reviewSvc.SeedCandidate(review.Candidate{ID: 10, DatasetID: 1, SnapshotID: 1, ItemID: 1, CategoryID: 1, ReviewStatus: "pending"})
+	jobID := int64(77)
+	confidence := 0.91
+	reviewSvc.SeedCandidate(review.Candidate{
+		ID:           10,
+		DatasetID:    1,
+		SnapshotID:   1,
+		ItemID:       1,
+		CategoryID:   1,
+		ReviewStatus: "pending",
+		Source: review.CandidateSource{
+			JobID:      &jobID,
+			Confidence: &confidence,
+			ModelName:  "detector-a",
+			IsPseudo:   true,
+		},
+	})
 	reviewHandler := review.NewHandler(reviewSvc)
 
 	publishSvc := publish.NewService(publish.NewInMemoryRepository(), tasks.NewService(tasks.NewInMemoryRepository()))
@@ -87,6 +102,12 @@ func TestBuildModulesWithHandlersUsesInjectedReviewPublishAndArtifacts(t *testin
 	srv.Handler.ServeHTTP(reviewRec, reviewReq)
 	if reviewRec.Code != http.StatusOK || !strings.Contains(reviewRec.Body.String(), `"id":10`) {
 		t.Fatalf("expected injected review handler to serve candidate, got %d %s", reviewRec.Code, reviewRec.Body.String())
+	}
+	if !strings.Contains(reviewRec.Body.String(), `"status":"queued_for_review"`) {
+		t.Fatalf("expected normalized candidate status, got %s", reviewRec.Body.String())
+	}
+	if !strings.Contains(reviewRec.Body.String(), `"model_name":"detector-a"`) {
+		t.Fatalf("expected candidate source metadata, got %s", reviewRec.Body.String())
 	}
 
 	publishReq := httptest.NewRequest(http.MethodPost, "/v1/publish/batches", strings.NewReader(`{

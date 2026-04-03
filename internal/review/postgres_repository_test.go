@@ -56,6 +56,47 @@ func TestPostgresRepositoryListPublishableCandidatesBySnapshot(t *testing.T) {
 	}
 }
 
+func TestPostgresRepositoryListPendingIncludesLegacyAndQueuedCandidates(t *testing.T) {
+	databaseURL := os.Getenv("INTEGRATION_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("INTEGRATION_DATABASE_URL is required")
+	}
+
+	ctx := context.Background()
+	pool, err := store.NewPostgresPool(ctx, config.Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatalf("new pool: %v", err)
+	}
+	defer pool.Close()
+
+	mustApplyPublishMigration(t, ctx, pool)
+	_, _, _, pendingCandidateID, queuedCandidateID := seedReviewQueueFixture(t, ctx, pool)
+
+	repo := NewPostgresRepository(pool)
+	items, err := repo.ListPending()
+	if err != nil {
+		t.Fatalf("list pending review candidates: %v", err)
+	}
+
+	if len(items) != 2 {
+		t.Fatalf("expected 2 queued candidates, got %d: %+v", len(items), items)
+	}
+	if items[0].ID != pendingCandidateID || items[1].ID != queuedCandidateID {
+		t.Fatalf("expected pending+queued fixture candidates, got %+v", items)
+	}
+	for _, item := range items {
+		if item.Status != "queued_for_review" || item.ReviewStatus != "queued_for_review" {
+			t.Fatalf("expected normalized queued status, got %+v", item)
+		}
+		if item.Source.ModelName != "detector-a" || !item.Source.IsPseudo {
+			t.Fatalf("expected source metadata, got %+v", item.Source)
+		}
+		if item.Source.Confidence == nil {
+			t.Fatalf("expected source confidence, got %+v", item.Source)
+		}
+	}
+}
+
 func seedPublishableCandidateFixture(t *testing.T, ctx context.Context, pool interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }) (projectID, snapshotID, acceptedCandidateID int64) {
@@ -146,6 +187,82 @@ func seedPublishableCandidateFixture(t *testing.T, ctx context.Context, pool int
 	_ = pendingCandidateID
 
 	return projectID, snapshotID, acceptedCandidateID
+}
+
+func seedReviewQueueFixture(t *testing.T, ctx context.Context, pool interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}) (projectID, snapshotID, itemID, pendingCandidateID, queuedCandidateID int64) {
+	t.Helper()
+
+	ts := time.Now().UTC().UnixNano()
+
+	if err := pool.QueryRow(ctx, `
+		insert into projects (name, owner)
+		values ($1, $2)
+		returning id
+	`, fmt.Sprintf("queue-project-%d", ts), "integration-test").Scan(&projectID); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+
+	var datasetID int64
+	if err := pool.QueryRow(ctx, `
+		insert into datasets (project_id, name, bucket, prefix)
+		values ($1, $2, $3, $4)
+		returning id
+	`, projectID, fmt.Sprintf("queue-dataset-%d", ts), "platform-dev", fmt.Sprintf("queue/%d", ts)).Scan(&datasetID); err != nil {
+		t.Fatalf("seed dataset: %v", err)
+	}
+
+	if err := pool.QueryRow(ctx, `
+		insert into dataset_snapshots (dataset_id, version, created_by, note)
+		values ($1, $2, $3, $4)
+		returning id
+	`, datasetID, fmt.Sprintf("v%d", ts), "integration-test", "review queue fixture").Scan(&snapshotID); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	if err := pool.QueryRow(ctx, `
+		insert into dataset_items (dataset_id, object_key, mime)
+		values ($1, $2, $3)
+		returning id
+	`, datasetID, fmt.Sprintf("images/%d.jpg", ts), "image/jpeg").Scan(&itemID); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+
+	var categoryID int64
+	if err := pool.QueryRow(ctx, `
+		insert into categories (project_id, name)
+		values ($1, $2)
+		returning id
+	`, projectID, fmt.Sprintf("queue-category-%d", ts)).Scan(&categoryID); err != nil {
+		t.Fatalf("seed category: %v", err)
+	}
+
+	if err := pool.QueryRow(ctx, `
+		insert into annotation_candidates (
+			dataset_id, snapshot_id, item_id, category_id,
+			bbox_x, bbox_y, bbox_w, bbox_h,
+			confidence, model_name, is_pseudo, review_status
+		)
+		values ($1, $2, $3, $4, 10, 20, 30, 40, 0.88, 'detector-a', true, 'pending')
+		returning id
+	`, datasetID, snapshotID, itemID, categoryID).Scan(&pendingCandidateID); err != nil {
+		t.Fatalf("seed pending candidate: %v", err)
+	}
+
+	if err := pool.QueryRow(ctx, `
+		insert into annotation_candidates (
+			dataset_id, snapshot_id, item_id, category_id,
+			bbox_x, bbox_y, bbox_w, bbox_h,
+			confidence, model_name, is_pseudo, review_status
+		)
+		values ($1, $2, $3, $4, 11, 21, 31, 41, 0.52, 'detector-a', true, 'queued_for_review')
+		returning id
+	`, datasetID, snapshotID, itemID, categoryID).Scan(&queuedCandidateID); err != nil {
+		t.Fatalf("seed queued candidate: %v", err)
+	}
+
+	return projectID, snapshotID, itemID, pendingCandidateID, queuedCandidateID
 }
 
 func mustApplyPublishMigration(t *testing.T, ctx context.Context, pool interface {

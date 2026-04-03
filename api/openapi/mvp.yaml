@@ -214,10 +214,10 @@ paths:
           description: Diff result
   /v1/review/candidates:
     get:
-      summary: List pending review candidates
+      summary: List queued review candidates with source metadata
       responses:
         "200":
-          description: Candidate list
+          description: Candidate list including lifecycle status, confidence, source model, and provenance metadata
   /v1/review/candidates/{id}/accept:
     post:
       summary: Accept candidate

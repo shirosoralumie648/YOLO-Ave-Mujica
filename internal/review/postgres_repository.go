@@ -20,9 +20,10 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 
 func (r *PostgresRepository) ListPending() ([]Candidate, error) {
 	rows, err := r.pool.Query(context.Background(), `
-		select id, dataset_id, snapshot_id, item_id, category_id, review_status, reviewer_id, reviewed_at
+		select id, job_id, dataset_id, snapshot_id, item_id, category_id,
+		       confidence, model_name, is_pseudo, review_status, reviewer_id, reviewed_at, created_at
 		from annotation_candidates
-		where review_status = 'pending'
+		where review_status in ('pending', 'queued_for_review')
 		order by id asc
 	`)
 	if err != nil {
@@ -33,18 +34,38 @@ func (r *PostgresRepository) ListPending() ([]Candidate, error) {
 	items := []Candidate{}
 	for rows.Next() {
 		var c Candidate
+		var jobID *int64
+		var confidence *float64
 		var reviewerID *string
 		var reviewedAt *time.Time
-		if err := rows.Scan(&c.ID, &c.DatasetID, &c.SnapshotID, &c.ItemID, &c.CategoryID, &c.ReviewStatus, &reviewerID, &reviewedAt); err != nil {
+		var createdAt time.Time
+		if err := rows.Scan(
+			&c.ID,
+			&jobID,
+			&c.DatasetID,
+			&c.SnapshotID,
+			&c.ItemID,
+			&c.CategoryID,
+			&confidence,
+			&c.Source.ModelName,
+			&c.Source.IsPseudo,
+			&c.ReviewStatus,
+			&reviewerID,
+			&reviewedAt,
+			&createdAt,
+		); err != nil {
 			return nil, err
 		}
+		c.Source.JobID = jobID
+		c.Source.Confidence = confidence
+		c.Source.CreatedAt = &createdAt
 		if reviewerID != nil {
 			c.ReviewerID = *reviewerID
 		}
 		if reviewedAt != nil {
 			c.ReviewedAt = *reviewedAt
 		}
-		items = append(items, c)
+		items = append(items, normalizeCandidate(c))
 	}
 	return items, rows.Err()
 }
@@ -55,7 +76,7 @@ func (r *PostgresRepository) PendingCandidateCount(projectID int64) (int, error)
 		select count(*)
 		from annotation_candidates c
 		join datasets d on d.id = c.dataset_id
-		where d.project_id = $1 and c.review_status = 'pending'
+		where d.project_id = $1 and c.review_status in ('pending', 'queued_for_review')
 	`, projectID).Scan(&count)
 	return count, err
 }
@@ -179,8 +200,8 @@ func (r *PostgresRepository) transitionCandidate(candidateID int64, reviewer, st
 		}
 		return err
 	}
-	if row.Status != "pending" {
-		return fmt.Errorf("candidate is %s", row.Status)
+	if !isQueuedCandidateStatus(row.Status) {
+		return fmt.Errorf("candidate is %s", normalizeCandidateStatus(row.Status))
 	}
 
 	now := time.Now().UTC()

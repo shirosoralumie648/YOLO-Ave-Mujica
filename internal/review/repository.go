@@ -45,10 +45,16 @@ func NewInMemoryRepository() *InMemoryRepository {
 func (r *InMemoryRepository) SeedCandidate(c Candidate) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if c.ReviewStatus == "" {
-		c.ReviewStatus = "pending"
+	status := c.Status
+	if status == "" {
+		status = c.ReviewStatus
 	}
-	r.candidates[c.ID] = c
+	if status == "" {
+		status = CandidateStatusQueuedForReview
+	}
+	c.Status = normalizeCandidateStatus(status)
+	c.ReviewStatus = c.Status
+	r.candidates[c.ID] = normalizeCandidate(c)
 }
 
 func (r *InMemoryRepository) ListPending() ([]Candidate, error) {
@@ -57,8 +63,12 @@ func (r *InMemoryRepository) ListPending() ([]Candidate, error) {
 
 	out := make([]Candidate, 0, len(r.candidates))
 	for _, c := range r.candidates {
-		if c.ReviewStatus == "pending" {
-			out = append(out, c)
+		status := c.Status
+		if status == "" {
+			status = c.ReviewStatus
+		}
+		if isQueuedCandidateStatus(status) {
+			out = append(out, normalizeCandidate(c))
 		}
 	}
 	return out, nil
@@ -72,15 +82,20 @@ func (r *InMemoryRepository) Accept(candidateID int64, reviewer string) error {
 	if !ok {
 		return fmt.Errorf("candidate %d not found", candidateID)
 	}
-	if c.ReviewStatus != "pending" {
-		return fmt.Errorf("candidate is %s", c.ReviewStatus)
+	if !isQueuedCandidateStatus(c.Status) && !isQueuedCandidateStatus(c.ReviewStatus) {
+		status := c.Status
+		if status == "" {
+			status = c.ReviewStatus
+		}
+		return fmt.Errorf("candidate is %s", normalizeCandidateStatus(status))
 	}
 
 	now := time.Now().UTC()
+	c.Status = "accepted"
 	c.ReviewStatus = "accepted"
 	c.ReviewerID = reviewer
 	c.ReviewedAt = now
-	r.candidates[candidateID] = c
+	r.candidates[candidateID] = normalizeCandidate(c)
 	r.annotations = append(r.annotations, Annotation{CandidateID: candidateID, ReviewerID: reviewer, CreatedAt: now})
 	r.audits = append(r.audits, AuditEvent{Actor: reviewer, Action: "review.accept", ResourceType: "annotation_candidate", ResourceID: fmt.Sprintf("%d", candidateID), TS: now})
 	return nil
@@ -94,15 +109,20 @@ func (r *InMemoryRepository) Reject(candidateID int64, reviewer string) error {
 	if !ok {
 		return fmt.Errorf("candidate %d not found", candidateID)
 	}
-	if c.ReviewStatus != "pending" {
-		return fmt.Errorf("candidate is %s", c.ReviewStatus)
+	if !isQueuedCandidateStatus(c.Status) && !isQueuedCandidateStatus(c.ReviewStatus) {
+		status := c.Status
+		if status == "" {
+			status = c.ReviewStatus
+		}
+		return fmt.Errorf("candidate is %s", normalizeCandidateStatus(status))
 	}
 
 	now := time.Now().UTC()
+	c.Status = "rejected"
 	c.ReviewStatus = "rejected"
 	c.ReviewerID = reviewer
 	c.ReviewedAt = now
-	r.candidates[candidateID] = c
+	r.candidates[candidateID] = normalizeCandidate(c)
 	r.audits = append(r.audits, AuditEvent{Actor: reviewer, Action: "review.reject", ResourceType: "annotation_candidate", ResourceID: fmt.Sprintf("%d", candidateID), TS: now})
 	return nil
 }
@@ -113,9 +133,10 @@ func (r *InMemoryRepository) ListPublishableCandidates(projectID int64) ([]Publi
 
 	items := make([]PublishableCandidate, 0, len(r.candidates))
 	for _, candidate := range r.candidates {
-		if candidate.ReviewStatus != "accepted" {
+		if normalizeCandidateStatus(candidate.ReviewStatus) != "accepted" && normalizeCandidateStatus(candidate.Status) != "accepted" {
 			continue
 		}
+		candidate = normalizeCandidate(candidate)
 		items = append(items, PublishableCandidate{
 			ID:           candidate.ID,
 			ProjectID:    projectID,
@@ -142,7 +163,7 @@ func (r *InMemoryRepository) GetCandidate(id int64) (Candidate, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	c, ok := r.candidates[id]
-	return c, ok
+	return normalizeCandidate(c), ok
 }
 
 var _ Repository = (*InMemoryRepository)(nil)
