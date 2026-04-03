@@ -11,6 +11,8 @@ export function AppShell() {
         <nav className="shell-nav" aria-label="Primary">
           <NavLink to="/">Overview</NavLink>
           <NavLink to="/tasks">Tasks</NavLink>
+          <NavLink to="/review">Review</NavLink>
+          <NavLink to="/publish/candidates">Publish</NavLink>
           <NavLink to="/data">Data</NavLink>
         </nav>
       </aside>

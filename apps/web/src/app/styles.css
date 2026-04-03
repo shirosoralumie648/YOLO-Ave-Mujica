@@ -221,6 +221,17 @@ a {
   border: 1px solid rgba(23, 32, 51, 0.08);
 }
 
+.stack-item__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: rgba(23, 32, 51, 0.74);
+}
+
+.stack-item button {
+  justify-self: start;
+}
+
 .idle-card {
   display: grid;
   gap: 8px;
@@ -299,6 +310,12 @@ a {
 
 .data-card a,
 .data-snapshot-card a {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.14em;
+}
+
+.panel-link {
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 0.14em;

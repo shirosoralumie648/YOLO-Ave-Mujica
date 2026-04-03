@@ -7,6 +7,9 @@ import { DatasetListPage } from "../features/data/dataset-list-page";
 import { DatasetDetailPage } from "../features/data/dataset-detail-page";
 import { SnapshotDetailPage } from "../features/data/snapshot-detail-page";
 import { SnapshotDiffPage } from "../features/data/snapshot-diff-page";
+import { ReviewQueuePage } from "../features/review/review-queue-page";
+import { PublishCandidatesPage } from "../features/publish/publish-candidates-page";
+import { PublishBatchDetailPage } from "../features/publish/publish-batch-detail-page";
 
 export const router = createBrowserRouter([
   {
@@ -20,6 +23,9 @@ export const router = createBrowserRouter([
       { path: "data/datasets/:datasetId", element: <DatasetDetailPage /> },
       { path: "data/snapshots/:snapshotId", element: <SnapshotDetailPage /> },
       { path: "data/diff", element: <SnapshotDiffPage /> },
+      { path: "review", element: <ReviewQueuePage /> },
+      { path: "publish/candidates", element: <PublishCandidatesPage /> },
+      { path: "publish/batches/:batchId", element: <PublishBatchDetailPage /> },
     ],
   },
 ]);
