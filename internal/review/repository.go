@@ -9,7 +9,7 @@ import (
 type Repository interface {
 	ListPending() ([]Candidate, error)
 	Accept(candidateID int64, reviewer string) error
-	Reject(candidateID int64, reviewer string) error
+	Reject(candidateID int64, reviewer, reasonCode string) error
 	ListPublishableCandidates(projectID int64) ([]PublishableCandidate, error)
 }
 
@@ -101,7 +101,7 @@ func (r *InMemoryRepository) Accept(candidateID int64, reviewer string) error {
 	return nil
 }
 
-func (r *InMemoryRepository) Reject(candidateID int64, reviewer string) error {
+func (r *InMemoryRepository) Reject(candidateID int64, reviewer, reasonCode string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -123,7 +123,16 @@ func (r *InMemoryRepository) Reject(candidateID int64, reviewer string) error {
 	c.ReviewerID = reviewer
 	c.ReviewedAt = now
 	r.candidates[candidateID] = normalizeCandidate(c)
-	r.audits = append(r.audits, AuditEvent{Actor: reviewer, Action: "review.reject", ResourceType: "annotation_candidate", ResourceID: fmt.Sprintf("%d", candidateID), TS: now})
+	r.audits = append(r.audits, AuditEvent{
+		Actor:        reviewer,
+		Action:       "review.reject",
+		ResourceType: "annotation_candidate",
+		ResourceID:   fmt.Sprintf("%d", candidateID),
+		Detail: map[string]any{
+			"reason_code": reasonCode,
+		},
+		TS: now,
+	})
 	return nil
 }
 

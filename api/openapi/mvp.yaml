@@ -232,13 +232,26 @@ paths:
           description: Candidate accepted
   /v1/review/candidates/{id}/reject:
     post:
-      summary: Reject candidate
+      summary: Reject candidate with required reason code
       parameters:
         - in: path
           name: id
           required: true
           schema:
             type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - reason_code
+              properties:
+                reviewer_id:
+                  type: string
+                reason_code:
+                  type: string
       responses:
         "200":
           description: Candidate rejected

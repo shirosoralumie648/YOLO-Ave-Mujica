@@ -1,6 +1,8 @@
 package review
 
 import (
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -37,11 +39,12 @@ type Annotation struct {
 }
 
 type AuditEvent struct {
-	Actor        string    `json:"actor"`
-	Action       string    `json:"action"`
-	ResourceType string    `json:"resource_type"`
-	ResourceID   string    `json:"resource_id"`
-	TS           time.Time `json:"ts"`
+	Actor        string         `json:"actor"`
+	Action       string         `json:"action"`
+	ResourceType string         `json:"resource_type"`
+	ResourceID   string         `json:"resource_id"`
+	Detail       map[string]any `json:"detail,omitempty"`
+	TS           time.Time      `json:"ts"`
 }
 
 type Service struct {
@@ -77,8 +80,12 @@ func (s *Service) AcceptCandidate(candidateID int64, reviewer string) error {
 	return s.repo.Accept(candidateID, reviewer)
 }
 
-func (s *Service) RejectCandidate(candidateID int64, reviewer string) error {
-	return s.repo.Reject(candidateID, reviewer)
+func (s *Service) RejectCandidate(candidateID int64, reviewer, reasonCode string) error {
+	reasonCode = strings.TrimSpace(reasonCode)
+	if reasonCode == "" {
+		return fmt.Errorf("reason_code is required")
+	}
+	return s.repo.Reject(candidateID, reviewer, reasonCode)
 }
 
 func (s *Service) AnnotationCount() int {

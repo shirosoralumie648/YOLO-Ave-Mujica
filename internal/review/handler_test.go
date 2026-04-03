@@ -34,7 +34,7 @@ func (r *fakeRepository) Accept(candidateID int64, _ string) error {
 	return nil
 }
 
-func (r *fakeRepository) Reject(candidateID int64, _ string) error {
+func (r *fakeRepository) Reject(candidateID int64, _ string, _ string) error {
 	r.rejected = append(r.rejected, candidateID)
 	return nil
 }
@@ -135,7 +135,7 @@ func TestRejectCandidatePreservesReviewMetadata(t *testing.T) {
 	svc := NewService()
 	svc.SeedCandidate(Candidate{ID: 11, DatasetID: 1, SnapshotID: 1, ItemID: 1, CategoryID: 1, ReviewStatus: "pending"})
 
-	if err := svc.RejectCandidate(11, "reviewer-1"); err != nil {
+	if err := svc.RejectCandidate(11, "reviewer-1", "low_confidence"); err != nil {
 		t.Fatalf("reject candidate: %v", err)
 	}
 	c, ok := svc.GetCandidate(11)
@@ -147,5 +147,46 @@ func TestRejectCandidatePreservesReviewMetadata(t *testing.T) {
 	}
 	if c.ReviewedAt.IsZero() {
 		t.Fatalf("expected reviewed timestamp, got zero")
+	}
+}
+
+func TestRejectCandidateRequiresReasonCode(t *testing.T) {
+	svc := NewService()
+	svc.SeedCandidate(Candidate{ID: 13, DatasetID: 1, SnapshotID: 1, ItemID: 1, CategoryID: 1, ReviewStatus: "pending"})
+	handler := NewHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/review/candidates/13/reject", strings.NewReader(`{"reviewer_id":"u1"}`))
+	rec := httptest.NewRecorder()
+
+	srv := server.NewHTTPServerWithModules(server.Modules{
+		Review: server.ReviewRoutes{
+			ListCandidates:  handler.ListCandidates,
+			AcceptCandidate: handler.AcceptCandidate,
+			RejectCandidate: handler.RejectCandidate,
+		},
+	})
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "reason_code is required") {
+		t.Fatalf("expected reason_code validation error, got %s", rec.Body.String())
+	}
+}
+
+func TestRejectCandidateRecordsReasonCodeInAudit(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(repo)
+	svc.SeedCandidate(Candidate{ID: 14, DatasetID: 1, SnapshotID: 1, ItemID: 1, CategoryID: 1, ReviewStatus: "pending"})
+
+	if err := svc.RejectCandidate(14, "reviewer-1", "box_out_of_scope"); err != nil {
+		t.Fatalf("reject candidate: %v", err)
+	}
+	if len(repo.audits) != 1 {
+		t.Fatalf("expected one audit row, got %d", len(repo.audits))
+	}
+	if repo.audits[0].Detail["reason_code"] != "box_out_of_scope" {
+		t.Fatalf("expected reason_code in audit detail, got %+v", repo.audits[0].Detail)
 	}
 }

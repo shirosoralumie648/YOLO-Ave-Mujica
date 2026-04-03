@@ -82,11 +82,13 @@ func (r *PostgresRepository) PendingCandidateCount(projectID int64) (int, error)
 }
 
 func (r *PostgresRepository) Accept(candidateID int64, reviewer string) error {
-	return r.transitionCandidate(candidateID, reviewer, "accepted", "review.accept", true)
+	return r.transitionCandidate(candidateID, reviewer, "accepted", "review.accept", true, nil)
 }
 
-func (r *PostgresRepository) Reject(candidateID int64, reviewer string) error {
-	return r.transitionCandidate(candidateID, reviewer, "rejected", "review.reject", false)
+func (r *PostgresRepository) Reject(candidateID int64, reviewer, reasonCode string) error {
+	return r.transitionCandidate(candidateID, reviewer, "rejected", "review.reject", false, map[string]any{
+		"reason_code": reasonCode,
+	})
 }
 
 func (r *PostgresRepository) ListPublishableCandidates(projectID int64) ([]PublishableCandidate, error) {
@@ -149,7 +151,7 @@ func (r *PostgresRepository) ListPublishableCandidates(projectID int64) ([]Publi
 	return items, rows.Err()
 }
 
-func (r *PostgresRepository) transitionCandidate(candidateID int64, reviewer, status, action string, promote bool) error {
+func (r *PostgresRepository) transitionCandidate(candidateID int64, reviewer, status, action string, promote bool, detail map[string]any) error {
 	ctx := context.Background()
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -230,10 +232,18 @@ func (r *PostgresRepository) transitionCandidate(candidateID int64, reviewer, st
 		}
 	}
 
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	detailJSON, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(ctx, `
-		insert into audit_logs (actor, action, resource_type, resource_id)
-		values ($1, $2, 'annotation_candidate', $3)
-	`, reviewer, action, fmt.Sprintf("%d", candidateID)); err != nil {
+		insert into audit_logs (actor, action, resource_type, resource_id, detail_json)
+		values ($1, $2, 'annotation_candidate', $3, $4::jsonb)
+	`, reviewer, action, fmt.Sprintf("%d", candidateID), detailJSON); err != nil {
 		return err
 	}
 

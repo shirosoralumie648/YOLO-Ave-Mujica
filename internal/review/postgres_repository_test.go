@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -94,6 +95,47 @@ func TestPostgresRepositoryListPendingIncludesLegacyAndQueuedCandidates(t *testi
 		if item.Source.Confidence == nil {
 			t.Fatalf("expected source confidence, got %+v", item.Source)
 		}
+	}
+}
+
+func TestPostgresRepositoryRejectStoresReasonCodeInAuditLog(t *testing.T) {
+	databaseURL := os.Getenv("INTEGRATION_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("INTEGRATION_DATABASE_URL is required")
+	}
+
+	ctx := context.Background()
+	pool, err := store.NewPostgresPool(ctx, config.Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatalf("new pool: %v", err)
+	}
+	defer pool.Close()
+
+	mustApplyPublishMigration(t, ctx, pool)
+	_, _, _, pendingCandidateID, _ := seedReviewQueueFixture(t, ctx, pool)
+
+	repo := NewPostgresRepository(pool)
+	if err := repo.Reject(pendingCandidateID, "reviewer-1", "low_confidence"); err != nil {
+		t.Fatalf("reject candidate: %v", err)
+	}
+
+	var detailRaw []byte
+	if err := pool.QueryRow(ctx, `
+		select detail_json
+		from audit_logs
+		where action = 'review.reject' and resource_type = 'annotation_candidate' and resource_id = $1
+		order by id desc
+		limit 1
+	`, fmt.Sprintf("%d", pendingCandidateID)).Scan(&detailRaw); err != nil {
+		t.Fatalf("load audit log detail: %v", err)
+	}
+
+	var detail map[string]any
+	if err := json.Unmarshal(detailRaw, &detail); err != nil {
+		t.Fatalf("decode audit detail: %v", err)
+	}
+	if detail["reason_code"] != "low_confidence" {
+		t.Fatalf("expected low_confidence detail, got %+v", detail)
 	}
 }
 
