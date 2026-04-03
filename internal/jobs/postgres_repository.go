@@ -86,6 +86,37 @@ func (r *PostgresRepository) Get(id int64) (*Job, bool) {
 	return job, true
 }
 
+func (r *PostgresRepository) ListRecentFailedJobs(projectID int64, limit int) ([]Job, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+
+	rows, err := r.pool.Query(context.Background(), `
+		select id, project_id, dataset_id, snapshot_id, job_type, status, required_resource_type,
+		       required_capabilities_json, idempotency_key, worker_id, payload_json, total_items,
+		       succeeded_items, failed_items, created_at, started_at, finished_at, lease_until,
+		       retry_count, error_code, error_msg
+		from jobs
+		where project_id = $1 and status in ('failed', 'retry_waiting')
+		order by coalesce(finished_at, created_at) desc
+		limit $2
+	`, projectID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []Job{}
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *job)
+	}
+	return out, rows.Err()
+}
+
 func (r *PostgresRepository) UpdateStatus(id int64, to string) error {
 	job, ok := r.Get(id)
 	if !ok {

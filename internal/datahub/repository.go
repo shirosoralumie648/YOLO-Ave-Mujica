@@ -3,6 +3,7 @@ package datahub
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -10,8 +11,11 @@ import (
 type Repository interface {
 	CreateDataset(ctx context.Context, in CreateDatasetInput) (Dataset, error)
 	GetDataset(ctx context.Context, datasetID int64) (Dataset, error)
+	ListDatasets(ctx context.Context, projectID int64) ([]DatasetSummary, error)
+	GetDatasetDetail(ctx context.Context, datasetID int64) (DatasetDetail, error)
 	CreateSnapshot(ctx context.Context, datasetID int64, in CreateSnapshotInput) (Snapshot, error)
 	GetSnapshot(ctx context.Context, snapshotID int64) (Snapshot, error)
+	GetSnapshotDetail(ctx context.Context, snapshotID int64) (SnapshotDetail, error)
 	ListSnapshots(ctx context.Context, datasetID int64) ([]Snapshot, error)
 	InsertItems(ctx context.Context, datasetID int64, objectKeys []string) (int, error)
 	UpsertScannedItems(ctx context.Context, datasetID int64, objects []ScannedObject) (int, error)
@@ -91,6 +95,68 @@ func (r *InMemoryRepository) GetDataset(_ context.Context, datasetID int64) (Dat
 	return dataset, nil
 }
 
+func (r *InMemoryRepository) ListDatasets(_ context.Context, projectID int64) ([]DatasetSummary, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	ids := make([]int64, 0, len(r.datasets))
+	for id := range r.datasets {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	out := make([]DatasetSummary, 0)
+	for _, id := range ids {
+		dataset := r.datasets[id]
+		if dataset.ProjectID != projectID {
+			continue
+		}
+		summary := DatasetSummary{
+			ID:            dataset.ID,
+			ProjectID:     dataset.ProjectID,
+			Name:          dataset.Name,
+			Bucket:        dataset.Bucket,
+			Prefix:        dataset.Prefix,
+			ItemCount:     len(r.items[dataset.ID]),
+			SnapshotCount: len(r.snapshots[dataset.ID]),
+		}
+		if n := len(r.snapshots[dataset.ID]); n > 0 {
+			latest := r.snapshots[dataset.ID][n-1]
+			latestID := latest.ID
+			summary.LatestSnapshotID = &latestID
+			summary.LatestSnapshotVersion = latest.Version
+		}
+		out = append(out, summary)
+	}
+	return out, nil
+}
+
+func (r *InMemoryRepository) GetDatasetDetail(_ context.Context, datasetID int64) (DatasetDetail, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	dataset, ok := r.datasets[datasetID]
+	if !ok {
+		return DatasetDetail{}, wrapNotFound("dataset", datasetID)
+	}
+	detail := DatasetDetail{
+		ID:            dataset.ID,
+		ProjectID:     dataset.ProjectID,
+		Name:          dataset.Name,
+		Bucket:        dataset.Bucket,
+		Prefix:        dataset.Prefix,
+		ItemCount:     len(r.items[dataset.ID]),
+		SnapshotCount: len(r.snapshots[dataset.ID]),
+	}
+	if n := len(r.snapshots[dataset.ID]); n > 0 {
+		latest := r.snapshots[dataset.ID][n-1]
+		latestID := latest.ID
+		detail.LatestSnapshotID = &latestID
+		detail.LatestSnapshotVersion = latest.Version
+	}
+	return detail, nil
+}
+
 func (r *InMemoryRepository) CreateSnapshot(_ context.Context, datasetID int64, in CreateSnapshotInput) (Snapshot, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -136,6 +202,52 @@ func (r *InMemoryRepository) GetSnapshot(_ context.Context, snapshotID int64) (S
 		}
 	}
 	return Snapshot{}, fmt.Errorf("snapshot %d not found", snapshotID)
+}
+
+func (r *InMemoryRepository) GetSnapshotDetail(_ context.Context, snapshotID int64) (SnapshotDetail, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var found Snapshot
+	foundSnapshot := false
+	for _, snapshots := range r.snapshots {
+		for _, snapshot := range snapshots {
+			if snapshot.ID == snapshotID {
+				found = snapshot
+				foundSnapshot = true
+				break
+			}
+		}
+		if foundSnapshot {
+			break
+		}
+	}
+	if !foundSnapshot {
+		return SnapshotDetail{}, wrapNotFound("snapshot", snapshotID)
+	}
+
+	dataset, ok := r.datasets[found.DatasetID]
+	if !ok {
+		return SnapshotDetail{}, wrapNotFound("dataset", found.DatasetID)
+	}
+
+	annotationCount := 0
+	for _, annotation := range r.annotations {
+		if annotation.DatasetID == found.DatasetID && annotation.SnapshotID <= snapshotID {
+			annotationCount++
+		}
+	}
+
+	return SnapshotDetail{
+		ID:                found.ID,
+		DatasetID:         found.DatasetID,
+		Version:           found.Version,
+		ProjectID:         dataset.ProjectID,
+		DatasetName:       dataset.Name,
+		BasedOnSnapshotID: found.BasedOnSnapshot,
+		Note:              found.Note,
+		AnnotationCount:   annotationCount,
+	}, nil
 }
 
 func (r *InMemoryRepository) InsertItems(_ context.Context, datasetID int64, objectKeys []string) (int, error) {

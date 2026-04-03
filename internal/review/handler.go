@@ -18,6 +18,7 @@ func NewHandler(svc *Service) *Handler {
 
 type reviewActionRequest struct {
 	ReviewerID string `json:"reviewer_id"`
+	ReasonCode string `json:"reason_code,omitempty"`
 }
 
 func (h *Handler) ListCandidates(w http.ResponseWriter, _ *http.Request) {
@@ -63,7 +64,7 @@ func (h *Handler) RejectCandidate(w http.ResponseWriter, r *http.Request) {
 		in.ReviewerID = "system"
 	}
 
-	if err := h.svc.RejectCandidate(id, in.ReviewerID); err != nil {
+	if err := h.svc.RejectCandidate(id, in.ReviewerID, in.ReasonCode); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}

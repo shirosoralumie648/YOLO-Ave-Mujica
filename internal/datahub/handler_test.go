@@ -3,6 +3,7 @@ package datahub_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -59,6 +60,135 @@ func TestScanAndListItems(t *testing.T) {
 	}
 	if !strings.Contains(recItems.Body.String(), "train/a.jpg") {
 		t.Fatalf("expected indexed object in items list, got %s", recItems.Body.String())
+	}
+}
+
+func TestListDatasetsIncludesCreatedDatasetSummary(t *testing.T) {
+	srv := newTestServerWithFakePresigner()
+
+	recCreate := httptest.NewRecorder()
+	reqCreate := httptest.NewRequest(http.MethodPost, "/v1/datasets", strings.NewReader(`{"project_id":1,"name":"browse-d1","bucket":"bkt","prefix":"train"}`))
+	srv.Handler.ServeHTTP(recCreate, reqCreate)
+	if recCreate.Code != http.StatusOK {
+		t.Fatalf("create dataset failed: %d body=%s", recCreate.Code, recCreate.Body.String())
+	}
+
+	recList := httptest.NewRecorder()
+	reqList := httptest.NewRequest(http.MethodGet, "/v1/datasets", nil)
+	srv.Handler.ServeHTTP(recList, reqList)
+	if recList.Code != http.StatusOK {
+		t.Fatalf("list datasets failed: %d body=%s", recList.Code, recList.Body.String())
+	}
+	if !strings.Contains(recList.Body.String(), `"name":"browse-d1"`) {
+		t.Fatalf("expected created dataset in dataset summary list, got %s", recList.Body.String())
+	}
+}
+
+func TestGetSnapshotDetailIncludesDatasetNameAndVersion(t *testing.T) {
+	repo := datahub.NewInMemoryRepository()
+	svc := datahub.NewServiceWithRepository(nil, repo)
+	h := datahub.NewHandler(svc)
+	srv := server.NewHTTPServerWithDataHub(h)
+
+	dataset, err := svc.CreateDataset(datahub.CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "detail-dataset",
+		Bucket:    "platform-dev",
+		Prefix:    "train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	snapshot, err := svc.CreateSnapshot(dataset.ID, datahub.CreateSnapshotInput{Note: "detail target"})
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/snapshots/1", nil)
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get snapshot detail failed: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"dataset_name":"detail-dataset"`) {
+		t.Fatalf("expected dataset_name in snapshot detail, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"version":"`+snapshot.Version+`"`) {
+		t.Fatalf("expected snapshot version in response, got %s", rec.Body.String())
+	}
+}
+
+func TestGetDatasetDetailReturnsNotFoundForUnknownDataset(t *testing.T) {
+	srv := newTestServerWithFakePresigner()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/datasets/999", nil)
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown dataset detail, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetDatasetDetailReturnsNotFoundOutsideFixedProjectContext(t *testing.T) {
+	repo := datahub.NewInMemoryRepository()
+	svc := datahub.NewServiceWithRepository(nil, repo)
+	h := datahub.NewHandler(svc)
+	srv := server.NewHTTPServerWithDataHub(h)
+
+	dataset, err := svc.CreateDataset(datahub.CreateDatasetInput{
+		ProjectID: 2,
+		Name:      "foreign-dataset",
+		Bucket:    "platform-dev",
+		Prefix:    "foreign/train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/datasets/"+strconv.FormatInt(dataset.ID, 10), nil)
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for out-of-project dataset detail, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetSnapshotDetailRejectsNonNumericID(t *testing.T) {
+	srv := newTestServerWithFakePresigner()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/snapshots/not-a-number", nil)
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-numeric snapshot detail id, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetSnapshotDetailReturnsNotFoundOutsideFixedProjectContext(t *testing.T) {
+	repo := datahub.NewInMemoryRepository()
+	svc := datahub.NewServiceWithRepository(nil, repo)
+	h := datahub.NewHandler(svc)
+	srv := server.NewHTTPServerWithDataHub(h)
+
+	dataset, err := svc.CreateDataset(datahub.CreateDatasetInput{
+		ProjectID: 2,
+		Name:      "foreign-dataset",
+		Bucket:    "platform-dev",
+		Prefix:    "foreign/train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	snapshot, err := svc.CreateSnapshot(dataset.ID, datahub.CreateSnapshotInput{Note: "foreign snapshot"})
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/snapshots/"+strconv.FormatInt(snapshot.ID, 10), nil)
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for out-of-project snapshot detail, got %d body=%s (snapshot_id=%d)", rec.Code, rec.Body.String(), snapshot.ID)
 	}
 }
 

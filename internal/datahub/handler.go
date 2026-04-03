@@ -17,6 +17,8 @@ type Handler struct {
 	sourcePresign importSourcePresigner
 }
 
+const browseProjectID int64 = 1
+
 func NewHandler(svc *Service) *Handler {
 	return NewHandlerWithJobs(svc, nil)
 }
@@ -134,6 +136,53 @@ func (h *Handler) ListSnapshots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": snaps})
+}
+
+func (h *Handler) ListDatasets(w http.ResponseWriter, _ *http.Request) {
+	items, err := h.svc.ListDatasets(browseProjectID)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (h *Handler) GetDatasetDetail(w http.ResponseWriter, r *http.Request) {
+	datasetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	detail, err := h.svc.GetDatasetDetail(datasetID)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	if detail.ProjectID != browseProjectID {
+		writeServiceError(w, wrapNotFound("dataset", datasetID))
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func (h *Handler) GetSnapshotDetail(w http.ResponseWriter, r *http.Request) {
+	snapshotID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	detail, err := h.svc.GetSnapshotDetail(snapshotID)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	if detail.ProjectID != browseProjectID {
+		writeServiceError(w, wrapNotFound("snapshot", snapshotID))
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
 }
 
 func (h *Handler) ListItems(w http.ResponseWriter, r *http.Request) {
@@ -284,4 +333,12 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{"error": err.Error()})
+}
+
+func writeServiceError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	writeError(w, http.StatusBadRequest, err)
 }

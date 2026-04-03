@@ -1,153 +1,138 @@
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
+import { getProjectOverview } from "./api";
 
-import { useProjectOverview } from "./api";
+function formatRelativeTime(iso: string | undefined) {
+  if (!iso) {
+    return "No recent activity";
+  }
+
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const diffHours = Math.max(1, Math.round(diffMs / (1000 * 60 * 60)));
+  if (diffHours < 24) {
+    return `${diffHours}h idle`;
+  }
+
+  const diffDays = Math.round(diffHours / 24);
+  return `${diffDays}d idle`;
+}
+
+function toTitleCase(value: string) {
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part[0]?.toUpperCase() + part.slice(1))
+    .join(" ");
+}
 
 export function TaskOverviewPage() {
-  const { projectId = "1" } = useParams();
-  const [searchParams] = useSearchParams();
-  const snapshotID = searchParams.get("snapshot_id");
-  const overviewQuery = useProjectOverview(projectId);
-  const overview = overviewQuery.data;
-  const taskQueueHref = buildProjectPath(projectId, "tasks", searchParams);
-
-  if (overviewQuery.isLoading) {
-    return <PageState title="Task Overview" description="Loading live blockers and active work." />;
-  }
-
-  if (overviewQuery.isError || !overview) {
-    return (
-      <PageState
-        title="Task Overview"
-        description="Overview data is unavailable right now. Check the API server and retry."
-      />
-    );
-  }
+  const overviewQuery = useQuery({
+    queryKey: ["overview", 1],
+    queryFn: () => getProjectOverview(1),
+  });
 
   return (
-    <div className="page-grid">
-      <section className="panel page-intro">
-        <p className="eyebrow">Task Overview</p>
-        <h1>Task Overview</h1>
-        <p>
-          当前项目的任务入口、阻塞视图和忘记处理的工作会先集中在这里。
-          {snapshotID ? ` 当前快照上下文是 ${snapshotID}。` : ""}
-        </p>
-        <div className="hero-actions">
-          <Link className="action-link primary" to={taskQueueHref}>
-            Open task queue
-          </Link>
+    <section className="page-stack">
+      <header className="page-hero">
+        <div>
+          <p className="page-kicker">Project 1</p>
+          <h1>Task Overview</h1>
+          <p className="page-summary">
+            Review the current queue, unblock urgent work, and keep the annotation flow moving.
+          </p>
         </div>
-      </section>
+        <div className="hero-meter">
+          <span>Control Plane</span>
+          <strong>{overviewQuery.data?.summary_cards[0]?.count ?? 0}</strong>
+          <small>open tasks in the active project</small>
+        </div>
+      </header>
 
-      <section className="summary-grid">
-        <MetricCard label="Open Tasks" value={String(overview.open_task_count)} accent="amber" />
-        <MetricCard label="Review Backlog" value={String(overview.review_backlog)} accent="teal" />
-        <MetricCard label="Failed Jobs" value={String(overview.failed_recent_jobs)} accent="rust" />
-      </section>
+      {overviewQuery.isLoading ? <p>Loading overview.</p> : null}
+      {overviewQuery.isError ? (
+        <p role="alert">Failed to load overview: {overviewQuery.error.message}</p>
+      ) : null}
 
-      <div className="two-up">
-        <section className="panel content-panel">
-          <div className="section-header">
-            <div>
-              <p className="eyebrow">Blockers View</p>
-              <h2>Current bottlenecks</h2>
-            </div>
-            <span className="context-pill muted">{overview.blockers.length} blockers</span>
-          </div>
-          {overview.blockers.length > 0 ? (
-            <div className="stack-list">
-              {overview.blockers.map((blocker) => (
-                <article key={blocker.kind} className={`blocker-card ${blocker.severity}`}>
-                  <div>
-                    <p className="blocker-meta">{formatSeverity(blocker.severity)}</p>
-                    <h3>{blocker.title}</h3>
-                    <p>{blocker.description}</p>
-                  </div>
-                  <a className="action-link subtle" href={blocker.href}>
-                    Open handling page
-                  </a>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <p className="empty-copy">No blockers right now. The production chain looks healthy.</p>
-          )}
-        </section>
-
-        <section className="panel content-panel">
-          <div className="section-header">
-            <div>
-              <p className="eyebrow">Longest Idle Task</p>
-              <h2>Silent blocker</h2>
-            </div>
-          </div>
-          {overview.longest_idle_task ? (
-            <div className="detail-card">
-              <div className="detail-card-top">
-                <div>
-                  <h3>{overview.longest_idle_task.title}</h3>
-                  <p>{overview.longest_idle_task.assignee || "Unassigned"}</p>
-                </div>
-                <span className="status-pill">{overview.longest_idle_task.status}</span>
-              </div>
-              <p>
-                Last activity at{" "}
-                {formatDateTime(overview.longest_idle_task.last_activity_at)}.
-              </p>
-              <Link className="action-link subtle" to={taskQueueHref}>
-                Open task queue
+      {overviewQuery.data ? (
+        <>
+          <div className="summary-grid">
+            {overviewQuery.data.summary_cards.map((card) => (
+              <Link className="panel summary-card" key={card.id} to={card.href}>
+                <span className="summary-card__title">{card.title}</span>
+                <strong className="summary-card__count">{card.count}</strong>
+                <small>Open filtered queue</small>
               </Link>
-            </div>
-          ) : (
-            <p className="empty-copy">No idle task is currently tracked for this project.</p>
-          )}
-        </section>
-      </div>
-    </div>
-  );
-}
+            ))}
+          </div>
 
-function MetricCard(props: { label: string; value: string; accent: "amber" | "teal" | "rust" }) {
-  return (
-    <article className={`panel metric-card ${props.accent}`}>
-      <p className="metric-label">{props.label}</p>
-      <strong>{props.value}</strong>
-    </article>
-  );
-}
+          <div className="overview-layout">
+            <section className="panel">
+              <div className="panel-header">
+                <h2>Active blockers</h2>
+                <span>{overviewQuery.data.blockers.length}</span>
+              </div>
+              {overviewQuery.data.blockers.length === 0 ? (
+                <p>No blockers are currently recorded.</p>
+              ) : (
+                <div className="stack-list">
+                  {overviewQuery.data.blockers.map((blocker) => (
+                    <Link className="stack-item" key={blocker.id} to={blocker.href}>
+                      <strong>{blocker.title}</strong>
+                      <span>{blocker.reason}</span>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </section>
 
-function PageState(props: { title: string; description: string }) {
-  return (
-    <section className="panel page-intro">
-      <p className="eyebrow">Task-first Routing</p>
-      <h1>{props.title}</h1>
-      <p>{props.description}</p>
+            <section className="panel panel-accent">
+              <div className="panel-header">
+                <h2>Longest idle task</h2>
+                <span>Needs a push</span>
+              </div>
+              {overviewQuery.data.longest_idle_task ? (
+                <div className="idle-card">
+                  <strong>
+                    <Link to={`/tasks/${overviewQuery.data.longest_idle_task.id}`}>
+                      {overviewQuery.data.longest_idle_task.title}
+                    </Link>
+                  </strong>
+                  <p>
+                    {toTitleCase(overviewQuery.data.longest_idle_task.status)} ·{" "}
+                    {toTitleCase(overviewQuery.data.longest_idle_task.priority)}
+                  </p>
+                  <p>
+                    {overviewQuery.data.longest_idle_task.assignee || "Unassigned"} ·{" "}
+                    {formatRelativeTime(overviewQuery.data.longest_idle_task.last_activity_at)}
+                  </p>
+                </div>
+              ) : (
+                <p>No open task is currently idle.</p>
+              )}
+            </section>
+
+            <section className="panel">
+              <div className="panel-header">
+                <h2>Recent failed jobs</h2>
+                <span>{overviewQuery.data.recent_failed_jobs.length}</span>
+              </div>
+              {overviewQuery.data.recent_failed_jobs.length === 0 ? (
+                <p>No failed jobs reported recently.</p>
+              ) : (
+                <div className="stack-list">
+                  {overviewQuery.data.recent_failed_jobs.map((job) => (
+                    <article className="stack-item" key={job.id}>
+                      <strong>{job.job_type}</strong>
+                      <span>{toTitleCase(job.status)}</span>
+                      <span>{job.error_msg}</span>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        </>
+      ) : null}
     </section>
   );
-}
-
-function buildProjectPath(projectId: string, section: string, searchParams: URLSearchParams): string {
-  const nextSearch = searchParams.toString();
-  const base = `/projects/${projectId}/${section}`;
-  return nextSearch ? `${base}?${nextSearch}` : base;
-}
-
-function formatSeverity(severity: string) {
-  switch (severity) {
-  case "high":
-    return "High Risk";
-  case "medium":
-    return "Needs attention";
-  default:
-    return severity;
-  }
-}
-
-function formatDateTime(value: string) {
-  return new Date(value).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }

@@ -3,6 +3,7 @@ package datahub
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -35,6 +36,98 @@ func (r *PostgresRepository) GetDataset(ctx context.Context, datasetID int64) (D
 		from datasets
 		where id = $1
 	`, datasetID).Scan(&out.ID, &out.ProjectID, &out.Name, &out.Bucket, &out.Prefix)
+	return out, err
+}
+
+func (r *PostgresRepository) ListDatasets(ctx context.Context, projectID int64) ([]DatasetSummary, error) {
+	rows, err := r.pool.Query(ctx, `
+		select
+			d.id,
+			d.project_id,
+			d.name,
+			d.bucket,
+			d.prefix,
+			(select count(*)::int from dataset_items i where i.dataset_id = d.id) as item_count,
+			(select count(*)::int from dataset_snapshots s where s.dataset_id = d.id) as snapshot_count,
+			(select s.id from dataset_snapshots s where s.dataset_id = d.id order by s.id desc limit 1) as latest_snapshot_id,
+			(select s.version from dataset_snapshots s where s.dataset_id = d.id order by s.id desc limit 1) as latest_snapshot_version
+		from datasets d
+		where d.project_id = $1
+		order by d.id asc
+	`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []DatasetSummary{}
+	for rows.Next() {
+		var item DatasetSummary
+		var latestSnapshotID sql.NullInt64
+		var latestSnapshotVersion sql.NullString
+		if err := rows.Scan(
+			&item.ID,
+			&item.ProjectID,
+			&item.Name,
+			&item.Bucket,
+			&item.Prefix,
+			&item.ItemCount,
+			&item.SnapshotCount,
+			&latestSnapshotID,
+			&latestSnapshotVersion,
+		); err != nil {
+			return nil, err
+		}
+		if latestSnapshotID.Valid {
+			id := latestSnapshotID.Int64
+			item.LatestSnapshotID = &id
+		}
+		if latestSnapshotVersion.Valid {
+			item.LatestSnapshotVersion = latestSnapshotVersion.String
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) GetDatasetDetail(ctx context.Context, datasetID int64) (DatasetDetail, error) {
+	var out DatasetDetail
+	var latestSnapshotID sql.NullInt64
+	var latestSnapshotVersion sql.NullString
+	err := r.pool.QueryRow(ctx, `
+		select
+			d.id,
+			d.project_id,
+			d.name,
+			d.bucket,
+			d.prefix,
+			(select count(*)::int from dataset_items i where i.dataset_id = d.id) as item_count,
+			(select count(*)::int from dataset_snapshots s where s.dataset_id = d.id) as snapshot_count,
+			(select s.id from dataset_snapshots s where s.dataset_id = d.id order by s.id desc limit 1) as latest_snapshot_id,
+			(select s.version from dataset_snapshots s where s.dataset_id = d.id order by s.id desc limit 1) as latest_snapshot_version
+		from datasets d
+		where d.id = $1
+	`, datasetID).Scan(
+		&out.ID,
+		&out.ProjectID,
+		&out.Name,
+		&out.Bucket,
+		&out.Prefix,
+		&out.ItemCount,
+		&out.SnapshotCount,
+		&latestSnapshotID,
+		&latestSnapshotVersion,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DatasetDetail{}, wrapNotFound("dataset", datasetID)
+	}
+	if latestSnapshotID.Valid {
+		id := latestSnapshotID.Int64
+		out.LatestSnapshotID = &id
+	}
+	if latestSnapshotVersion.Valid {
+		out.LatestSnapshotVersion = latestSnapshotVersion.String
+	}
 	return out, err
 }
 
@@ -77,16 +170,53 @@ func (r *PostgresRepository) CreateSnapshot(ctx context.Context, datasetID int64
 func (r *PostgresRepository) GetSnapshot(ctx context.Context, snapshotID int64) (Snapshot, error) {
 	var out Snapshot
 	err := r.pool.QueryRow(ctx, `
-		select id, dataset_id, version, based_on_snapshot_id, note
+		select id, dataset_id, version, based_on_snapshot_id, coalesce(note, '')
 		from dataset_snapshots
 		where id = $1
 	`, snapshotID).Scan(&out.ID, &out.DatasetID, &out.Version, &out.BasedOnSnapshot, &out.Note)
 	return out, err
 }
 
+func (r *PostgresRepository) GetSnapshotDetail(ctx context.Context, snapshotID int64) (SnapshotDetail, error) {
+	var out SnapshotDetail
+	err := r.pool.QueryRow(ctx, `
+		select
+			s.id,
+			s.dataset_id,
+			s.version,
+			s.based_on_snapshot_id,
+			coalesce(s.note, ''),
+				d.project_id,
+				d.name,
+				(select count(*)::int
+					from annotations a
+					where a.dataset_id = s.dataset_id
+						and a.created_at_snapshot_id <= s.id
+						and (a.deleted_at_snapshot_id is null or a.deleted_at_snapshot_id > s.id)
+						and a.review_status = 'verified'
+				) as annotation_count
+			from dataset_snapshots s
+		join datasets d on d.id = s.dataset_id
+		where s.id = $1
+	`, snapshotID).Scan(
+		&out.ID,
+		&out.DatasetID,
+		&out.Version,
+		&out.BasedOnSnapshotID,
+		&out.Note,
+		&out.ProjectID,
+		&out.DatasetName,
+		&out.AnnotationCount,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SnapshotDetail{}, wrapNotFound("snapshot", snapshotID)
+	}
+	return out, err
+}
+
 func (r *PostgresRepository) ListSnapshots(ctx context.Context, datasetID int64) ([]Snapshot, error) {
 	rows, err := r.pool.Query(ctx, `
-		select id, dataset_id, version, based_on_snapshot_id, note
+		select id, dataset_id, version, based_on_snapshot_id, coalesce(note, '')
 		from dataset_snapshots
 		where dataset_id = $1
 		order by id asc

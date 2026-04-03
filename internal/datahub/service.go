@@ -145,6 +145,27 @@ func (s *Service) ListSnapshots(datasetID int64) ([]Snapshot, error) {
 	return s.repo.ListSnapshots(context.Background(), datasetID)
 }
 
+func (s *Service) ListDatasets(projectID int64) ([]DatasetSummary, error) {
+	if projectID <= 0 {
+		return nil, errors.New("project_id must be > 0")
+	}
+	return s.repo.ListDatasets(context.Background(), projectID)
+}
+
+func (s *Service) GetDatasetDetail(datasetID int64) (DatasetDetail, error) {
+	if datasetID <= 0 {
+		return DatasetDetail{}, errors.New("dataset_id must be > 0")
+	}
+	return s.repo.GetDatasetDetail(context.Background(), datasetID)
+}
+
+func (s *Service) GetSnapshotDetail(snapshotID int64) (SnapshotDetail, error) {
+	if snapshotID <= 0 {
+		return SnapshotDetail{}, errors.New("snapshot_id must be > 0")
+	}
+	return s.repo.GetSnapshotDetail(context.Background(), snapshotID)
+}
+
 // ScanDataset records object keys discovered under a dataset prefix.
 func (s *Service) ScanDataset(datasetID int64, objectKeys []string) (int, error) {
 	if len(objectKeys) > 0 {

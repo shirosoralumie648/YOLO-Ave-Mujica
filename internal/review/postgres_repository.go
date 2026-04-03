@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -19,9 +20,10 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 
 func (r *PostgresRepository) ListPending() ([]Candidate, error) {
 	rows, err := r.pool.Query(context.Background(), `
-		select id, dataset_id, snapshot_id, item_id, category_id, review_status, reviewer_id, reviewed_at
+		select id, job_id, dataset_id, snapshot_id, item_id, category_id,
+		       confidence, model_name, is_pseudo, review_status, reviewer_id, reviewed_at, created_at
 		from annotation_candidates
-		where review_status = 'pending'
+		where review_status in ('pending', 'queued_for_review')
 		order by id asc
 	`)
 	if err != nil {
@@ -32,18 +34,38 @@ func (r *PostgresRepository) ListPending() ([]Candidate, error) {
 	items := []Candidate{}
 	for rows.Next() {
 		var c Candidate
+		var jobID *int64
+		var confidence *float64
 		var reviewerID *string
 		var reviewedAt *time.Time
-		if err := rows.Scan(&c.ID, &c.DatasetID, &c.SnapshotID, &c.ItemID, &c.CategoryID, &c.ReviewStatus, &reviewerID, &reviewedAt); err != nil {
+		var createdAt time.Time
+		if err := rows.Scan(
+			&c.ID,
+			&jobID,
+			&c.DatasetID,
+			&c.SnapshotID,
+			&c.ItemID,
+			&c.CategoryID,
+			&confidence,
+			&c.Source.ModelName,
+			&c.Source.IsPseudo,
+			&c.ReviewStatus,
+			&reviewerID,
+			&reviewedAt,
+			&createdAt,
+		); err != nil {
 			return nil, err
 		}
+		c.Source.JobID = jobID
+		c.Source.Confidence = confidence
+		c.Source.CreatedAt = &createdAt
 		if reviewerID != nil {
 			c.ReviewerID = *reviewerID
 		}
 		if reviewedAt != nil {
 			c.ReviewedAt = *reviewedAt
 		}
-		items = append(items, c)
+		items = append(items, normalizeCandidate(c))
 	}
 	return items, rows.Err()
 }
@@ -52,26 +74,84 @@ func (r *PostgresRepository) PendingCandidateCount(projectID int64) (int, error)
 	var count int
 	err := r.pool.QueryRow(context.Background(), `
 		select count(*)
-		from annotation_candidates ac
-		join datasets d on d.id = ac.dataset_id
-		where ac.review_status = 'pending'
-		  and d.project_id = $1
+		from annotation_candidates c
+		join datasets d on d.id = c.dataset_id
+		where d.project_id = $1 and c.review_status in ('pending', 'queued_for_review')
 	`, projectID).Scan(&count)
-	if err != nil {
-		return 0, err
-	}
-	return count, nil
+	return count, err
 }
 
 func (r *PostgresRepository) Accept(candidateID int64, reviewer string) error {
-	return r.transitionCandidate(candidateID, reviewer, "accepted", "review.accept", true)
+	return r.transitionCandidate(candidateID, reviewer, "accepted", "review.accept", true, nil)
 }
 
-func (r *PostgresRepository) Reject(candidateID int64, reviewer string) error {
-	return r.transitionCandidate(candidateID, reviewer, "rejected", "review.reject", false)
+func (r *PostgresRepository) Reject(candidateID int64, reviewer, reasonCode string) error {
+	return r.transitionCandidate(candidateID, reviewer, "rejected", "review.reject", false, map[string]any{
+		"reason_code": reasonCode,
+	})
 }
 
-func (r *PostgresRepository) transitionCandidate(candidateID int64, reviewer, status, action string, promote bool) error {
+func (r *PostgresRepository) ListPublishableCandidates(projectID int64) ([]PublishableCandidate, error) {
+	rows, err := r.pool.Query(context.Background(), `
+		select
+			c.id,
+			d.project_id,
+			c.dataset_id,
+			c.snapshot_id,
+			c.item_id,
+			coalesce(t.id, 0) as task_id,
+			c.review_status,
+			coalesce(t.priority, 'normal') as risk_level,
+			coalesce(c.model_name, '') as source_model,
+			coalesce(c.reviewed_at, c.created_at) as accepted_at,
+			jsonb_build_object(
+				'dataset_name', d.name,
+				'snapshot_version', s.version,
+				'task_title', coalesce(t.title, ''),
+				'reviewer_id', coalesce(c.reviewer_id, '')
+			) as summary
+		from annotation_candidates c
+		join datasets d on d.id = c.dataset_id
+		join dataset_snapshots s on s.id = c.snapshot_id
+		left join tasks t on t.snapshot_id = c.snapshot_id and t.kind = 'review'
+		where d.project_id = $1 and c.review_status = 'accepted'
+		order by c.snapshot_id asc, accepted_at asc, c.id asc
+	`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []PublishableCandidate{}
+	for rows.Next() {
+		var (
+			item       PublishableCandidate
+			summaryRaw []byte
+		)
+		if err := rows.Scan(
+			&item.ID,
+			&item.ProjectID,
+			&item.DatasetID,
+			&item.SnapshotID,
+			&item.ItemID,
+			&item.TaskID,
+			&item.ReviewStatus,
+			&item.RiskLevel,
+			&item.SourceModel,
+			&item.AcceptedAt,
+			&summaryRaw,
+		); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(summaryRaw, &item.Summary); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) transitionCandidate(candidateID int64, reviewer, status, action string, promote bool, detail map[string]any) error {
 	ctx := context.Background()
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -122,8 +202,8 @@ func (r *PostgresRepository) transitionCandidate(candidateID int64, reviewer, st
 		}
 		return err
 	}
-	if row.Status != "pending" {
-		return fmt.Errorf("candidate is %s", row.Status)
+	if !isQueuedCandidateStatus(row.Status) {
+		return fmt.Errorf("candidate is %s", normalizeCandidateStatus(row.Status))
 	}
 
 	now := time.Now().UTC()
@@ -152,10 +232,18 @@ func (r *PostgresRepository) transitionCandidate(candidateID int64, reviewer, st
 		}
 	}
 
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	detailJSON, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(ctx, `
-		insert into audit_logs (actor, action, resource_type, resource_id)
-		values ($1, $2, 'annotation_candidate', $3)
-	`, reviewer, action, fmt.Sprintf("%d", candidateID)); err != nil {
+		insert into audit_logs (actor, action, resource_type, resource_id, detail_json)
+		values ($1, $2, 'annotation_candidate', $3, $4::jsonb)
+	`, reviewer, action, fmt.Sprintf("%d", candidateID), detailJSON); err != nil {
 		return err
 	}
 

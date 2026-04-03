@@ -1,7 +1,10 @@
 package datahub
 
 import (
+	"encoding/json"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -191,5 +194,366 @@ func TestImportSnapshotCreatesCanonicalAnnotations(t *testing.T) {
 	}
 	if got := stored.FieldByName("CategoryName").String(); got != "person" {
 		t.Fatalf("expected stored category person, got %s", got)
+	}
+}
+
+func findDatasetSummaryByID(items []DatasetSummary, datasetID int64) (DatasetSummary, bool) {
+	for _, item := range items {
+		if item.ID == datasetID {
+			return item, true
+		}
+	}
+	return DatasetSummary{}, false
+}
+
+func TestListDatasetsReturnsProjectScopedSummaries(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	dockNight, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "dock-night",
+		Bucket:    "platform-dev",
+		Prefix:    "train/night",
+	})
+	if err != nil {
+		t.Fatalf("create dock-night dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dockNight.ID, []string{"train/night/a.jpg", "train/night/b.jpg"}); err != nil {
+		t.Fatalf("scan dock-night items: %v", err)
+	}
+	if _, err := svc.CreateSnapshot(dockNight.ID, CreateSnapshotInput{Note: "baseline"}); err != nil {
+		t.Fatalf("create dock-night v1 snapshot: %v", err)
+	}
+	dockNightLatest, err := svc.CreateSnapshot(dockNight.ID, CreateSnapshotInput{Note: "relabel batch"})
+	if err != nil {
+		t.Fatalf("create dock-night v2 snapshot: %v", err)
+	}
+
+	yardDay, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "yard-day",
+		Bucket:    "platform-dev",
+		Prefix:    "train/day",
+	})
+	if err != nil {
+		t.Fatalf("create yard-day dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(yardDay.ID, []string{"train/day/a.jpg"}); err != nil {
+		t.Fatalf("scan yard-day item: %v", err)
+	}
+	yardDayParent, err := svc.CreateSnapshot(yardDay.ID, CreateSnapshotInput{Note: "seed"})
+	if err != nil {
+		t.Fatalf("create yard-day v1 snapshot: %v", err)
+	}
+	if _, err := svc.CreateSnapshot(yardDay.ID, CreateSnapshotInput{
+		BasedOnSnapshotID: &yardDayParent.ID,
+		Note:              "imported",
+	}); err != nil {
+		t.Fatalf("create yard-day v2 snapshot: %v", err)
+	}
+
+	otherProjectDataset, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 2,
+		Name:      "ignore-me",
+		Bucket:    "platform-dev",
+		Prefix:    "train/other",
+	})
+	if err != nil {
+		t.Fatalf("create project 2 dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(otherProjectDataset.ID, []string{"train/other/a.jpg"}); err != nil {
+		t.Fatalf("scan project 2 dataset item: %v", err)
+	}
+
+	items, err := svc.ListDatasets(1)
+	if err != nil {
+		t.Fatalf("list datasets: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 datasets for project 1, got %d", len(items))
+	}
+
+	dockNightSummary, ok := findDatasetSummaryByID(items, dockNight.ID)
+	if !ok {
+		t.Fatalf("dock-night dataset %d not found in summaries: %+v", dockNight.ID, items)
+	}
+	if dockNightSummary.ItemCount != 2 {
+		t.Fatalf("expected dock-night item_count=2, got %d", dockNightSummary.ItemCount)
+	}
+	if dockNightSummary.SnapshotCount != 2 {
+		t.Fatalf("expected dock-night snapshot_count=2, got %d", dockNightSummary.SnapshotCount)
+	}
+	if dockNightSummary.LatestSnapshotID == nil || *dockNightSummary.LatestSnapshotID != dockNightLatest.ID {
+		t.Fatalf("expected dock-night latest_snapshot_id=%d, got %+v", dockNightLatest.ID, dockNightSummary.LatestSnapshotID)
+	}
+	if dockNightSummary.LatestSnapshotVersion != "v2" {
+		t.Fatalf("expected dock-night latest_snapshot_version=v2, got %s", dockNightSummary.LatestSnapshotVersion)
+	}
+}
+
+func TestGetDatasetDetailReturnsAggregateCountsAndLatestSnapshot(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "dock-night",
+		Bucket:    "platform-dev",
+		Prefix:    "train/night",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/night/a.jpg", "train/night/b.jpg"}); err != nil {
+		t.Fatalf("scan items: %v", err)
+	}
+	if _, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{Note: "baseline"}); err != nil {
+		t.Fatalf("create v1 snapshot: %v", err)
+	}
+	latest, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{Note: "relabel batch"})
+	if err != nil {
+		t.Fatalf("create v2 snapshot: %v", err)
+	}
+
+	detail, err := svc.GetDatasetDetail(dataset.ID)
+	if err != nil {
+		t.Fatalf("get dataset detail: %v", err)
+	}
+	if detail.ID != dataset.ID || detail.ProjectID != dataset.ProjectID || detail.Name != dataset.Name {
+		t.Fatalf("unexpected dataset identity: %+v", detail)
+	}
+	if detail.ItemCount != 2 {
+		t.Fatalf("expected item_count=2, got %d", detail.ItemCount)
+	}
+	if detail.SnapshotCount != 2 {
+		t.Fatalf("expected snapshot_count=2, got %d", detail.SnapshotCount)
+	}
+	if detail.LatestSnapshotID == nil || *detail.LatestSnapshotID != latest.ID {
+		t.Fatalf("expected latest_snapshot_id=%d, got %+v", latest.ID, detail.LatestSnapshotID)
+	}
+	if detail.LatestSnapshotVersion != "v2" {
+		t.Fatalf("expected latest_snapshot_version=v2, got %s", detail.LatestSnapshotVersion)
+	}
+}
+
+func TestGetSnapshotDetailReturnsDatasetAndAnnotationDetails(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "yard-day",
+		Bucket:    "platform-dev",
+		Prefix:    "train/day",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/day/a.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+	parent, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{Note: "seed"})
+	if err != nil {
+		t.Fatalf("create parent snapshot: %v", err)
+	}
+	child, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{
+		BasedOnSnapshotID: &parent.ID,
+		Note:              "relabel batch",
+	})
+	if err != nil {
+		t.Fatalf("create child snapshot: %v", err)
+	}
+	if _, err := svc.ImportSnapshot(child.ID, ImportSnapshotInput{
+		Format:    "yolo",
+		SourceURI: "s3://platform-dev/imports/yard-day.zip",
+		Entries: []ImportedAnnotation{
+			{
+				ObjectKey:    "train/day/a.jpg",
+				CategoryName: "car",
+				BBoxX:        0.1,
+				BBoxY:        0.2,
+				BBoxW:        0.3,
+				BBoxH:        0.4,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("import snapshot annotations: %v", err)
+	}
+
+	detail, err := svc.GetSnapshotDetail(child.ID)
+	if err != nil {
+		t.Fatalf("get snapshot detail: %v", err)
+	}
+	if detail.ID != child.ID || detail.DatasetID != dataset.ID {
+		t.Fatalf("unexpected snapshot identity: %+v", detail)
+	}
+	if detail.ProjectID != dataset.ProjectID {
+		t.Fatalf("expected project_id=%d, got %d", dataset.ProjectID, detail.ProjectID)
+	}
+	if detail.DatasetName != "yard-day" {
+		t.Fatalf("expected dataset_name=yard-day, got %s", detail.DatasetName)
+	}
+	if detail.BasedOnSnapshotID == nil || *detail.BasedOnSnapshotID != parent.ID {
+		t.Fatalf("expected based_on_snapshot_id=%d, got %+v", parent.ID, detail.BasedOnSnapshotID)
+	}
+	if detail.Note != "relabel batch" {
+		t.Fatalf("expected note=relabel batch, got %s", detail.Note)
+	}
+	if detail.AnnotationCount != 1 {
+		t.Fatalf("expected annotation_count=1, got %d", detail.AnnotationCount)
+	}
+}
+
+func TestGetSnapshotDetailCountsEffectiveAnnotationsInheritedFromParent(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "yard-night",
+		Bucket:    "platform-dev",
+		Prefix:    "train/night",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/night/a.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+
+	parent, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{Note: "seed"})
+	if err != nil {
+		t.Fatalf("create parent snapshot: %v", err)
+	}
+	if _, err := svc.ImportSnapshot(parent.ID, ImportSnapshotInput{
+		Format: "yolo",
+		Entries: []ImportedAnnotation{
+			{
+				ObjectKey:    "train/night/a.jpg",
+				CategoryName: "car",
+				BBoxX:        0.1,
+				BBoxY:        0.2,
+				BBoxW:        0.3,
+				BBoxH:        0.4,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("import parent annotations: %v", err)
+	}
+
+	child, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{
+		BasedOnSnapshotID: &parent.ID,
+		Note:              "review pass",
+	})
+	if err != nil {
+		t.Fatalf("create child snapshot: %v", err)
+	}
+
+	detail, err := svc.GetSnapshotDetail(child.ID)
+	if err != nil {
+		t.Fatalf("get snapshot detail: %v", err)
+	}
+	if detail.AnnotationCount != 1 {
+		t.Fatalf("expected inherited annotation_count=1, got %d", detail.AnnotationCount)
+	}
+}
+
+func TestListDatasetsDatasetWithNoSnapshotsLeavesLatestSnapshotUnset(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "empty-snapshots",
+		Bucket:    "platform-dev",
+		Prefix:    "train/empty",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/empty/a.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+
+	items, err := svc.ListDatasets(1)
+	if err != nil {
+		t.Fatalf("list datasets: %v", err)
+	}
+	summary, ok := findDatasetSummaryByID(items, dataset.ID)
+	if !ok {
+		t.Fatalf("dataset summary not found for dataset %d", dataset.ID)
+	}
+	if summary.SnapshotCount != 0 {
+		t.Fatalf("expected snapshot_count=0, got %d", summary.SnapshotCount)
+	}
+	if summary.LatestSnapshotID != nil {
+		t.Fatalf("expected latest_snapshot_id to be nil, got %+v", summary.LatestSnapshotID)
+	}
+	if summary.LatestSnapshotVersion != "" {
+		t.Fatalf("expected latest_snapshot_version empty, got %q", summary.LatestSnapshotVersion)
+	}
+
+	body, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("marshal summary: %v", err)
+	}
+	if strings.Contains(string(body), "\"latest_snapshot_id\"") {
+		t.Fatalf("expected latest_snapshot_id field to be omitted when nil, body=%s", string(body))
+	}
+
+	detail, err := svc.GetDatasetDetail(dataset.ID)
+	if err != nil {
+		t.Fatalf("get dataset detail: %v", err)
+	}
+	if detail.LatestSnapshotID != nil {
+		t.Fatalf("expected dataset detail latest_snapshot_id nil, got %+v", detail.LatestSnapshotID)
+	}
+}
+
+func TestBrowseReadsReturnNotFoundErrors(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	if _, err := svc.GetDatasetDetail(999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for missing dataset detail, got %v", err)
+	}
+	if _, err := svc.GetSnapshotDetail(999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for missing snapshot detail, got %v", err)
+	}
+}
+
+func TestBrowseMethodsRejectInvalidIdentifiers(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	if _, err := svc.ListDatasets(0); err == nil {
+		t.Fatal("expected error for projectID <= 0")
+	}
+	if _, err := svc.GetDatasetDetail(0); err == nil {
+		t.Fatal("expected error for datasetID <= 0")
+	}
+	if _, err := svc.GetSnapshotDetail(0); err == nil {
+		t.Fatal("expected error for snapshotID <= 0")
+	}
+}
+
+func TestSnapshotDetailJSONAlwaysIncludesNoteField(t *testing.T) {
+	detail := SnapshotDetail{
+		ID:              1,
+		DatasetID:       1,
+		Version:         "v1",
+		ProjectID:       1,
+		DatasetName:     "demo",
+		AnnotationCount: 0,
+		Note:            "",
+	}
+
+	body, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal snapshot detail: %v", err)
+	}
+	if !strings.Contains(string(body), "\"note\":\"\"") {
+		t.Fatalf("expected note field in json, body=%s", string(body))
 	}
 }

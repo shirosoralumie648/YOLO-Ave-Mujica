@@ -1,62 +1,37 @@
-import { createBrowserRouter, Navigate, Outlet } from "react-router-dom";
-
+import { createBrowserRouter } from "react-router-dom";
 import { AppShell } from "./layout/app-shell";
 import { TaskOverviewPage } from "../features/overview/task-overview-page";
 import { TaskListPage } from "../features/tasks/task-list-page";
 import { TaskDetailPage } from "../features/tasks/task-detail-page";
+import { DatasetListPage } from "../features/data/dataset-list-page";
+import { DatasetDetailPage } from "../features/data/dataset-detail-page";
+import { SnapshotDetailPage } from "../features/data/snapshot-detail-page";
+import { SnapshotDiffPage } from "../features/data/snapshot-diff-page";
+import { ReviewQueuePage } from "../features/review/review-queue-page";
+import { PublishCandidatesPage } from "../features/publish/publish-candidates-page";
+import { PublishBatchDetailPage } from "../features/publish/publish-batch-detail-page";
+import { ReviewWorkspacePage } from "../features/review/review-workspace-page";
+import { AnnotationWorkspacePage } from "../features/workspace/annotation-workspace-page";
 
-export const appRouter = createBrowserRouter([
+export const appRoutes = [
   {
     path: "/",
-    element: <Navigate to="/projects/1/overview" replace />,
-  },
-  {
-    path: "/projects/:projectId",
     element: <AppShell />,
     children: [
-      {
-        path: "overview",
-        element: <TaskOverviewPage />,
-      },
-      {
-        path: "data",
-        element: <PlaceholderPage title="Data" description="Data Hub will land here next." />,
-      },
-      {
-        path: "tasks",
-        element: <TaskListPage />,
-      },
-      {
-        path: "tasks/:taskId",
-        element: <TaskDetailPage />,
-      },
-      {
-        path: "review",
-        element: <PlaceholderPage title="Review" description="Review queue will appear here." />,
-      },
-      {
-        path: "training",
-        element: <PlaceholderPage title="Training" description="Training runs and evaluation compare will appear here." />,
-      },
-      {
-        path: "artifacts",
-        element: <PlaceholderPage title="Artifacts" description="Recommended model artifacts will appear here." />,
-      },
-      {
-        index: true,
-        element: <Navigate to="overview" replace />,
-      },
+      { index: true, element: <TaskOverviewPage /> },
+      { path: "tasks", element: <TaskListPage /> },
+      { path: "tasks/:taskId", element: <TaskDetailPage /> },
+      { path: "tasks/:taskId/workspace", element: <AnnotationWorkspacePage /> },
+      { path: "data", element: <DatasetListPage /> },
+      { path: "data/datasets/:datasetId", element: <DatasetDetailPage /> },
+      { path: "data/snapshots/:snapshotId", element: <SnapshotDetailPage /> },
+      { path: "data/diff", element: <SnapshotDiffPage /> },
+      { path: "review", element: <ReviewQueuePage /> },
+      { path: "review/workspace/:batchId", element: <ReviewWorkspacePage /> },
+      { path: "publish/candidates", element: <PublishCandidatesPage /> },
+      { path: "publish/batches/:batchId", element: <PublishBatchDetailPage /> },
     ],
   },
-]);
+];
 
-function PlaceholderPage(props: { title: string; description: string }) {
-  return (
-    <section className="panel page-intro">
-      <p className="eyebrow">Phase 1</p>
-      <h1>{props.title}</h1>
-      <p>{props.description}</p>
-      <Outlet />
-    </section>
-  );
-}
+export const router = createBrowserRouter(appRoutes);

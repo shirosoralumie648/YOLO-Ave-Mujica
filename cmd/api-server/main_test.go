@@ -12,7 +12,7 @@ import (
 
 	"yolo-ave-mujica/internal/artifacts"
 	"yolo-ave-mujica/internal/config"
-	"yolo-ave-mujica/internal/overview"
+	"yolo-ave-mujica/internal/publish"
 	"yolo-ave-mujica/internal/review"
 	"yolo-ave-mujica/internal/server"
 	"yolo-ave-mujica/internal/tasks"
@@ -59,10 +59,28 @@ func TestStartBackgroundLoopInvokesTick(t *testing.T) {
 	}
 }
 
-func TestBuildModulesWithHandlersUsesInjectedReviewAndArtifacts(t *testing.T) {
+func TestBuildModulesWithHandlersUsesInjectedReviewPublishAndArtifacts(t *testing.T) {
 	reviewSvc := review.NewService()
-	reviewSvc.SeedCandidate(review.Candidate{ID: 10, DatasetID: 1, SnapshotID: 1, ItemID: 1, CategoryID: 1, ReviewStatus: "pending"})
+	jobID := int64(77)
+	confidence := 0.91
+	reviewSvc.SeedCandidate(review.Candidate{
+		ID:           10,
+		DatasetID:    1,
+		SnapshotID:   1,
+		ItemID:       1,
+		CategoryID:   1,
+		ReviewStatus: "pending",
+		Source: review.CandidateSource{
+			JobID:      &jobID,
+			Confidence: &confidence,
+			ModelName:  "detector-a",
+			IsPseudo:   true,
+		},
+	})
 	reviewHandler := review.NewHandler(reviewSvc)
+
+	publishSvc := publish.NewService(publish.NewInMemoryRepository(), tasks.NewService(tasks.NewInMemoryRepository()))
+	publishHandler := publish.NewHandler(publishSvc)
 
 	artifactSvc := artifacts.NewService()
 	artifact, err := artifactSvc.CreatePackageJob(artifacts.PackageRequest{
@@ -76,7 +94,7 @@ func TestBuildModulesWithHandlersUsesInjectedReviewAndArtifacts(t *testing.T) {
 	}
 	artifactHandler := artifacts.NewHandler(artifactSvc)
 
-	modules := buildModulesWithHandlers(reviewHandler, artifactHandler, nil, nil)
+	modules := buildModulesWithHandlers(reviewHandler, publishHandler, artifactHandler)
 	srv := server.NewHTTPServerWithModules(modules)
 
 	reviewReq := httptest.NewRequest(http.MethodGet, "/v1/review/candidates", nil)
@@ -84,6 +102,30 @@ func TestBuildModulesWithHandlersUsesInjectedReviewAndArtifacts(t *testing.T) {
 	srv.Handler.ServeHTTP(reviewRec, reviewReq)
 	if reviewRec.Code != http.StatusOK || !strings.Contains(reviewRec.Body.String(), `"id":10`) {
 		t.Fatalf("expected injected review handler to serve candidate, got %d %s", reviewRec.Code, reviewRec.Body.String())
+	}
+	if !strings.Contains(reviewRec.Body.String(), `"status":"queued_for_review"`) {
+		t.Fatalf("expected normalized candidate status, got %s", reviewRec.Body.String())
+	}
+	if !strings.Contains(reviewRec.Body.String(), `"model_name":"detector-a"`) {
+		t.Fatalf("expected candidate source metadata, got %s", reviewRec.Body.String())
+	}
+
+	publishReq := httptest.NewRequest(http.MethodPost, "/v1/publish/batches", strings.NewReader(`{
+		"project_id": 1,
+		"snapshot_id": 2,
+		"source": "suggested",
+		"items": [{
+			"candidate_id": 101,
+			"task_id": 99,
+			"dataset_id": 1,
+			"snapshot_id": 2,
+			"item_payload": {"task": {"id": 99}}
+		}]
+	}`))
+	publishRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(publishRec, publishReq)
+	if publishRec.Code != http.StatusCreated {
+		t.Fatalf("expected injected publish handler to create batch, got %d %s", publishRec.Code, publishRec.Body.String())
 	}
 
 	artifactReq := httptest.NewRequest(http.MethodGet, "/v1/artifacts/1", nil)
@@ -94,55 +136,41 @@ func TestBuildModulesWithHandlersUsesInjectedReviewAndArtifacts(t *testing.T) {
 	}
 }
 
-type staticOverviewMetrics struct {
-	reviewBacklog int
-	failedRecent  int
-}
+func TestNewTestModulesLeavesTaskAndOverviewRoutesUnwired(t *testing.T) {
+	srv := server.NewHTTPServerWithModules(newTestModules())
 
-func (m staticOverviewMetrics) PendingReviewCount(projectID int64) (int, error) {
-	return m.reviewBacklog, nil
-}
-
-func (m staticOverviewMetrics) FailedJobCountSince(projectID int64, since time.Time) (int, error) {
-	return m.failedRecent, nil
-}
-
-func TestBuildModulesWithHandlersUsesInjectedTasksAndOverview(t *testing.T) {
-	repo := tasks.NewInMemoryRepository()
-	taskSvc := tasks.NewServiceWithRepository(repo)
-	_, err := taskSvc.CreateTask(tasks.CreateTaskInput{
-		ProjectID:   1,
-		Title:       "Oldest idle review task",
-		Assignee:    "reviewer-1",
-		Status:      tasks.StatusReady,
-		Priority:    tasks.PriorityHigh,
-		LastActivityAt: time.Date(2026, 3, 27, 12, 0, 0, 0, time.UTC),
-	})
-	if err != nil {
-		t.Fatalf("seed task: %v", err)
+	datasetsReq := httptest.NewRequest(http.MethodGet, "/v1/datasets", nil)
+	datasetsRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(datasetsRec, datasetsReq)
+	if datasetsRec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501 for datasets browse route before module wiring, got %d", datasetsRec.Code)
 	}
 
-	tasksHandler := tasks.NewHandler(taskSvc)
-	overviewHandler := overview.NewHandler(overview.NewService(
-		repo,
-		staticOverviewMetrics{reviewBacklog: 4, failedRecent: 1},
-		func() time.Time { return time.Date(2026, 3, 30, 12, 0, 0, 0, time.UTC) },
-	))
-
-	modules := buildModulesWithHandlers(nil, nil, tasksHandler, overviewHandler)
-	srv := server.NewHTTPServerWithModules(modules)
-
-	taskReq := httptest.NewRequest(http.MethodGet, "/v1/projects/1/tasks", nil)
-	taskRec := httptest.NewRecorder()
-	srv.Handler.ServeHTTP(taskRec, taskReq)
-	if taskRec.Code != http.StatusOK || !strings.Contains(taskRec.Body.String(), `"title":"Oldest idle review task"`) {
-		t.Fatalf("expected injected task handler to serve tasks, got %d %s", taskRec.Code, taskRec.Body.String())
+	snapshotReq := httptest.NewRequest(http.MethodGet, "/v1/snapshots/1", nil)
+	snapshotRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(snapshotRec, snapshotReq)
+	if snapshotRec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501 for snapshot detail route before module wiring, got %d", snapshotRec.Code)
 	}
 
-	overviewReq := httptest.NewRequest(http.MethodGet, "/v1/projects/1/overview", nil)
-	overviewRec := httptest.NewRecorder()
-	srv.Handler.ServeHTTP(overviewRec, overviewReq)
-	if overviewRec.Code != http.StatusOK || !strings.Contains(overviewRec.Body.String(), `"review_backlog":4`) {
-		t.Fatalf("expected injected overview handler to serve overview, got %d %s", overviewRec.Code, overviewRec.Body.String())
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects/1/overview", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501 before task and overview wiring, got %d", rec.Code)
+	}
+
+	transitionReq := httptest.NewRequest(http.MethodPost, "/v1/tasks/1/transition", strings.NewReader(`{"status":"ready"}`))
+	transitionRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(transitionRec, transitionReq)
+	if transitionRec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501 for transition route before task wiring, got %d", transitionRec.Code)
+	}
+
+	workspaceReq := httptest.NewRequest(http.MethodGet, "/v1/tasks/1/workspace", nil)
+	workspaceRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(workspaceRec, workspaceReq)
+	if workspaceRec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501 for annotation workspace route before wiring, got %d", workspaceRec.Code)
 	}
 }

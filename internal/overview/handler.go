@@ -23,7 +23,7 @@ func (h *Handler) GetProjectOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.svc.GetProjectOverview(projectID)
+	out, err := h.svc.BuildOverview(projectID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

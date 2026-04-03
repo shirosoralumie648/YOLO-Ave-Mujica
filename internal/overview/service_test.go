@@ -1,10 +1,10 @@
 package overview
 
 import (
-	"context"
 	"testing"
 	"time"
 
+	"yolo-ave-mujica/internal/jobs"
 	"yolo-ave-mujica/internal/tasks"
 )
 
@@ -12,96 +12,53 @@ type fakeTaskSource struct {
 	items []tasks.Task
 }
 
-func (s *fakeTaskSource) ListProjectTasks(_ context.Context, projectID int64) ([]tasks.Task, error) {
-	out := make([]tasks.Task, 0, len(s.items))
-	for _, item := range s.items {
-		if item.ProjectID == projectID {
-			out = append(out, item)
-		}
-	}
-	return out, nil
+func (f fakeTaskSource) ListTasks(projectID int64, filter tasks.ListTasksFilter) ([]tasks.Task, error) {
+	return f.items, nil
 }
 
-type fakeMetricsSource struct {
-	reviewBacklog  int
-	failedRecent   int
-	lastProjectID  int64
-	lastLookbackAt time.Time
+type fakeReviewSource struct {
+	count int
 }
 
-func (s *fakeMetricsSource) PendingReviewCount(projectID int64) (int, error) {
-	s.lastProjectID = projectID
-	return s.reviewBacklog, nil
+func (f fakeReviewSource) PendingCandidateCount(projectID int64) (int, error) {
+	return f.count, nil
 }
 
-func (s *fakeMetricsSource) FailedJobCountSince(projectID int64, since time.Time) (int, error) {
-	s.lastProjectID = projectID
-	s.lastLookbackAt = since
-	return s.failedRecent, nil
+type fakeJobSource struct {
+	items []jobs.Job
 }
 
-func TestServiceComputesOverviewSummaryAndBlockers(t *testing.T) {
-	now := time.Date(2026, 3, 30, 12, 0, 0, 0, time.UTC)
-	oldest := now.Add(-72 * time.Hour)
-	recent := now.Add(-2 * time.Hour)
+func (f fakeJobSource) ListRecentFailedJobs(projectID int64, limit int) ([]jobs.Job, error) {
+	return f.items, nil
+}
 
-	taskSource := &fakeTaskSource{
-		items: []tasks.Task{
-			{ID: 1, ProjectID: 1, Title: "Oldest pending review handoff", Assignee: "reviewer-1", Status: tasks.StatusReady, LastActivityAt: oldest},
-			{ID: 2, ProjectID: 1, Title: "Fresh in progress task", Assignee: "annotator-1", Status: tasks.StatusInProgress, LastActivityAt: recent},
-			{ID: 3, ProjectID: 1, Title: "Already closed", Assignee: "annotator-2", Status: tasks.StatusClosed, LastActivityAt: oldest},
-		},
-	}
-	metrics := &fakeMetricsSource{reviewBacklog: 8, failedRecent: 2}
+func TestServiceBuildOverviewAggregatesCardsAndBlockers(t *testing.T) {
+	old := time.Now().UTC().Add(-4 * time.Hour)
+	service := NewService(
+		fakeTaskSource{items: []tasks.Task{
+			{ID: 1, ProjectID: 1, Title: "Blocked review batch", Kind: tasks.KindReview, Status: tasks.StatusBlocked, BlockerReason: "schema mismatch", LastActivityAt: old},
+			{ID: 2, ProjectID: 1, Title: "Queued annotation batch", Kind: tasks.KindAnnotation, Status: tasks.StatusQueued, LastActivityAt: time.Now().UTC()},
+		}},
+		fakeReviewSource{count: 3},
+		fakeJobSource{items: []jobs.Job{
+			{ID: 9, ProjectID: 1, JobType: "zero-shot", Status: jobs.StatusFailed, ErrorMsg: "provider unavailable"},
+		}},
+	)
 
-	svc := NewService(taskSource, metrics, func() time.Time { return now })
-	got, err := svc.GetProjectOverview(1)
+	out, err := service.BuildOverview(1)
 	if err != nil {
-		t.Fatalf("get project overview: %v", err)
+		t.Fatalf("build overview: %v", err)
 	}
-
-	if got.ProjectID != 1 {
-		t.Fatalf("expected project 1, got %+v", got)
+	if len(out.SummaryCards) != 4 {
+		t.Fatalf("expected 4 summary cards, got %+v", out.SummaryCards)
 	}
-	if got.OpenTaskCount != 2 {
-		t.Fatalf("expected 2 open tasks, got %+v", got)
+	if out.LongestIdleTask == nil || out.LongestIdleTask.ID != 1 {
+		t.Fatalf("expected longest idle task id 1, got %+v", out.LongestIdleTask)
 	}
-	if got.ReviewBacklog != 8 {
-		t.Fatalf("expected review backlog 8, got %+v", got)
+	if len(out.Blockers) < 2 {
+		t.Fatalf("expected blocked-task and review backlog blockers, got %+v", out.Blockers)
 	}
-	if got.FailedRecentJobs != 2 {
-		t.Fatalf("expected 2 failed jobs, got %+v", got)
-	}
-	if got.LongestIdleTask == nil || got.LongestIdleTask.ID != 1 {
-		t.Fatalf("expected task 1 to be longest idle, got %+v", got.LongestIdleTask)
-	}
-	if len(got.Blockers) != 3 {
-		t.Fatalf("expected 3 blocker cards, got %+v", got.Blockers)
-	}
-}
-
-func TestServiceOmitsBlockersWhenProjectLooksHealthy(t *testing.T) {
-	now := time.Date(2026, 3, 30, 12, 0, 0, 0, time.UTC)
-	taskSource := &fakeTaskSource{
-		items: []tasks.Task{
-			{ID: 1, ProjectID: 1, Title: "Fresh accepted task", Status: tasks.StatusAccepted, LastActivityAt: now.Add(-2 * time.Hour)},
-		},
-	}
-	metrics := &fakeMetricsSource{}
-
-	svc := NewService(taskSource, metrics, func() time.Time { return now })
-	got, err := svc.GetProjectOverview(1)
-	if err != nil {
-		t.Fatalf("get project overview: %v", err)
-	}
-
-	if got.OpenTaskCount != 1 {
-		t.Fatalf("expected one open task, got %+v", got)
-	}
-	if got.LongestIdleTask == nil || got.LongestIdleTask.ID != 1 {
-		t.Fatalf("expected longest idle task 1, got %+v", got.LongestIdleTask)
-	}
-	if len(got.Blockers) != 0 {
-		t.Fatalf("expected no blockers, got %+v", got.Blockers)
+	if len(out.RecentFailedJobs) != 1 || out.RecentFailedJobs[0].ID != 9 {
+		t.Fatalf("expected one recent failed job, got %+v", out.RecentFailedJobs)
 	}
 }

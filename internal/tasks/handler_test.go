@@ -2,144 +2,79 @@ package tasks
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
-	"yolo-ave-mujica/internal/server"
+	"github.com/go-chi/chi/v5"
 )
 
-type fakeRepository struct {
-	items  []Task
-	nextID int64
-}
-
-func (r *fakeRepository) CreateTask(_ context.Context, in CreateTaskInput) (Task, error) {
-	r.nextID++
-	task := Task{
-		ID:             r.nextID,
-		ProjectID:      in.ProjectID,
-		DatasetID:      in.DatasetID,
-		SnapshotID:     in.SnapshotID,
-		Title:          in.Title,
-		Description:    in.Description,
-		Assignee:       in.Assignee,
-		Status:         in.Status,
-		Priority:       in.Priority,
-		DueAt:          in.DueAt,
-		LastActivityAt: in.LastActivityAt,
-	}
-	r.items = append(r.items, task)
-	return task, nil
-}
-
-func (r *fakeRepository) ListProjectTasks(_ context.Context, projectID int64) ([]Task, error) {
-	out := make([]Task, 0, len(r.items))
-	for _, item := range r.items {
-		if item.ProjectID == projectID {
-			out = append(out, item)
-		}
-	}
-	return out, nil
-}
-
-func (r *fakeRepository) GetTask(_ context.Context, taskID int64) (Task, bool, error) {
-	for _, item := range r.items {
-		if item.ID == taskID {
-			return item, true, nil
-		}
-	}
-	return Task{}, false, nil
-}
-
-func TestCreateListAndGetTask(t *testing.T) {
-	repo := &fakeRepository{}
-	svc := NewServiceWithRepository(repo)
+func TestHandlerCreateListAndGetTask(t *testing.T) {
+	svc := NewService(NewInMemoryRepository())
 	h := NewHandler(svc)
 
-	srv := server.NewHTTPServerWithModules(server.Modules{
-		Tasks: server.TaskRoutes{
-			ListProjectTasks:  h.ListProjectTasks,
-			CreateProjectTask: h.CreateProjectTask,
-			GetTask:           h.GetTask,
-		},
-	})
-
 	createReq := httptest.NewRequest(http.MethodPost, "/v1/projects/1/tasks", strings.NewReader(`{
-		"title":"Review queue backlog",
-		"description":"Triaging the oldest pending work",
-		"assignee":"reviewer-1",
+		"title":"Label loading-dock batch",
+		"kind":"annotation",
+		"asset_object_key":"assets/loading-dock/frame-0001.jpg",
+		"media_kind":"image",
 		"priority":"high",
-		"dataset_id":1,
-		"snapshot_id":2
+		"assignee":"annotator-1"
 	}`))
+	createCtx := chi.NewRouteContext()
+	createCtx.URLParams.Add("id", "1")
+	createReq = createReq.WithContext(context.WithValue(createReq.Context(), chi.RouteCtxKey, createCtx))
 	createRec := httptest.NewRecorder()
-	srv.Handler.ServeHTTP(createRec, createReq)
-
-	if createRec.Code != http.StatusOK {
-		t.Fatalf("expected 200 on create, got %d body=%s", createRec.Code, createRec.Body.String())
+	h.CreateTask(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", createRec.Code, createRec.Body.String())
 	}
 
-	var created Task
-	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
-		t.Fatalf("decode create task: %v", err)
-	}
-	if created.ProjectID != 1 {
-		t.Fatalf("expected project_id=1, got %+v", created)
-	}
-	if created.Status != StatusReady {
-		t.Fatalf("expected default ready status, got %+v", created)
-	}
-	if created.Priority != PriorityHigh {
-		t.Fatalf("expected high priority, got %+v", created)
-	}
-
-	listReq := httptest.NewRequest(http.MethodGet, "/v1/projects/1/tasks", nil)
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/projects/1/tasks?assignee=annotator-1", nil)
+	listCtx := chi.NewRouteContext()
+	listCtx.URLParams.Add("id", "1")
+	listReq = listReq.WithContext(context.WithValue(listReq.Context(), chi.RouteCtxKey, listCtx))
 	listRec := httptest.NewRecorder()
-	srv.Handler.ServeHTTP(listRec, listReq)
-
-	if listRec.Code != http.StatusOK {
-		t.Fatalf("expected 200 on list, got %d body=%s", listRec.Code, listRec.Body.String())
-	}
-	if !strings.Contains(listRec.Body.String(), `"title":"Review queue backlog"`) {
-		t.Fatalf("expected task title in list response, got %s", listRec.Body.String())
+	h.ListTasks(listRec, listReq)
+	if listRec.Code != http.StatusOK || !strings.Contains(listRec.Body.String(), `"Label loading-dock batch"`) {
+		t.Fatalf("expected created task in list response, got %d %s", listRec.Code, listRec.Body.String())
 	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/v1/tasks/1", nil)
+	getCtx := chi.NewRouteContext()
+	getCtx.URLParams.Add("id", "1")
+	getReq = getReq.WithContext(context.WithValue(getReq.Context(), chi.RouteCtxKey, getCtx))
 	getRec := httptest.NewRecorder()
-	srv.Handler.ServeHTTP(getRec, getReq)
-
-	if getRec.Code != http.StatusOK {
-		t.Fatalf("expected 200 on get, got %d body=%s", getRec.Code, getRec.Body.String())
-	}
-	if !strings.Contains(getRec.Body.String(), `"assignee":"reviewer-1"`) {
-		t.Fatalf("expected assignee in detail response, got %s", getRec.Body.String())
+	h.GetTask(getRec, getReq)
+	if getRec.Code != http.StatusOK || !strings.Contains(getRec.Body.String(), `"annotator-1"`) {
+		t.Fatalf("expected created task in get response, got %d %s", getRec.Code, getRec.Body.String())
 	}
 }
 
-func TestCreateTaskRejectsMissingTitle(t *testing.T) {
-	repo := &fakeRepository{}
-	svc := NewServiceWithRepository(repo)
+func TestHandlerTransitionsTask(t *testing.T) {
+	svc := NewService(NewInMemoryRepository())
 	h := NewHandler(svc)
 
-	srv := server.NewHTTPServerWithModules(server.Modules{
-		Tasks: server.TaskRoutes{
-			ListProjectTasks:  h.ListProjectTasks,
-			CreateProjectTask: h.CreateProjectTask,
-			GetTask:           h.GetTask,
-		},
+	created, err := svc.CreateTask(context.Background(), CreateTaskInput{
+		ProjectID: 1,
+		Title:     "Transition me",
+		Kind:      KindReview,
 	})
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/1/tasks", strings.NewReader(`{"assignee":"reviewer-1"}`))
-	rec := httptest.NewRecorder()
-	srv.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	if err != nil {
+		t.Fatalf("create task: %v", err)
 	}
-	if !strings.Contains(rec.Body.String(), "title") {
-		t.Fatalf("expected title validation error, got %s", rec.Body.String())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tasks/1/transition", strings.NewReader(`{"status":"ready"}`))
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("id", strconv.FormatInt(created.ID, 10))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
+
+	rec := httptest.NewRecorder()
+	h.TransitionTask(rec, req)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"ready"`) {
+		t.Fatalf("expected transition response, got %d %s", rec.Code, rec.Body.String())
 	}
 }

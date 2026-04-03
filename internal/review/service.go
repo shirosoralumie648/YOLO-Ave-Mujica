@@ -1,18 +1,35 @@
 package review
 
 import (
+	"fmt"
+	"strings"
 	"time"
 )
 
+const (
+	CandidateStatusQueuedForReview = "queued_for_review"
+	legacyCandidateStatusPending   = "pending"
+)
+
+type CandidateSource struct {
+	JobID      *int64     `json:"job_id,omitempty"`
+	Confidence *float64   `json:"confidence,omitempty"`
+	ModelName  string     `json:"model_name,omitempty"`
+	IsPseudo   bool       `json:"is_pseudo"`
+	CreatedAt  *time.Time `json:"created_at,omitempty"`
+}
+
 type Candidate struct {
-	ID           int64     `json:"id"`
-	DatasetID    int64     `json:"dataset_id"`
-	SnapshotID   int64     `json:"snapshot_id"`
-	ItemID       int64     `json:"item_id"`
-	CategoryID   int64     `json:"category_id"`
-	ReviewStatus string    `json:"review_status"`
-	ReviewerID   string    `json:"reviewer_id,omitempty"`
-	ReviewedAt   time.Time `json:"reviewed_at,omitempty"`
+	ID           int64           `json:"id"`
+	DatasetID    int64           `json:"dataset_id"`
+	SnapshotID   int64           `json:"snapshot_id"`
+	ItemID       int64           `json:"item_id"`
+	CategoryID   int64           `json:"category_id"`
+	Status       string          `json:"status"`
+	ReviewStatus string          `json:"review_status"`
+	ReviewerID   string          `json:"reviewer_id,omitempty"`
+	ReviewedAt   time.Time       `json:"reviewed_at,omitempty"`
+	Source       CandidateSource `json:"source"`
 }
 
 type Annotation struct {
@@ -22,11 +39,12 @@ type Annotation struct {
 }
 
 type AuditEvent struct {
-	Actor        string    `json:"actor"`
-	Action       string    `json:"action"`
-	ResourceType string    `json:"resource_type"`
-	ResourceID   string    `json:"resource_id"`
-	TS           time.Time `json:"ts"`
+	Actor        string         `json:"actor"`
+	Action       string         `json:"action"`
+	ResourceType string         `json:"resource_type"`
+	ResourceID   string         `json:"resource_id"`
+	Detail       map[string]any `json:"detail,omitempty"`
+	TS           time.Time      `json:"ts"`
 }
 
 type Service struct {
@@ -55,15 +73,19 @@ func (s *Service) ListCandidates() []Candidate {
 	if err != nil {
 		return nil
 	}
-	return items
+	return normalizeCandidates(items)
 }
 
 func (s *Service) AcceptCandidate(candidateID int64, reviewer string) error {
 	return s.repo.Accept(candidateID, reviewer)
 }
 
-func (s *Service) RejectCandidate(candidateID int64, reviewer string) error {
-	return s.repo.Reject(candidateID, reviewer)
+func (s *Service) RejectCandidate(candidateID int64, reviewer, reasonCode string) error {
+	reasonCode = strings.TrimSpace(reasonCode)
+	if reasonCode == "" {
+		return fmt.Errorf("reason_code is required")
+	}
+	return s.repo.Reject(candidateID, reviewer, reasonCode)
 }
 
 func (s *Service) AnnotationCount() int {
@@ -77,16 +99,48 @@ func (s *Service) GetCandidate(id int64) (Candidate, bool) {
 	if repo, ok := s.repo.(interface {
 		GetCandidate(id int64) (Candidate, bool)
 	}); ok {
-		return repo.GetCandidate(id)
+		candidate, found := repo.GetCandidate(id)
+		if !found {
+			return Candidate{}, false
+		}
+		return normalizeCandidate(candidate), true
 	}
 	return Candidate{}, false
 }
 
-func (s *Service) PendingCandidateCount(projectID int64) (int, error) {
-	if repo, ok := s.repo.(interface {
-		PendingCandidateCount(projectID int64) (int, error)
-	}); ok {
-		return repo.PendingCandidateCount(projectID)
+func normalizeCandidates(items []Candidate) []Candidate {
+	out := make([]Candidate, 0, len(items))
+	for _, item := range items {
+		out = append(out, normalizeCandidate(item))
 	}
-	return len(s.ListCandidates()), nil
+	return out
+}
+
+func normalizeCandidate(candidate Candidate) Candidate {
+	normalized := candidate
+	status := candidate.Status
+	if status == "" {
+		status = candidate.ReviewStatus
+	}
+	normalized.Status = normalizeCandidateStatus(status)
+	normalized.ReviewStatus = normalized.Status
+	return normalized
+}
+
+func normalizeCandidateStatus(status string) string {
+	switch status {
+	case "", legacyCandidateStatusPending:
+		return CandidateStatusQueuedForReview
+	default:
+		return status
+	}
+}
+
+func isQueuedCandidateStatus(status string) bool {
+	switch normalizeCandidateStatus(status) {
+	case CandidateStatusQueuedForReview:
+		return true
+	default:
+		return false
+	}
 }

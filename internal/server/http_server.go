@@ -32,6 +32,9 @@ type TaskRoutes struct {
 // DataHubRoutes groups handlers for dataset and object-management endpoints.
 type DataHubRoutes struct {
 	CreateDataset          http.HandlerFunc
+	ListDatasets           http.HandlerFunc
+	GetDatasetDetail       http.HandlerFunc
+	GetSnapshotDetail      http.HandlerFunc
 	ScanDataset            http.HandlerFunc
 	CreateSnapshot         http.HandlerFunc
 	ListSnapshots          http.HandlerFunc
@@ -66,6 +69,24 @@ type ReviewRoutes struct {
 	RejectCandidate http.HandlerFunc
 }
 
+// PublishRoutes groups handlers for publish-batch review and approval flows.
+type PublishRoutes struct {
+	ListCandidates    http.HandlerFunc
+	CreateBatch       http.HandlerFunc
+	GetBatch          http.HandlerFunc
+	ReplaceBatchItems http.HandlerFunc
+	ReviewApprove     http.HandlerFunc
+	ReviewReject      http.HandlerFunc
+	ReviewRework      http.HandlerFunc
+	OwnerApprove      http.HandlerFunc
+	OwnerReject       http.HandlerFunc
+	OwnerRework       http.HandlerFunc
+	AddBatchFeedback  http.HandlerFunc
+	AddItemFeedback   http.HandlerFunc
+	GetWorkspace      http.HandlerFunc
+	GetRecord         http.HandlerFunc
+}
+
 // ArtifactRoutes groups handlers for artifact creation, resolution, and download.
 type ArtifactRoutes struct {
 	CreatePackage    http.HandlerFunc
@@ -77,6 +98,26 @@ type ArtifactRoutes struct {
 	DownloadArtifact http.HandlerFunc
 }
 
+// TaskRoutes groups handlers for project-scoped task CRUD endpoints.
+type TaskRoutes struct {
+	ListTasks      http.HandlerFunc
+	CreateTask     http.HandlerFunc
+	GetTask        http.HandlerFunc
+	TransitionTask http.HandlerFunc
+}
+
+// AnnotationRoutes groups task-scoped annotation workspace endpoints.
+type AnnotationRoutes struct {
+	GetWorkspace    http.HandlerFunc
+	SaveDraft       http.HandlerFunc
+	SubmitWorkspace http.HandlerFunc
+}
+
+// OverviewRoutes groups handlers for the task-first project home payload.
+type OverviewRoutes struct {
+	GetProjectOverview http.HandlerFunc
+}
+
 // Modules collects optional route groups so the server can keep a stable MVP
 // route surface while individual modules are delivered incrementally.
 type Modules struct {
@@ -86,7 +127,11 @@ type Modules struct {
 	Jobs        JobRoutes
 	Versioning  VersioningRoutes
 	Review      ReviewRoutes
+	Publish     PublishRoutes
 	Artifacts   ArtifactRoutes
+	Tasks       TaskRoutes
+	Annotations AnnotationRoutes
+	Overview    OverviewRoutes
 	ReadyChecks []ReadyCheck
 }
 
@@ -101,6 +146,9 @@ func NewHTTPServerWithDataHub(dataHubHandler *datahub.Handler) *HTTPServer {
 	if dataHubHandler != nil {
 		dataHubRoutes = DataHubRoutes{
 			CreateDataset:          dataHubHandler.CreateDataset,
+			ListDatasets:           dataHubHandler.ListDatasets,
+			GetDatasetDetail:       dataHubHandler.GetDatasetDetail,
+			GetSnapshotDetail:      dataHubHandler.GetSnapshotDetail,
 			ScanDataset:            dataHubHandler.ScanDataset,
 			CreateSnapshot:         dataHubHandler.CreateSnapshot,
 			ListSnapshots:          dataHubHandler.ListSnapshots,
@@ -120,6 +168,9 @@ func NewHTTPServerWithDataHubAndJobs(dataHubHandler *datahub.Handler, jobsHandle
 	if dataHubHandler != nil {
 		dataHubRoutes = DataHubRoutes{
 			CreateDataset:          dataHubHandler.CreateDataset,
+			ListDatasets:           dataHubHandler.ListDatasets,
+			GetDatasetDetail:       dataHubHandler.GetDatasetDetail,
+			GetSnapshotDetail:      dataHubHandler.GetSnapshotDetail,
 			ScanDataset:            dataHubHandler.ScanDataset,
 			CreateSnapshot:         dataHubHandler.CreateSnapshot,
 			ListSnapshots:          dataHubHandler.ListSnapshots,
@@ -180,12 +231,23 @@ func NewHTTPServerWithModules(m Modules) *HTTPServer {
 		r.Get("/tasks/{id}", handlerOrNotImplemented(m.Tasks.GetTask))
 
 		r.Post("/datasets", handlerOrNotImplemented(m.DataHub.CreateDataset))
+		r.Get("/datasets", handlerOrNotImplemented(m.DataHub.ListDatasets))
+		r.Get("/datasets/{id}", handlerOrNotImplemented(m.DataHub.GetDatasetDetail))
 		r.Post("/datasets/{id}/scan", handlerOrNotImplemented(m.DataHub.ScanDataset))
 		r.Post("/datasets/{id}/snapshots", handlerOrNotImplemented(m.DataHub.CreateSnapshot))
 		r.Get("/datasets/{id}/snapshots", handlerOrNotImplemented(m.DataHub.ListSnapshots))
 		r.Get("/datasets/{id}/items", handlerOrNotImplemented(m.DataHub.ListItems))
 		r.Post("/objects/presign", handlerOrNotImplemented(m.DataHub.PresignObject))
+		r.Get("/snapshots/{id}", handlerOrNotImplemented(m.DataHub.GetSnapshotDetail))
 		r.Post("/snapshots/{id}/import", handlerOrNotImplemented(m.DataHub.ImportSnapshot))
+		r.Get("/projects/{id}/overview", handlerOrNotImplemented(m.Overview.GetProjectOverview))
+		r.Get("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.ListTasks))
+		r.Post("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.CreateTask))
+		r.Get("/tasks/{id}", handlerOrNotImplemented(m.Tasks.GetTask))
+		r.Post("/tasks/{id}/transition", handlerOrNotImplemented(m.Tasks.TransitionTask))
+		r.Get("/tasks/{id}/workspace", handlerOrNotImplemented(m.Annotations.GetWorkspace))
+		r.Put("/tasks/{id}/workspace/draft", handlerOrNotImplemented(m.Annotations.SaveDraft))
+		r.Post("/tasks/{id}/workspace/submit", handlerOrNotImplemented(m.Annotations.SubmitWorkspace))
 
 		r.Post("/jobs/zero-shot", handlerOrNotImplemented(m.Jobs.CreateZeroShot))
 		r.Post("/jobs/video-extract", handlerOrNotImplemented(m.Jobs.CreateVideoExtract))
@@ -198,6 +260,21 @@ func NewHTTPServerWithModules(m Modules) *HTTPServer {
 		r.Get("/review/candidates", handlerOrNotImplemented(m.Review.ListCandidates))
 		r.Post("/review/candidates/{id}/accept", handlerOrNotImplemented(m.Review.AcceptCandidate))
 		r.Post("/review/candidates/{id}/reject", handlerOrNotImplemented(m.Review.RejectCandidate))
+
+		r.Get("/publish/candidates", handlerOrNotImplemented(m.Publish.ListCandidates))
+		r.Post("/publish/batches", handlerOrNotImplemented(m.Publish.CreateBatch))
+		r.Get("/publish/batches/{id}", handlerOrNotImplemented(m.Publish.GetBatch))
+		r.Post("/publish/batches/{id}/items", handlerOrNotImplemented(m.Publish.ReplaceBatchItems))
+		r.Post("/publish/batches/{id}/review-approve", handlerOrNotImplemented(m.Publish.ReviewApprove))
+		r.Post("/publish/batches/{id}/review-reject", handlerOrNotImplemented(m.Publish.ReviewReject))
+		r.Post("/publish/batches/{id}/review-rework", handlerOrNotImplemented(m.Publish.ReviewRework))
+		r.Post("/publish/batches/{id}/owner-approve", handlerOrNotImplemented(m.Publish.OwnerApprove))
+		r.Post("/publish/batches/{id}/owner-reject", handlerOrNotImplemented(m.Publish.OwnerReject))
+		r.Post("/publish/batches/{id}/owner-rework", handlerOrNotImplemented(m.Publish.OwnerRework))
+		r.Post("/publish/batches/{id}/feedback", handlerOrNotImplemented(m.Publish.AddBatchFeedback))
+		r.Post("/publish/batches/{id}/items/{itemId}/feedback", handlerOrNotImplemented(m.Publish.AddItemFeedback))
+		r.Get("/publish/batches/{id}/workspace", handlerOrNotImplemented(m.Publish.GetWorkspace))
+		r.Get("/publish/records/{id}", handlerOrNotImplemented(m.Publish.GetRecord))
 
 		r.Post("/artifacts/packages", handlerOrNotImplemented(m.Artifacts.CreatePackage))
 		r.Post("/snapshots/{id}/export", handlerOrNotImplemented(m.Artifacts.ExportSnapshot))

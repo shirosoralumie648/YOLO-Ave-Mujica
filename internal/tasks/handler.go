@@ -2,10 +2,8 @@ package tasks
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -18,54 +16,52 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-func (h *Handler) CreateProjectTask(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	projectID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 
-	var req struct {
-		Title       string     `json:"title"`
-		Description string     `json:"description,omitempty"`
-		Assignee    string     `json:"assignee,omitempty"`
-		Status      string     `json:"status,omitempty"`
-		Priority    string     `json:"priority,omitempty"`
-		DatasetID   *int64     `json:"dataset_id,omitempty"`
-		SnapshotID  *int64     `json:"snapshot_id,omitempty"`
-		DueAt       *time.Time `json:"due_at,omitempty"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var in CreateTaskInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	in.ProjectID = projectID
 
-	task, err := h.svc.CreateTask(CreateTaskInput{
-		ProjectID:   projectID,
-		DatasetID:   req.DatasetID,
-		SnapshotID:  req.SnapshotID,
-		Title:       req.Title,
-		Description: req.Description,
-		Assignee:    req.Assignee,
-		Status:      req.Status,
-		Priority:    req.Priority,
-		DueAt:       req.DueAt,
-	})
+	task, err := h.svc.CreateTask(r.Context(), in)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, task)
+	writeJSON(w, http.StatusCreated, task)
 }
 
-func (h *Handler) ListProjectTasks(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) ListTasks(w http.ResponseWriter, r *http.Request) {
 	projectID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 
-	items, err := h.svc.ListProjectTasks(projectID)
+	var snapshotID *int64
+	if raw := r.URL.Query().Get("snapshot_id"); raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		snapshotID = &value
+	}
+
+	items, err := h.svc.ListTasks(r.Context(), projectID, ListTasksFilter{
+		Status:     r.URL.Query().Get("status"),
+		Kind:       r.URL.Query().Get("kind"),
+		Assignee:   r.URL.Query().Get("assignee"),
+		Priority:   r.URL.Query().Get("priority"),
+		SnapshotID: snapshotID,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -80,13 +76,30 @@ func (h *Handler) GetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, ok, err := h.svc.GetTask(taskID)
+	task, err := h.svc.GetTask(r.Context(), taskID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
+func (h *Handler) TransitionTask(w http.ResponseWriter, r *http.Request) {
+	taskID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if !ok {
-		writeError(w, http.StatusNotFound, fmt.Errorf("task %d not found", taskID))
+
+	var in TransitionTaskInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	task, err := h.svc.TransitionTask(r.Context(), taskID, in)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
