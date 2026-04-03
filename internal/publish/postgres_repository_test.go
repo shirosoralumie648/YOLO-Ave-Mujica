@@ -190,6 +190,55 @@ func TestPostgresRepositoryListSuggestedCandidatesGroupsByRules(t *testing.T) {
 	}
 }
 
+func TestPostgresRepositoryOwnerApproveCreatesPublishRecord(t *testing.T) {
+	databaseURL := os.Getenv("INTEGRATION_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("INTEGRATION_DATABASE_URL is required")
+	}
+
+	ctx := context.Background()
+	pool, err := store.NewPostgresPool(ctx, config.Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatalf("new pool: %v", err)
+	}
+	defer pool.Close()
+
+	mustApplyPublishMigration(t, ctx, pool, true)
+
+	fixture := seedPublishFixture(t, ctx, pool, time.Now().UTC().Truncate(time.Hour))
+	repo := NewPostgresRepository(pool)
+
+	batch, err := repo.CreateBatch(ctx, CreateBatchInput{
+		ProjectID:  fixture.ProjectID,
+		SnapshotID: fixture.SnapshotID,
+		Source:     SourceSuggested,
+		Items: []CreateBatchItemInput{{
+			CandidateID: fixture.AcceptedCandidateIDs[0],
+			TaskID:      fixture.TaskID,
+			DatasetID:   fixture.DatasetID,
+			SnapshotID:  fixture.SnapshotID,
+			ItemPayload: map[string]any{"task": map[string]any{"id": fixture.TaskID}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create batch: %v", err)
+	}
+	if err := repo.ApplyReviewDecision(ctx, batch.ID, ReviewDecisionApprove, "reviewer-1", nil); err != nil {
+		t.Fatalf("review approve: %v", err)
+	}
+
+	record, err := repo.ApplyOwnerDecision(ctx, batch.ID, OwnerDecisionApprove, "owner-1", nil)
+	if err != nil {
+		t.Fatalf("owner approve: %v", err)
+	}
+	if record.PublishBatchID != batch.ID {
+		t.Fatalf("expected publish_batch_id=%d, got %+v", batch.ID, record)
+	}
+	if record.ApprovedByOwner != "owner-1" {
+		t.Fatalf("expected approved_by_owner=owner-1, got %+v", record)
+	}
+}
+
 type publishFixture struct {
 	ProjectID            int64
 	DatasetID            int64

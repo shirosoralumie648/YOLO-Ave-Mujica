@@ -220,4 +220,3 @@ func (r *PostgresRepository) transitionCandidate(candidateID int64, reviewer, st
 }
 
 var _ Repository = (*PostgresRepository)(nil)
-var _ PublishableCandidateRepository = (*PostgresRepository)(nil)

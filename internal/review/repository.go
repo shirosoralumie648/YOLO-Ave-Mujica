@@ -10,9 +10,6 @@ type Repository interface {
 	ListPending() ([]Candidate, error)
 	Accept(candidateID int64, reviewer string) error
 	Reject(candidateID int64, reviewer string) error
-}
-
-type PublishableCandidateRepository interface {
 	ListPublishableCandidates(projectID int64) ([]PublishableCandidate, error)
 }
 
@@ -149,4 +146,3 @@ func (r *InMemoryRepository) GetCandidate(id int64) (Candidate, bool) {
 }
 
 var _ Repository = (*InMemoryRepository)(nil)
-var _ PublishableCandidateRepository = (*InMemoryRepository)(nil)

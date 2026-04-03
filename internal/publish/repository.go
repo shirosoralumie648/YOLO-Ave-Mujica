@@ -8,6 +8,7 @@ type Repository interface {
 	GetRecord(ctx context.Context, recordID int64) (Record, error)
 	ReplaceBatchItems(ctx context.Context, batchID int64, in ReplaceBatchItemsInput) (Batch, error)
 	ApplyReviewDecision(ctx context.Context, batchID int64, decision, actor string, feedback []CreateFeedbackInput) error
+	ApplyOwnerDecision(ctx context.Context, batchID int64, decision, actor string, feedback []CreateFeedbackInput) (Record, error)
 	AddBatchFeedback(ctx context.Context, batchID int64, in CreateFeedbackInput) (Feedback, error)
 	AddItemFeedback(ctx context.Context, batchID, itemID int64, in CreateFeedbackInput) (Feedback, error)
 	ListSuggestedCandidates(ctx context.Context, projectID int64) ([]SuggestedCandidate, error)

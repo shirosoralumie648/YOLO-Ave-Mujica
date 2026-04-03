@@ -249,6 +249,122 @@ func (r *PostgresRepository) ApplyReviewDecision(ctx context.Context, batchID in
 	return tx.Commit(ctx)
 }
 
+func (r *PostgresRepository) ApplyOwnerDecision(ctx context.Context, batchID int64, decision, actor string, feedback []CreateFeedbackInput) (Record, error) {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return Record{}, err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	for _, item := range feedback {
+		if _, err := insertFeedback(ctx, tx, batchID, nil, item); err != nil {
+			return Record{}, err
+		}
+	}
+
+	var (
+		projectID  int64
+		snapshotID int64
+	)
+	if err := tx.QueryRow(ctx, `
+		select project_id, snapshot_id
+		from publish_batches
+		where id = $1
+		for update
+	`, batchID).Scan(&projectID, &snapshotID); err != nil {
+		return Record{}, err
+	}
+
+	now := time.Now().UTC()
+
+	switch decision {
+	case OwnerDecisionApprove:
+		summary, err := marshalJSONMap(map[string]any{
+			"decision":    OwnerDecisionApprove,
+			"batch_id":    batchID,
+			"snapshot_id": snapshotID,
+		})
+		if err != nil {
+			return Record{}, err
+		}
+
+		var (
+			record     Record
+			summaryRaw []byte
+		)
+		if err := tx.QueryRow(ctx, `
+			insert into publish_records (
+				project_id, snapshot_id, publish_batch_id, status, summary_json, approved_by_owner, approved_at
+			)
+			values ($1, $2, $3, $4, $5, $6, $7)
+			returning id, project_id, snapshot_id, publish_batch_id, status, summary_json,
+			          approved_by_owner, approved_at, created_at
+		`, projectID, snapshotID, batchID, StatusPublished, summary, actor, now).Scan(
+			&record.ID,
+			&record.ProjectID,
+			&record.SnapshotID,
+			&record.PublishBatchID,
+			&record.Status,
+			&summaryRaw,
+			&record.ApprovedByOwner,
+			&record.ApprovedAt,
+			&record.CreatedAt,
+		); err != nil {
+			return Record{}, err
+		}
+		if err := unmarshalJSONMap(summaryRaw, &record.Summary); err != nil {
+			return Record{}, err
+		}
+
+		if _, err := tx.Exec(ctx, `
+			update publish_batches
+			set status = $2,
+			    owner_decided_at = $3,
+			    owner_decided_by = $4,
+			    updated_at = now()
+			where id = $1
+		`, batchID, StatusPublished, now, actor); err != nil {
+			return Record{}, err
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			return Record{}, err
+		}
+		return record, nil
+	case OwnerDecisionReject:
+		if _, err := tx.Exec(ctx, `
+			update publish_batches
+			set status = $2,
+			    owner_decided_at = $3,
+			    owner_decided_by = $4,
+			    updated_at = now()
+			where id = $1
+		`, batchID, StatusRejected, now, actor); err != nil {
+			return Record{}, err
+		}
+	case OwnerDecisionRework:
+		if _, err := tx.Exec(ctx, `
+			update publish_batches
+			set status = $2,
+			    owner_decided_at = $3,
+			    owner_decided_by = $4,
+			    updated_at = now()
+			where id = $1
+		`, batchID, StatusOwnerChangesRequested, now, actor); err != nil {
+			return Record{}, err
+		}
+	default:
+		return Record{}, fmt.Errorf("unsupported owner decision %q", decision)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Record{}, err
+	}
+	return Record{}, nil
+}
+
 func (r *PostgresRepository) AddBatchFeedback(ctx context.Context, batchID int64, in CreateFeedbackInput) (Feedback, error) {
 	return insertFeedback(ctx, r.pool, batchID, nil, in)
 }

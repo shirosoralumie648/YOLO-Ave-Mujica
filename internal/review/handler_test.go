@@ -31,6 +31,21 @@ func (r *fakeRepository) Reject(candidateID int64, _ string) error {
 	return nil
 }
 
+func (r *fakeRepository) ListPublishableCandidates(projectID int64) ([]PublishableCandidate, error) {
+	return []PublishableCandidate{
+		{
+			ID:           1,
+			ProjectID:    projectID,
+			DatasetID:    1,
+			SnapshotID:   1,
+			ItemID:       1,
+			TaskID:       1,
+			ReviewStatus: "accepted",
+			RiskLevel:    "normal",
+		},
+	}, nil
+}
+
 func TestServiceUsesRepositoryPendingCandidates(t *testing.T) {
 	repo := &fakeRepository{
 		pending: []Candidate{{ID: 12, DatasetID: 1, SnapshotID: 1, ItemID: 1, CategoryID: 1, ReviewStatus: "pending"}},

@@ -28,6 +28,10 @@ const (
 	ReviewDecisionApprove = "approve"
 	ReviewDecisionReject  = "reject"
 	ReviewDecisionRework  = "rework"
+
+	OwnerDecisionApprove = "approve"
+	OwnerDecisionReject  = "reject"
+	OwnerDecisionRework  = "rework"
 )
 
 type Batch struct {
