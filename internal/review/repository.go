@@ -12,6 +12,24 @@ type Repository interface {
 	Reject(candidateID int64, reviewer string) error
 }
 
+type PublishableCandidateRepository interface {
+	ListPublishableCandidates(projectID int64) ([]PublishableCandidate, error)
+}
+
+type PublishableCandidate struct {
+	ID           int64          `json:"id"`
+	ProjectID    int64          `json:"project_id"`
+	DatasetID    int64          `json:"dataset_id"`
+	SnapshotID   int64          `json:"snapshot_id"`
+	ItemID       int64          `json:"item_id"`
+	TaskID       int64          `json:"task_id"`
+	ReviewStatus string         `json:"review_status"`
+	RiskLevel    string         `json:"risk_level"`
+	SourceModel  string         `json:"source_model"`
+	AcceptedAt   time.Time      `json:"accepted_at"`
+	Summary      map[string]any `json:"summary"`
+}
+
 type InMemoryRepository struct {
 	mu          sync.Mutex
 	candidates  map[int64]Candidate
@@ -92,6 +110,31 @@ func (r *InMemoryRepository) Reject(candidateID int64, reviewer string) error {
 	return nil
 }
 
+func (r *InMemoryRepository) ListPublishableCandidates(projectID int64) ([]PublishableCandidate, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	items := make([]PublishableCandidate, 0, len(r.candidates))
+	for _, candidate := range r.candidates {
+		if candidate.ReviewStatus != "accepted" {
+			continue
+		}
+		items = append(items, PublishableCandidate{
+			ID:           candidate.ID,
+			ProjectID:    projectID,
+			DatasetID:    candidate.DatasetID,
+			SnapshotID:   candidate.SnapshotID,
+			ItemID:       candidate.ItemID,
+			ReviewStatus: candidate.ReviewStatus,
+			RiskLevel:    "normal",
+			SourceModel:  "",
+			AcceptedAt:   candidate.ReviewedAt,
+			Summary:      map[string]any{},
+		})
+	}
+	return items, nil
+}
+
 func (r *InMemoryRepository) AnnotationCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -106,3 +149,4 @@ func (r *InMemoryRepository) GetCandidate(id int64) (Candidate, bool) {
 }
 
 var _ Repository = (*InMemoryRepository)(nil)
+var _ PublishableCandidateRepository = (*InMemoryRepository)(nil)

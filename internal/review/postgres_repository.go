@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -65,6 +66,66 @@ func (r *PostgresRepository) Accept(candidateID int64, reviewer string) error {
 
 func (r *PostgresRepository) Reject(candidateID int64, reviewer string) error {
 	return r.transitionCandidate(candidateID, reviewer, "rejected", "review.reject", false)
+}
+
+func (r *PostgresRepository) ListPublishableCandidates(projectID int64) ([]PublishableCandidate, error) {
+	rows, err := r.pool.Query(context.Background(), `
+		select
+			c.id,
+			d.project_id,
+			c.dataset_id,
+			c.snapshot_id,
+			c.item_id,
+			coalesce(t.id, 0) as task_id,
+			c.review_status,
+			coalesce(t.priority, 'normal') as risk_level,
+			coalesce(c.model_name, '') as source_model,
+			coalesce(c.reviewed_at, c.created_at) as accepted_at,
+			jsonb_build_object(
+				'dataset_name', d.name,
+				'snapshot_version', s.version,
+				'task_title', coalesce(t.title, ''),
+				'reviewer_id', coalesce(c.reviewer_id, '')
+			) as summary
+		from annotation_candidates c
+		join datasets d on d.id = c.dataset_id
+		join dataset_snapshots s on s.id = c.snapshot_id
+		left join tasks t on t.snapshot_id = c.snapshot_id and t.kind = 'review'
+		where d.project_id = $1 and c.review_status = 'accepted'
+		order by c.snapshot_id asc, accepted_at asc, c.id asc
+	`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []PublishableCandidate{}
+	for rows.Next() {
+		var (
+			item       PublishableCandidate
+			summaryRaw []byte
+		)
+		if err := rows.Scan(
+			&item.ID,
+			&item.ProjectID,
+			&item.DatasetID,
+			&item.SnapshotID,
+			&item.ItemID,
+			&item.TaskID,
+			&item.ReviewStatus,
+			&item.RiskLevel,
+			&item.SourceModel,
+			&item.AcceptedAt,
+			&summaryRaw,
+		); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(summaryRaw, &item.Summary); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (r *PostgresRepository) transitionCandidate(candidateID int64, reviewer, status, action string, promote bool) error {
@@ -159,3 +220,4 @@ func (r *PostgresRepository) transitionCandidate(candidateID int64, reviewer, st
 }
 
 var _ Repository = (*PostgresRepository)(nil)
+var _ PublishableCandidateRepository = (*PostgresRepository)(nil)
