@@ -92,6 +92,14 @@ export function ownerApprove(batchId: number | string, actor: string) {
   return postJSON<{ publish_record_id: number }>(`/v1/publish/batches/${batchId}/owner-approve`, { actor });
 }
 
+export function reviewRework(batchId: number | string, actor: string, feedback: CreateFeedbackPayload[] = []) {
+  return postJSON<{ ok: true }>(`/v1/publish/batches/${batchId}/review-rework`, { actor, feedback });
+}
+
+export function ownerRework(batchId: number | string, actor: string, feedback: CreateFeedbackPayload[] = []) {
+  return postJSON<{ ok: true }>(`/v1/publish/batches/${batchId}/owner-rework`, { actor, feedback });
+}
+
 export function addBatchFeedback(batchId: number | string, payload: CreateFeedbackPayload) {
   return postJSON<PublishFeedback>(`/v1/publish/batches/${batchId}/feedback`, payload);
 }

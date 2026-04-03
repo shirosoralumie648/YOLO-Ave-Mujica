@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getPublishBatch, ownerApprove, reviewApprove } from "./api";
+import { addBatchFeedback, getPublishBatch, ownerApprove, reviewApprove, type CreateFeedbackPayload } from "./api";
 
 function toTitleCase(value: string) {
   return value
@@ -13,6 +14,15 @@ function toTitleCase(value: string) {
 export function PublishBatchDetailPage() {
   const { batchId = "" } = useParams();
   const queryClient = useQueryClient();
+  const [batchFeedback, setBatchFeedback] = useState<CreateFeedbackPayload>({
+    stage: "owner",
+    action: "rework",
+    reason_code: "coverage_gap",
+    severity: "high",
+    influence_weight: 1,
+    comment: "",
+    actor: "owner-1",
+  });
   const batchQuery = useQuery({
     queryKey: ["publish-batch", batchId],
     queryFn: () => getPublishBatch(batchId),
@@ -31,6 +41,20 @@ export function PublishBatchDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ["publish-batch", batchId] });
     },
   });
+
+  const addBatchFeedbackMutation = useMutation({
+    mutationFn: (payload: CreateFeedbackPayload) => addBatchFeedback(batchId, payload),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["publish-batch", batchId] });
+      await queryClient.invalidateQueries({ queryKey: ["publish-workspace", batchId] });
+      setBatchFeedback((current) => ({ ...current, comment: "" }));
+    },
+  });
+
+  async function handleBatchFeedbackSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await addBatchFeedbackMutation.mutateAsync(batchFeedback);
+  }
 
   if (batchQuery.isLoading) {
     return (
@@ -119,6 +143,63 @@ export function PublishBatchDetailPage() {
             ))}
           </div>
         )}
+        <form className="task-form" onSubmit={handleBatchFeedbackSubmit}>
+          <label>
+            Reason code
+            <select
+              value={batchFeedback.reason_code}
+              onChange={(event) =>
+                setBatchFeedback((current) => ({ ...current, reason_code: event.target.value }))
+              }
+            >
+              <option value="coverage_gap">coverage_gap</option>
+              <option value="trajectory_break">trajectory_break</option>
+            </select>
+          </label>
+
+          <label>
+            Severity
+            <select
+              value={batchFeedback.severity}
+              onChange={(event) =>
+                setBatchFeedback((current) => ({ ...current, severity: event.target.value }))
+              }
+            >
+              <option value="high">high</option>
+              <option value="critical">critical</option>
+            </select>
+          </label>
+
+          <label>
+            Influence weight
+            <input
+              type="number"
+              min={0.1}
+              step={0.1}
+              value={batchFeedback.influence_weight}
+              onChange={(event) =>
+                setBatchFeedback((current) => ({
+                  ...current,
+                  influence_weight: Number(event.target.value),
+                }))
+              }
+            />
+          </label>
+
+          <label>
+            Comment
+            <input
+              value={batchFeedback.comment ?? ""}
+              onChange={(event) =>
+                setBatchFeedback((current) => ({ ...current, comment: event.target.value }))
+              }
+            />
+          </label>
+
+          <button type="submit" disabled={addBatchFeedbackMutation.isPending}>
+            Submit Batch Feedback
+          </button>
+        </form>
         <div className="action-row">
           <button type="button" onClick={() => void reviewApproveMutation.mutateAsync()}>
             Reviewer Approve

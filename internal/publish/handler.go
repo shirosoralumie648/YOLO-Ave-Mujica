@@ -3,14 +3,26 @@ package publish
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
 
 type Handler struct {
 	svc *Service
+}
+
+type feedbackRequest struct {
+	Stage           string  `json:"stage"`
+	Action          string  `json:"action"`
+	ReasonCode      string  `json:"reason_code"`
+	Severity        string  `json:"severity"`
+	InfluenceWeight float64 `json:"influence_weight"`
+	Comment         string  `json:"comment"`
+	Actor           string  `json:"actor"`
 }
 
 func NewHandler(svc *Service) *Handler {
@@ -128,8 +140,23 @@ func (h *Handler) AddBatchFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var in CreateFeedbackInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	var req feedbackRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	in := CreateFeedbackInput{
+		Scope:           FeedbackScopeBatch,
+		Stage:           req.Stage,
+		Action:          req.Action,
+		ReasonCode:      req.ReasonCode,
+		Severity:        req.Severity,
+		InfluenceWeight: req.InfluenceWeight,
+		Comment:         req.Comment,
+		Actor:           req.Actor,
+	}
+	if err := validateFeedbackInput(in, FeedbackScopeBatch); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -154,8 +181,23 @@ func (h *Handler) AddItemFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var in CreateFeedbackInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	var req feedbackRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	in := CreateFeedbackInput{
+		Scope:           FeedbackScopeItem,
+		Stage:           req.Stage,
+		Action:          req.Action,
+		ReasonCode:      req.ReasonCode,
+		Severity:        req.Severity,
+		InfluenceWeight: req.InfluenceWeight,
+		Comment:         req.Comment,
+		Actor:           req.Actor,
+	}
+	if err := validateFeedbackInput(in, FeedbackScopeItem); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -249,4 +291,26 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{"error": err.Error()})
+}
+
+func validateFeedbackInput(in CreateFeedbackInput, expectedScope string) error {
+	if in.Scope != expectedScope {
+		return fmt.Errorf("expected scope %q, got %q", expectedScope, in.Scope)
+	}
+	if strings.TrimSpace(in.Stage) == "" {
+		return fmt.Errorf("stage is required")
+	}
+	if strings.TrimSpace(in.Action) == "" {
+		return fmt.Errorf("action is required")
+	}
+	if (in.Action == FeedbackActionReject || in.Action == FeedbackActionRework) && strings.TrimSpace(in.ReasonCode) == "" {
+		return fmt.Errorf("reason_code is required for %s", in.Action)
+	}
+	if strings.TrimSpace(in.Severity) == "" {
+		return fmt.Errorf("severity is required")
+	}
+	if in.InfluenceWeight <= 0 {
+		return fmt.Errorf("influence_weight must be > 0")
+	}
+	return nil
 }

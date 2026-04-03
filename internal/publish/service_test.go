@@ -122,3 +122,58 @@ func TestServiceBuildWorkspaceReturnsBatchItemsDiffAndFeedback(t *testing.T) {
 		t.Fatalf("expected overlay metadata, got %+v", workspace.Items[0])
 	}
 }
+
+func TestServiceBatchAndItemFeedbackAreStoredSeparately(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo, nil)
+
+	batch, err := svc.CreateBatch(context.Background(), CreateBatchInput{
+		ProjectID:  1,
+		SnapshotID: 18,
+		Source:     SourceSuggested,
+		Items: []CreateBatchItemInput{{
+			CandidateID: 601,
+			TaskID:      71,
+			DatasetID:   12,
+			SnapshotID:  18,
+			ItemPayload: map[string]any{"task": map[string]any{"id": 71}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create batch: %v", err)
+	}
+
+	if _, err := svc.AddBatchFeedback(context.Background(), batch.ID, CreateFeedbackInput{
+		Stage:           FeedbackStageReview,
+		Action:          FeedbackActionRework,
+		Scope:           FeedbackScopeBatch,
+		ReasonCode:      "coverage_gap",
+		Severity:        "high",
+		InfluenceWeight: 1.0,
+		Comment:         "Need wider sample coverage",
+		Actor:           "reviewer-1",
+	}); err != nil {
+		t.Fatalf("add batch feedback: %v", err)
+	}
+
+	if _, err := svc.AddItemFeedback(context.Background(), batch.ID, batch.Items[0].ID, CreateFeedbackInput{
+		Stage:           FeedbackStageOwner,
+		Action:          FeedbackActionReject,
+		Scope:           FeedbackScopeItem,
+		ReasonCode:      "trajectory_break",
+		Severity:        "critical",
+		InfluenceWeight: 1.0,
+		Comment:         "Track continuity is broken",
+		Actor:           "owner-1",
+	}); err != nil {
+		t.Fatalf("add item feedback: %v", err)
+	}
+
+	got, err := svc.GetBatch(context.Background(), batch.ID)
+	if err != nil {
+		t.Fatalf("get batch: %v", err)
+	}
+	if len(got.Feedback) != 2 {
+		t.Fatalf("expected 2 feedback rows, got %d", len(got.Feedback))
+	}
+}

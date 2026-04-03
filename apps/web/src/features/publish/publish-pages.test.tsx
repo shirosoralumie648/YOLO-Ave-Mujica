@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublishBatchDetailPage } from "./publish-batch-detail-page";
@@ -127,5 +128,63 @@ describe("Publish review pages", () => {
     expect(await screen.findByRole("heading", { name: "Publish Batch #71" })).toBeInTheDocument();
     expect(screen.getByText(/owner_pending/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Owner Approve/i })).toBeInTheDocument();
+  });
+
+  it("posts owner rework feedback and refreshes the batch view", async () => {
+    const fetchMock = vi.mocked(global.fetch);
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: 71,
+          snapshot_id: 15,
+          project_id: 1,
+          status: "owner_pending",
+          source: "suggested",
+          rule_summary: {},
+          items: [{ id: 801, candidate_id: 401, task_id: 51, dataset_id: 9, snapshot_id: 15, item_payload: {} }],
+          feedback: [{ id: 1, scope: "batch", stage: "review", action: "comment", reason_code: "ready", severity: "low", influence_weight: 1, comment: "" }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            id: 2,
+            scope: "batch",
+            stage: "owner",
+            action: "rework",
+            reason_code: "coverage_gap",
+            severity: "high",
+            influence_weight: 1,
+            comment: "Need wider sample coverage",
+          },
+          201,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: 71,
+          snapshot_id: 15,
+          project_id: 1,
+          status: "owner_pending",
+          source: "suggested",
+          rule_summary: {},
+          items: [{ id: 801, candidate_id: 401, task_id: 51, dataset_id: 9, snapshot_id: 15, item_payload: {} }],
+          feedback: [
+            { id: 1, scope: "batch", stage: "review", action: "comment", reason_code: "ready", severity: "low", influence_weight: 1, comment: "" },
+            { id: 2, scope: "batch", stage: "owner", action: "rework", reason_code: "coverage_gap", severity: "high", influence_weight: 1, comment: "Need wider sample coverage" },
+          ],
+        }),
+      );
+
+    const user = userEvent.setup();
+    renderPage("/publish/batches/71");
+
+    await user.type(await screen.findByLabelText(/Comment/i), "Need wider sample coverage");
+    await user.click(screen.getByRole("button", { name: /Submit Batch Feedback/i }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/v1/publish/batches/71/feedback", expect.any(Object)),
+    );
+    expect(await screen.findByText(/Need wider sample coverage/i)).toBeInTheDocument();
   });
 });
