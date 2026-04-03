@@ -148,7 +148,7 @@ func normalizeFilter(filter ListTasksFilter) (ListTasksFilter, error) {
 
 func isValidKind(kind string) bool {
 	switch kind {
-	case KindAnnotation, KindReview, KindQA, KindOps:
+	case KindAnnotation, KindReview, KindQA, KindOps, KindTrainingCandidate, KindPromotionReview:
 		return true
 	default:
 		return false

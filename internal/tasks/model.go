@@ -3,10 +3,12 @@ package tasks
 import "time"
 
 const (
-	KindAnnotation = "annotation"
-	KindReview     = "review"
-	KindQA         = "qa"
-	KindOps        = "ops"
+	KindAnnotation        = "annotation"
+	KindReview            = "review"
+	KindQA                = "qa"
+	KindOps               = "ops"
+	KindTrainingCandidate = "training_candidate"
+	KindPromotionReview   = "promotion_review"
 )
 
 const (

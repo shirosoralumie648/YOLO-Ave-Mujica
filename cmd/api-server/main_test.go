@@ -12,8 +12,10 @@ import (
 
 	"yolo-ave-mujica/internal/artifacts"
 	"yolo-ave-mujica/internal/config"
+	"yolo-ave-mujica/internal/publish"
 	"yolo-ave-mujica/internal/review"
 	"yolo-ave-mujica/internal/server"
+	"yolo-ave-mujica/internal/tasks"
 )
 
 func testConfig() config.Config {
@@ -57,10 +59,13 @@ func TestStartBackgroundLoopInvokesTick(t *testing.T) {
 	}
 }
 
-func TestBuildModulesWithHandlersUsesInjectedReviewAndArtifacts(t *testing.T) {
+func TestBuildModulesWithHandlersUsesInjectedReviewPublishAndArtifacts(t *testing.T) {
 	reviewSvc := review.NewService()
 	reviewSvc.SeedCandidate(review.Candidate{ID: 10, DatasetID: 1, SnapshotID: 1, ItemID: 1, CategoryID: 1, ReviewStatus: "pending"})
 	reviewHandler := review.NewHandler(reviewSvc)
+
+	publishSvc := publish.NewService(publish.NewInMemoryRepository(), tasks.NewService(tasks.NewInMemoryRepository()))
+	publishHandler := publish.NewHandler(publishSvc)
 
 	artifactSvc := artifacts.NewService()
 	artifact, err := artifactSvc.CreatePackageJob(artifacts.PackageRequest{
@@ -74,7 +79,7 @@ func TestBuildModulesWithHandlersUsesInjectedReviewAndArtifacts(t *testing.T) {
 	}
 	artifactHandler := artifacts.NewHandler(artifactSvc)
 
-	modules := buildModulesWithHandlers(reviewHandler, artifactHandler)
+	modules := buildModulesWithHandlers(reviewHandler, publishHandler, artifactHandler)
 	srv := server.NewHTTPServerWithModules(modules)
 
 	reviewReq := httptest.NewRequest(http.MethodGet, "/v1/review/candidates", nil)
@@ -82,6 +87,24 @@ func TestBuildModulesWithHandlersUsesInjectedReviewAndArtifacts(t *testing.T) {
 	srv.Handler.ServeHTTP(reviewRec, reviewReq)
 	if reviewRec.Code != http.StatusOK || !strings.Contains(reviewRec.Body.String(), `"id":10`) {
 		t.Fatalf("expected injected review handler to serve candidate, got %d %s", reviewRec.Code, reviewRec.Body.String())
+	}
+
+	publishReq := httptest.NewRequest(http.MethodPost, "/v1/publish/batches", strings.NewReader(`{
+		"project_id": 1,
+		"snapshot_id": 2,
+		"source": "suggested",
+		"items": [{
+			"candidate_id": 101,
+			"task_id": 99,
+			"dataset_id": 1,
+			"snapshot_id": 2,
+			"item_payload": {"task": {"id": 99}}
+		}]
+	}`))
+	publishRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(publishRec, publishReq)
+	if publishRec.Code != http.StatusCreated {
+		t.Fatalf("expected injected publish handler to create batch, got %d %s", publishRec.Code, publishRec.Body.String())
 	}
 
 	artifactReq := httptest.NewRequest(http.MethodGet, "/v1/artifacts/1", nil)

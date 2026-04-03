@@ -180,3 +180,23 @@ func TestServiceTransitionTaskRejectsInvalidTransitionsAndBlockedWithoutReason(t
 		t.Fatal("expected blocked transition without blocker_reason to fail")
 	}
 }
+
+func TestServiceCreateTaskAcceptsPublishTaskKinds(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewInMemoryRepository())
+
+	kinds := []string{KindTrainingCandidate, KindPromotionReview}
+	for _, kind := range kinds {
+		created, err := svc.CreateTask(ctx, CreateTaskInput{
+			ProjectID: 1,
+			Title:     "publish follow-up",
+			Kind:      kind,
+		})
+		if err != nil {
+			t.Fatalf("create task with kind %q: %v", kind, err)
+		}
+		if created.Kind != kind {
+			t.Fatalf("expected kind %q, got %q", kind, created.Kind)
+		}
+	}
+}

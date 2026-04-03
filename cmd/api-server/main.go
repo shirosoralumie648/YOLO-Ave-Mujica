@@ -17,6 +17,7 @@ import (
 	"yolo-ave-mujica/internal/datahub"
 	"yolo-ave-mujica/internal/jobs"
 	"yolo-ave-mujica/internal/overview"
+	"yolo-ave-mujica/internal/publish"
 	"yolo-ave-mujica/internal/queue"
 	"yolo-ave-mujica/internal/review"
 	"yolo-ave-mujica/internal/server"
@@ -87,6 +88,9 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	taskRepo := tasks.NewPostgresRepository(pool)
 	taskSvc := tasks.NewService(taskRepo)
 	taskHandler := tasks.NewHandler(taskSvc)
+	publishRepo := publish.NewPostgresRepository(pool)
+	publishSvc := publish.NewService(publishRepo, taskSvc)
+	publishHandler := publish.NewHandler(publishSvc)
 	overviewSvc := overview.NewService(
 		overview.TaskSourceFunc(func(projectID int64, filter tasks.ListTasksFilter) ([]tasks.Task, error) {
 			return taskSvc.ListTasks(context.Background(), projectID, filter)
@@ -121,7 +125,7 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	artifactService.StartBuildRunner(ctx, cfg.ArtifactBuildConcurrency)
 	artifactHandler := artifacts.NewHandler(artifactService)
 
-	modules := buildModulesWithHandlers(reviewHandler, artifactHandler)
+	modules := buildModulesWithHandlers(reviewHandler, publishHandler, artifactHandler)
 	modules.DataHub = server.DataHubRoutes{
 		CreateDataset:          dataHubHandler.CreateDataset,
 		ListDatasets:           dataHubHandler.ListDatasets,
@@ -211,13 +215,31 @@ func (s s3ObjectScanner) ListObjects(bucket, prefix string) ([]datahub.ScannedOb
 	return out, nil
 }
 
-func buildModulesWithHandlers(reviewHandler *review.Handler, artifactHandler *artifacts.Handler) server.Modules {
+func buildModulesWithHandlers(reviewHandler *review.Handler, publishHandler *publish.Handler, artifactHandler *artifacts.Handler) server.Modules {
 	modules := server.Modules{}
 	if reviewHandler != nil {
 		modules.Review = server.ReviewRoutes{
 			ListCandidates:  reviewHandler.ListCandidates,
 			AcceptCandidate: reviewHandler.AcceptCandidate,
 			RejectCandidate: reviewHandler.RejectCandidate,
+		}
+	}
+	if publishHandler != nil {
+		modules.Publish = server.PublishRoutes{
+			ListCandidates:    publishHandler.ListSuggestedCandidates,
+			CreateBatch:       publishHandler.CreateBatch,
+			GetBatch:          publishHandler.GetBatch,
+			ReplaceBatchItems: publishHandler.ReplaceBatchItems,
+			ReviewApprove:     publishHandler.ReviewApprove,
+			ReviewReject:      publishHandler.ReviewReject,
+			ReviewRework:      publishHandler.ReviewRework,
+			OwnerApprove:      publishHandler.OwnerApprove,
+			OwnerReject:       publishHandler.OwnerReject,
+			OwnerRework:       publishHandler.OwnerRework,
+			AddBatchFeedback:  publishHandler.AddBatchFeedback,
+			AddItemFeedback:   publishHandler.AddItemFeedback,
+			GetWorkspace:      publishHandler.GetWorkspace,
+			GetRecord:         publishHandler.GetRecord,
 		}
 	}
 	if artifactHandler != nil {
