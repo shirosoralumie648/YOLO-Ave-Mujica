@@ -73,6 +73,10 @@ exit 0
 	}
 	callText := string(callBytes)
 	for _, fragment := range []string{
+		"/v1/projects/1/tasks",
+		"/v1/tasks/1/workspace",
+		"/v1/tasks/1/workspace/draft",
+		"/v1/tasks/1/workspace/submit",
 		"/v1/datasets/1/snapshots",
 		"/v1/snapshots/1/import",
 		"/v1/jobs/3",
@@ -213,6 +217,18 @@ case "$url" in
     ;;
   */v1/datasets/1/snapshots)
     printf '{"id":1,"dataset_id":1,"version":"v1"}\n'
+    ;;
+  */v1/projects/1/tasks)
+    printf '{"id":1,"project_id":1,"snapshot_id":1,"title":"Annotate smoke image","kind":"annotation","status":"in_progress","priority":"high","assignee":"annotator-1","asset_object_key":"train/a.jpg","media_kind":"image","ontology_version":"v1"}\n'
+    ;;
+  */v1/tasks/1/workspace/draft)
+    printf '{"task":{"id":1,"status":"in_progress","kind":"annotation","asset_object_key":"train/a.jpg","media_kind":"image"},"asset":{"dataset_id":1,"dataset_name":"smoke-dataset","snapshot_id":1,"snapshot_version":"v1","object_key":"train/a.jpg"},"draft":{"id":21,"task_id":1,"state":"draft","revision":1,"body":{"objects":[{"id":"box-1","label":"person"}]}}}\n'
+    ;;
+  */v1/tasks/1/workspace/submit)
+    printf '{"task":{"id":1,"status":"submitted","kind":"annotation","asset_object_key":"train/a.jpg","media_kind":"image"},"asset":{"dataset_id":1,"dataset_name":"smoke-dataset","snapshot_id":1,"snapshot_version":"v1","object_key":"train/a.jpg"},"draft":{"id":21,"task_id":1,"state":"submitted","revision":2,"body":{"objects":[{"id":"box-1","label":"person"}]}}}\n'
+    ;;
+  */v1/tasks/1/workspace)
+    printf '{"task":{"id":1,"status":"in_progress","kind":"annotation","asset_object_key":"train/a.jpg","media_kind":"image"},"asset":{"dataset_id":1,"dataset_name":"smoke-dataset","snapshot_id":1,"snapshot_version":"v1","object_key":"train/a.jpg"},"draft":{"task_id":1,"state":"draft","revision":0,"body":{}}}\n'
     ;;
   */v1/snapshots/1/import)
     printf '{"job_id":3,"status":"queued","dataset_id":1,"snapshot_id":1}\n'

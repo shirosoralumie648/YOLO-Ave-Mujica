@@ -218,6 +218,34 @@ if [[ -z "$snapshot_id" ]]; then
   fail "snapshot create response missing id: $snapshot_response"
 fi
 
+task_response="$(curl -fsS -X POST "${api_base}/v1/projects/1/tasks" \
+  -H 'Content-Type: application/json' \
+  -d "{\"snapshot_id\":${snapshot_id},\"title\":\"Annotate smoke image\",\"kind\":\"annotation\",\"status\":\"in_progress\",\"assignee\":\"annotator-1\",\"asset_object_key\":\"train/a.jpg\",\"media_kind\":\"image\",\"ontology_version\":\"v1\",\"priority\":\"high\"}")" || fail "task create request failed"
+
+task_id="$(json_int_field "$task_response" "id")"
+if [[ -z "$task_id" ]]; then
+  fail "task create response missing id: $task_response"
+fi
+
+workspace_response="$(curl -fsS "${api_base}/v1/tasks/${task_id}/workspace")" || fail "workspace request failed"
+if [[ "$workspace_response" != *"\"object_key\":\"train/a.jpg\""* && "$workspace_response" != *"\"asset_object_key\":\"train/a.jpg\""* ]]; then
+  fail "workspace response missing task asset context: $workspace_response"
+fi
+
+draft_response="$(curl -fsS -X PUT "${api_base}/v1/tasks/${task_id}/workspace/draft" \
+  -H 'Content-Type: application/json' \
+  -d '{"actor":"annotator-1","body":{"objects":[{"id":"box-1","label":"person"}]}}')" || fail "workspace draft save failed"
+if [[ "$draft_response" != *"\"revision\":"* ]]; then
+  fail "workspace draft response missing revision: $draft_response"
+fi
+
+submit_response="$(curl -fsS -X POST "${api_base}/v1/tasks/${task_id}/workspace/submit" \
+  -H 'Content-Type: application/json' \
+  -d '{"actor":"annotator-1"}')" || fail "workspace submit failed"
+if [[ "$submit_response" != *"\"status\":\"submitted\""* ]]; then
+  fail "workspace submit response missing submitted status: $submit_response"
+fi
+
 zero_shot_idempotency_key="smoke-zero-shot-${dataset_id}-${snapshot_id}"
 import_idempotency_key="smoke-snapshot-import-${dataset_id}-${snapshot_id}"
 
