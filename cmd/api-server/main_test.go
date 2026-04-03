@@ -145,4 +145,11 @@ func TestNewTestModulesLeavesTaskAndOverviewRoutesUnwired(t *testing.T) {
 	if transitionRec.Code != http.StatusNotImplemented {
 		t.Fatalf("expected 501 for transition route before task wiring, got %d", transitionRec.Code)
 	}
+
+	workspaceReq := httptest.NewRequest(http.MethodGet, "/v1/tasks/1/workspace", nil)
+	workspaceRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(workspaceRec, workspaceReq)
+	if workspaceRec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501 for annotation workspace route before wiring, got %d", workspaceRec.Code)
+	}
 }

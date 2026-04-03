@@ -94,6 +94,13 @@ type TaskRoutes struct {
 	TransitionTask http.HandlerFunc
 }
 
+// AnnotationRoutes groups task-scoped annotation workspace endpoints.
+type AnnotationRoutes struct {
+	GetWorkspace    http.HandlerFunc
+	SaveDraft       http.HandlerFunc
+	SubmitWorkspace http.HandlerFunc
+}
+
 // OverviewRoutes groups handlers for the task-first project home payload.
 type OverviewRoutes struct {
 	GetProjectOverview http.HandlerFunc
@@ -109,6 +116,7 @@ type Modules struct {
 	Publish     PublishRoutes
 	Artifacts   ArtifactRoutes
 	Tasks       TaskRoutes
+	Annotations AnnotationRoutes
 	Overview    OverviewRoutes
 	ReadyChecks []ReadyCheck
 }
@@ -218,6 +226,9 @@ func NewHTTPServerWithModules(m Modules) *HTTPServer {
 		r.Post("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.CreateTask))
 		r.Get("/tasks/{id}", handlerOrNotImplemented(m.Tasks.GetTask))
 		r.Post("/tasks/{id}/transition", handlerOrNotImplemented(m.Tasks.TransitionTask))
+		r.Get("/tasks/{id}/workspace", handlerOrNotImplemented(m.Annotations.GetWorkspace))
+		r.Put("/tasks/{id}/workspace/draft", handlerOrNotImplemented(m.Annotations.SaveDraft))
+		r.Post("/tasks/{id}/workspace/submit", handlerOrNotImplemented(m.Annotations.SubmitWorkspace))
 
 		r.Post("/jobs/zero-shot", handlerOrNotImplemented(m.Jobs.CreateZeroShot))
 		r.Post("/jobs/video-extract", handlerOrNotImplemented(m.Jobs.CreateVideoExtract))

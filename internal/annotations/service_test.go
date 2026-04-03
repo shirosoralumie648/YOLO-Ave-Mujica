@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"yolo-ave-mujica/internal/tasks"
 )
 
 func TestServiceSaveDraftIncrementsRevision(t *testing.T) {
@@ -307,5 +309,155 @@ func TestServiceSaveDraftRejectsInvalidBody(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "body_json") {
 		t.Fatalf("expected body_json error, got %v", err)
+	}
+}
+
+func TestServiceGetWorkspaceReturnsTaskAndSyntheticDraft(t *testing.T) {
+	ctx := context.Background()
+	taskRepo := tasks.NewInMemoryRepository()
+	taskSvc := tasks.NewService(taskRepo)
+	snapshotID := int64(27)
+
+	task, err := taskSvc.CreateTask(ctx, tasks.CreateTaskInput{
+		ProjectID:       1,
+		SnapshotID:      &snapshotID,
+		Title:           "Annotate dock frame",
+		Kind:            tasks.KindAnnotation,
+		Status:          tasks.StatusInProgress,
+		AssetObjectKey:  "train/images/workspace-a.jpg",
+		MediaKind:       tasks.MediaKindImage,
+		OntologyVersion: "v1",
+		Assignee:        "annotator-1",
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	task.SnapshotVersion = "v27"
+	task.DatasetID = 8
+	task.DatasetName = "yard-ops"
+
+	svc := NewServiceWithTaskService(NewInMemoryRepository(), taskSvc)
+	workspace, err := svc.GetWorkspace(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get workspace: %v", err)
+	}
+
+	if workspace.Task.ID != task.ID {
+		t.Fatalf("expected task id %d, got %d", task.ID, workspace.Task.ID)
+	}
+	if workspace.Asset.ObjectKey != task.AssetObjectKey {
+		t.Fatalf("expected object key %q, got %q", task.AssetObjectKey, workspace.Asset.ObjectKey)
+	}
+	if workspace.Asset.SnapshotID == nil || *workspace.Asset.SnapshotID != snapshotID {
+		t.Fatalf("expected snapshot id %d, got %+v", snapshotID, workspace.Asset.SnapshotID)
+	}
+	if workspace.Draft.TaskID != task.ID {
+		t.Fatalf("expected synthetic draft task id %d, got %d", task.ID, workspace.Draft.TaskID)
+	}
+	if workspace.Draft.State != StateDraft {
+		t.Fatalf("expected synthetic draft state %q, got %q", StateDraft, workspace.Draft.State)
+	}
+	if workspace.Draft.Revision != 0 {
+		t.Fatalf("expected synthetic draft revision 0, got %d", workspace.Draft.Revision)
+	}
+	if len(workspace.Draft.Body) != 0 {
+		t.Fatalf("expected empty synthetic draft body, got %#v", workspace.Draft.Body)
+	}
+}
+
+func TestServiceSaveWorkspaceDraftUsesTaskContext(t *testing.T) {
+	ctx := context.Background()
+	taskRepo := tasks.NewInMemoryRepository()
+	taskSvc := tasks.NewService(taskRepo)
+	snapshotID := int64(28)
+
+	task, err := taskSvc.CreateTask(ctx, tasks.CreateTaskInput{
+		ProjectID:       1,
+		SnapshotID:      &snapshotID,
+		Title:           "Annotate dock frame B",
+		Kind:            tasks.KindAnnotation,
+		Status:          tasks.StatusInProgress,
+		AssetObjectKey:  "train/images/workspace-b.jpg",
+		MediaKind:       tasks.MediaKindImage,
+		OntologyVersion: "v2",
+		Assignee:        "annotator-1",
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithTaskService(repo, taskSvc)
+	workspace, err := svc.SaveWorkspaceDraft(ctx, task.ID, WorkspaceDraftInput{
+		Actor: "annotator-1",
+		Body: map[string]any{
+			"objects": []any{map[string]any{"id": "box-1", "label": "person"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("save workspace draft: %v", err)
+	}
+
+	if workspace.Draft.Revision != 1 {
+		t.Fatalf("expected revision 1, got %d", workspace.Draft.Revision)
+	}
+	if workspace.Draft.SnapshotID != snapshotID {
+		t.Fatalf("expected draft snapshot id %d, got %d", snapshotID, workspace.Draft.SnapshotID)
+	}
+	if workspace.Draft.AssetObjectKey != task.AssetObjectKey {
+		t.Fatalf("expected draft object key %q, got %q", task.AssetObjectKey, workspace.Draft.AssetObjectKey)
+	}
+	if workspace.Draft.OntologyVersion != task.OntologyVersion {
+		t.Fatalf("expected ontology version %q, got %q", task.OntologyVersion, workspace.Draft.OntologyVersion)
+	}
+}
+
+func TestServiceSubmitWorkspaceTransitionsTaskToSubmitted(t *testing.T) {
+	ctx := context.Background()
+	taskRepo := tasks.NewInMemoryRepository()
+	taskSvc := tasks.NewService(taskRepo)
+	snapshotID := int64(29)
+
+	task, err := taskSvc.CreateTask(ctx, tasks.CreateTaskInput{
+		ProjectID:       1,
+		SnapshotID:      &snapshotID,
+		Title:           "Annotate dock frame C",
+		Kind:            tasks.KindAnnotation,
+		Status:          tasks.StatusInProgress,
+		AssetObjectKey:  "train/images/workspace-c.jpg",
+		MediaKind:       tasks.MediaKindImage,
+		OntologyVersion: "v1",
+		Assignee:        "annotator-1",
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithTaskService(repo, taskSvc)
+	if _, err := svc.SaveWorkspaceDraft(ctx, task.ID, WorkspaceDraftInput{
+		Actor: "annotator-1",
+		Body:  map[string]any{"objects": []any{}},
+	}); err != nil {
+		t.Fatalf("seed draft: %v", err)
+	}
+
+	workspace, err := svc.SubmitWorkspace(ctx, task.ID, SubmitInput{Actor: "annotator-1"})
+	if err != nil {
+		t.Fatalf("submit workspace: %v", err)
+	}
+
+	if workspace.Task.Status != tasks.StatusSubmitted {
+		t.Fatalf("expected task status %q, got %q", tasks.StatusSubmitted, workspace.Task.Status)
+	}
+	if workspace.Draft.State != StateSubmitted {
+		t.Fatalf("expected draft state %q, got %q", StateSubmitted, workspace.Draft.State)
+	}
+	currentTask, err := taskSvc.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get task after submit: %v", err)
+	}
+	if currentTask.Status != tasks.StatusSubmitted {
+		t.Fatalf("expected persisted task status %q, got %q", tasks.StatusSubmitted, currentTask.Status)
 	}
 }

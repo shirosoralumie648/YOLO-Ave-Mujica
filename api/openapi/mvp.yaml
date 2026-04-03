@@ -114,6 +114,56 @@ paths:
       responses:
         "200":
           description: Signed URL
+  /v1/tasks/{id}/workspace:
+    get:
+      summary: Get annotation workspace payload
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Annotation workspace payload
+  /v1/tasks/{id}/workspace/draft:
+    put:
+      summary: Save annotation workspace draft
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actor, body]
+      responses:
+        "200":
+          description: Updated workspace payload
+  /v1/tasks/{id}/workspace/submit:
+    post:
+      summary: Submit annotation workspace task
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actor]
+      responses:
+        "200":
+          description: Submitted workspace payload
   /v1/jobs/zero-shot:
     post:
       summary: Queue zero-shot job

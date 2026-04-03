@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/minio/minio-go/v7"
+	"yolo-ave-mujica/internal/annotations"
 	"yolo-ave-mujica/internal/artifacts"
 	"yolo-ave-mujica/internal/config"
 	"yolo-ave-mujica/internal/datahub"
@@ -88,6 +89,9 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	taskRepo := tasks.NewPostgresRepository(pool)
 	taskSvc := tasks.NewService(taskRepo)
 	taskHandler := tasks.NewHandler(taskSvc)
+	annotationRepo := annotations.NewPostgresRepository(pool)
+	annotationSvc := annotations.NewServiceWithTaskService(annotationRepo, taskSvc)
+	annotationHandler := annotations.NewHandler(annotationSvc)
 	publishRepo := publish.NewPostgresRepository(pool)
 	publishSvc := publish.NewService(publishRepo, taskSvc)
 	publishHandler := publish.NewHandler(publishSvc)
@@ -158,6 +162,11 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 		CreateTask:     taskHandler.CreateTask,
 		GetTask:        taskHandler.GetTask,
 		TransitionTask: taskHandler.TransitionTask,
+	}
+	modules.Annotations = server.AnnotationRoutes{
+		GetWorkspace:    annotationHandler.GetWorkspace,
+		SaveDraft:       annotationHandler.SaveDraft,
+		SubmitWorkspace: annotationHandler.SubmitWorkspace,
 	}
 	modules.Overview = server.OverviewRoutes{
 		GetProjectOverview: overviewHandler.GetProjectOverview,
