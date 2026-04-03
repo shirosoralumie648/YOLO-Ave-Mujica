@@ -75,6 +75,25 @@ describe("TaskListPage", () => {
     expect(await screen.findByText("Blocked review batch")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Blocked review batch" })).toHaveAttribute("href", "/tasks/1");
     expect(fetchMock).toHaveBeenCalledWith("/v1/projects/1/tasks?status=blocked", expect.any(Object));
+
+    const queueFiltersHeading = screen.getByRole("heading", { name: "Queue filters" });
+    const queueFiltersPanel = queueFiltersHeading.closest("section");
+    if (!queueFiltersPanel) {
+      throw new Error("queue filters panel not found");
+    }
+
+    const statusSelect = within(queueFiltersPanel).getByLabelText("Status");
+    expect(within(statusSelect).queryByRole("option", { name: "done" })).not.toBeInTheDocument();
+    expect(within(statusSelect).getByRole("option", { name: "submitted" })).toBeInTheDocument();
+    expect(within(statusSelect).getByRole("option", { name: "reviewing" })).toBeInTheDocument();
+    expect(within(statusSelect).getByRole("option", { name: "rework_required" })).toBeInTheDocument();
+    expect(within(statusSelect).getByRole("option", { name: "accepted" })).toBeInTheDocument();
+    expect(within(statusSelect).getByRole("option", { name: "published" })).toBeInTheDocument();
+    expect(within(statusSelect).getByRole("option", { name: "closed" })).toBeInTheDocument();
+
+    const kindSelect = within(queueFiltersPanel).getByLabelText("Kind");
+    expect(within(kindSelect).getByRole("option", { name: "training_candidate" })).toBeInTheDocument();
+    expect(within(kindSelect).getByRole("option", { name: "promotion_review" })).toBeInTheDocument();
   });
 
   it("creates a task and refreshes the list", async () => {
@@ -87,7 +106,7 @@ describe("TaskListPage", () => {
             id: 2,
             project_id: 1,
             title: "Label dock cameras",
-            kind: "annotation",
+            kind: "review",
             status: "queued",
             priority: "normal",
             assignee: "annotator-7",
@@ -106,7 +125,7 @@ describe("TaskListPage", () => {
               id: 2,
               project_id: 1,
               title: "Label dock cameras",
-              kind: "annotation",
+              kind: "review",
               status: "queued",
               priority: "normal",
               assignee: "annotator-7",
@@ -126,6 +145,9 @@ describe("TaskListPage", () => {
     if (!form) {
       throw new Error("task creation form not found");
     }
+    const createKindSelect = within(form).getByLabelText("Kind");
+    expect(within(createKindSelect).queryByRole("option", { name: "annotation" })).not.toBeInTheDocument();
+    expect(within(createKindSelect).getByRole("option", { name: "review" })).toBeInTheDocument();
 
     await user.type(within(form).getByLabelText("Task title"), "Label dock cameras");
     await user.type(within(form).getByLabelText("Assignee"), "annotator-7");
@@ -141,7 +163,7 @@ describe("TaskListPage", () => {
       body: JSON.stringify({
         title: "Label dock cameras",
         assignee: "annotator-7",
-        kind: "annotation",
+        kind: "review",
         priority: "normal",
       }),
     });

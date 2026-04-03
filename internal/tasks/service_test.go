@@ -12,8 +12,10 @@ func TestServiceCreateListGetRoundTripAppliesDefaults(t *testing.T) {
 	svc := NewService(repo)
 
 	created, err := svc.CreateTask(ctx, CreateTaskInput{
-		ProjectID: 1,
-		Title:     "Label frame 0001",
+		ProjectID:      1,
+		Title:          "Label frame 0001",
+		AssetObjectKey: "assets/frame-0001.jpg",
+		MediaKind:      MediaKindImage,
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
@@ -71,6 +73,7 @@ func TestServiceCreateTaskBlockedRequiresBlockerReason(t *testing.T) {
 	_, err := svc.CreateTask(ctx, CreateTaskInput{
 		ProjectID: 1,
 		Title:     "Needs unblock",
+		Kind:      KindReview,
 		Status:    StatusBlocked,
 	})
 	if err == nil {
@@ -108,6 +111,7 @@ func TestServiceTransitionTaskFollowsAllowedStatusPath(t *testing.T) {
 	created, err := svc.CreateTask(ctx, CreateTaskInput{
 		ProjectID: 1,
 		Title:     "Review lane 4",
+		Kind:      KindReview,
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
@@ -151,12 +155,12 @@ func TestServiceTransitionTaskFollowsAllowedStatusPath(t *testing.T) {
 		t.Fatalf("expected blocker_reason to clear on resume, got %q", resumed.BlockerReason)
 	}
 
-	done, err := svc.TransitionTask(ctx, created.ID, TransitionTaskInput{Status: StatusDone})
+	submitted, err := svc.TransitionTask(ctx, created.ID, TransitionTaskInput{Status: StatusSubmitted})
 	if err != nil {
-		t.Fatalf("transition to done: %v", err)
+		t.Fatalf("transition to submitted: %v", err)
 	}
-	if done.Status != StatusDone {
-		t.Fatalf("expected done, got %q", done.Status)
+	if submitted.Status != StatusSubmitted {
+		t.Fatalf("expected submitted, got %q", submitted.Status)
 	}
 }
 
@@ -167,17 +171,174 @@ func TestServiceTransitionTaskRejectsInvalidTransitionsAndBlockedWithoutReason(t
 	created, err := svc.CreateTask(ctx, CreateTaskInput{
 		ProjectID: 1,
 		Title:     "Annotate night dock",
+		Kind:      KindReview,
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
-	if _, err := svc.TransitionTask(ctx, created.ID, TransitionTaskInput{Status: StatusDone}); err == nil {
-		t.Fatal("expected queued -> done transition to fail")
+	if _, err := svc.TransitionTask(ctx, created.ID, TransitionTaskInput{Status: StatusSubmitted}); err == nil {
+		t.Fatal("expected queued -> submitted transition to fail")
 	}
 
 	if _, err := svc.TransitionTask(ctx, created.ID, TransitionTaskInput{Status: StatusBlocked}); err == nil {
 		t.Fatal("expected blocked transition without blocker_reason to fail")
+	}
+}
+
+func TestServiceTransitionTaskSupportsSubmittedLifecycle(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewInMemoryRepository())
+
+	created, err := svc.CreateTask(ctx, CreateTaskInput{
+		ProjectID:      1,
+		Title:          "Annotation lifecycle",
+		Kind:           KindAnnotation,
+		AssetObjectKey: "assets/clip-01/frame-0005.jpg",
+		MediaKind:      MediaKindImage,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	ready, err := svc.TransitionTask(ctx, created.ID, TransitionTaskInput{Status: StatusReady})
+	if err != nil {
+		t.Fatalf("transition to ready: %v", err)
+	}
+	if ready.Status != StatusReady {
+		t.Fatalf("expected ready, got %q", ready.Status)
+	}
+
+	inProgress, err := svc.TransitionTask(ctx, created.ID, TransitionTaskInput{Status: StatusInProgress})
+	if err != nil {
+		t.Fatalf("transition to in_progress: %v", err)
+	}
+	if inProgress.Status != StatusInProgress {
+		t.Fatalf("expected in_progress, got %q", inProgress.Status)
+	}
+
+	submitted, err := svc.TransitionTask(ctx, created.ID, TransitionTaskInput{Status: StatusSubmitted})
+	if err != nil {
+		t.Fatalf("transition to submitted: %v", err)
+	}
+	if submitted.Status != StatusSubmitted {
+		t.Fatalf("expected submitted, got %q", submitted.Status)
+	}
+}
+
+func TestServiceCreateTaskRequiresAssetContextForAnnotationTasks(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewInMemoryRepository())
+
+	_, err := svc.CreateTask(ctx, CreateTaskInput{
+		ProjectID: 1,
+		Title:     "Missing asset context",
+		Kind:      KindAnnotation,
+	})
+	if err == nil {
+		t.Fatal("expected validation error for annotation task without asset context")
+	}
+}
+
+func TestServiceTransitionTaskSupportsLegacyDoneCompatibility(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewInMemoryRepository())
+
+	created, err := svc.CreateTask(ctx, CreateTaskInput{
+		ProjectID: 1,
+		Title:     "Legacy done path",
+		Kind:      KindReview,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	if _, err := svc.TransitionTask(ctx, created.ID, TransitionTaskInput{Status: StatusReady}); err != nil {
+		t.Fatalf("transition to ready: %v", err)
+	}
+	if _, err := svc.TransitionTask(ctx, created.ID, TransitionTaskInput{Status: StatusInProgress}); err != nil {
+		t.Fatalf("transition to in_progress: %v", err)
+	}
+
+	closed, err := svc.TransitionTask(ctx, created.ID, TransitionTaskInput{Status: "done"})
+	if err != nil {
+		t.Fatalf("transition to legacy done: %v", err)
+	}
+	if closed.Status != StatusClosed {
+		t.Fatalf("expected legacy done to resolve to %q, got %q", StatusClosed, closed.Status)
+	}
+}
+
+func TestServiceTransitionTaskMapsLegacyDoneToSubmittedForAnnotationTasks(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewInMemoryRepository())
+
+	created, err := svc.CreateTask(ctx, CreateTaskInput{
+		ProjectID:      1,
+		Title:          "Annotation done compatibility",
+		Kind:           KindAnnotation,
+		AssetObjectKey: "assets/cam-1/frame-0002.jpg",
+		MediaKind:      MediaKindImage,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	if _, err := svc.TransitionTask(ctx, created.ID, TransitionTaskInput{Status: StatusReady}); err != nil {
+		t.Fatalf("transition to ready: %v", err)
+	}
+	if _, err := svc.TransitionTask(ctx, created.ID, TransitionTaskInput{Status: StatusInProgress}); err != nil {
+		t.Fatalf("transition to in_progress: %v", err)
+	}
+
+	submitted, err := svc.TransitionTask(ctx, created.ID, TransitionTaskInput{Status: "done"})
+	if err != nil {
+		t.Fatalf("transition to legacy done: %v", err)
+	}
+	if submitted.Status != StatusSubmitted {
+		t.Fatalf("expected legacy done to resolve to %q for annotation, got %q", StatusSubmitted, submitted.Status)
+	}
+}
+
+func TestServiceListTasksSupportsLegacyDoneFilter(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewInMemoryRepository())
+
+	created, err := svc.CreateTask(ctx, CreateTaskInput{
+		ProjectID: 1,
+		Title:     "Closed task visible in done filter",
+		Kind:      KindReview,
+		Status:    StatusClosed,
+	})
+	if err != nil {
+		t.Fatalf("create closed task: %v", err)
+	}
+
+	listed, err := svc.ListTasks(ctx, 1, ListTasksFilter{Status: "done"})
+	if err != nil {
+		t.Fatalf("list with done filter: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != created.ID {
+		t.Fatalf("expected legacy done filter to return closed task %d, got %+v", created.ID, listed)
+	}
+}
+
+func TestServiceCreateTaskDefaultsOntologyVersion(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewInMemoryRepository())
+
+	created, err := svc.CreateTask(ctx, CreateTaskInput{
+		ProjectID:      1,
+		Title:          "Ontology defaults",
+		Kind:           KindAnnotation,
+		AssetObjectKey: "assets/frame-100.jpg",
+		MediaKind:      MediaKindImage,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if created.OntologyVersion != "v1" {
+		t.Fatalf("expected default ontology_version v1, got %q", created.OntologyVersion)
 	}
 }
 

@@ -37,19 +37,23 @@ func (r *InMemoryRepository) CreateTask(_ context.Context, in CreateTaskInput) (
 		lastActivityAt = now
 	}
 	task := Task{
-		ID:             r.nextID,
-		ProjectID:      in.ProjectID,
-		SnapshotID:     in.SnapshotID,
-		Title:          in.Title,
-		Kind:           in.Kind,
-		Status:         in.Status,
-		Priority:       in.Priority,
-		Assignee:       in.Assignee,
-		DueAt:          in.DueAt,
-		BlockerReason:  in.BlockerReason,
-		LastActivityAt: lastActivityAt,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:              r.nextID,
+		ProjectID:       in.ProjectID,
+		SnapshotID:      in.SnapshotID,
+		Title:           in.Title,
+		Kind:            in.Kind,
+		AssetObjectKey:  in.AssetObjectKey,
+		MediaKind:       in.MediaKind,
+		FrameIndex:      in.FrameIndex,
+		OntologyVersion: in.OntologyVersion,
+		Status:          in.Status,
+		Priority:        in.Priority,
+		Assignee:        in.Assignee,
+		DueAt:           in.DueAt,
+		BlockerReason:   in.BlockerReason,
+		LastActivityAt:  lastActivityAt,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	r.nextID++
 	r.byID[task.ID] = task

@@ -33,7 +33,7 @@ function taskMeta(task: TaskItem) {
 const defaultFormState: CreateTaskPayload = {
   title: "",
   assignee: "",
-  kind: "annotation",
+  kind: "review",
   priority: "normal",
 };
 
@@ -118,7 +118,12 @@ export function TaskListPage() {
                 <option value="ready">ready</option>
                 <option value="in_progress">in_progress</option>
                 <option value="blocked">blocked</option>
-                <option value="done">done</option>
+                <option value="submitted">submitted</option>
+                <option value="reviewing">reviewing</option>
+                <option value="rework_required">rework_required</option>
+                <option value="accepted">accepted</option>
+                <option value="published">published</option>
+                <option value="closed">closed</option>
               </select>
             </label>
 
@@ -130,6 +135,8 @@ export function TaskListPage() {
                 <option value="review">review</option>
                 <option value="qa">qa</option>
                 <option value="ops">ops</option>
+                <option value="training_candidate">training_candidate</option>
+                <option value="promotion_review">promotion_review</option>
               </select>
             </label>
 
@@ -201,10 +208,11 @@ export function TaskListPage() {
                   }))
                 }
               >
-                <option value="annotation">annotation</option>
                 <option value="review">review</option>
                 <option value="qa">qa</option>
                 <option value="ops">ops</option>
+                <option value="training_candidate">training_candidate</option>
+                <option value="promotion_review">promotion_review</option>
               </select>
             </label>
 

@@ -11,6 +11,8 @@ type Service struct {
 	repo Repository
 }
 
+const legacyStatusDoneToken = "done"
+
 func NewService(repo Repository) *Service {
 	if repo == nil {
 		repo = NewInMemoryRepository()
@@ -30,8 +32,14 @@ func (s *Service) CreateTask(ctx context.Context, in CreateTaskInput) (Task, err
 		return Task{}, fmt.Errorf("title is required")
 	}
 	in.Kind = normalizeKind(in.Kind)
+	in.MediaKind = normalizeMediaKind(in.MediaKind)
 	in.Status = normalizeStatus(in.Status)
 	in.Priority = normalizePriority(in.Priority)
+	in.AssetObjectKey = strings.TrimSpace(in.AssetObjectKey)
+	in.OntologyVersion = strings.TrimSpace(in.OntologyVersion)
+	if in.OntologyVersion == "" {
+		in.OntologyVersion = "v1"
+	}
 	in.Assignee = strings.TrimSpace(in.Assignee)
 	in.BlockerReason = strings.TrimSpace(in.BlockerReason)
 	if in.LastActivityAt.IsZero() {
@@ -43,6 +51,20 @@ func (s *Service) CreateTask(ctx context.Context, in CreateTaskInput) (Task, err
 	}
 	if !isValidKind(in.Kind) {
 		return Task{}, fmt.Errorf("invalid kind %q", in.Kind)
+	}
+	if in.Kind == KindAnnotation {
+		if in.AssetObjectKey == "" {
+			return Task{}, fmt.Errorf("asset_object_key is required for annotation tasks")
+		}
+		if !isValidMediaKind(in.MediaKind) {
+			return Task{}, fmt.Errorf("media_kind is required for annotation tasks and must be one of %q, %q", MediaKindImage, MediaKindVideo)
+		}
+	}
+	if in.MediaKind != "" && !isValidMediaKind(in.MediaKind) {
+		return Task{}, fmt.Errorf("invalid media_kind %q", in.MediaKind)
+	}
+	if in.FrameIndex != nil && *in.FrameIndex < 0 {
+		return Task{}, fmt.Errorf("frame_index must be >= 0 when provided")
 	}
 	if !isValidStatus(in.Status) {
 		return Task{}, fmt.Errorf("invalid status %q", in.Status)
@@ -77,8 +99,18 @@ func (s *Service) TransitionTask(ctx context.Context, taskID int64, in Transitio
 	if err != nil {
 		return Task{}, err
 	}
+	current.Status = normalizeStatus(current.Status)
+	current.Kind = normalizeKind(current.Kind)
 
+	rawStatus := strings.TrimSpace(strings.ToLower(in.Status))
 	in.Status = normalizeStatus(in.Status)
+	if rawStatus == legacyStatusDoneToken {
+		if current.Kind == KindAnnotation {
+			in.Status = StatusSubmitted
+		} else {
+			in.Status = StatusClosed
+		}
+	}
 	in.BlockerReason = strings.TrimSpace(in.BlockerReason)
 	if in.LastActivityAt.IsZero() {
 		in.LastActivityAt = time.Now().UTC()
@@ -116,6 +148,10 @@ func normalizeStatus(status string) string {
 	return status
 }
 
+func normalizeMediaKind(kind string) string {
+	return strings.TrimSpace(strings.ToLower(kind))
+}
+
 func normalizePriority(priority string) string {
 	priority = strings.TrimSpace(strings.ToLower(priority))
 	if priority == "" {
@@ -126,6 +162,9 @@ func normalizePriority(priority string) string {
 
 func normalizeFilter(filter ListTasksFilter) (ListTasksFilter, error) {
 	filter.Status = strings.TrimSpace(strings.ToLower(filter.Status))
+	if filter.Status == legacyStatusDoneToken {
+		filter.Status = StatusClosed
+	}
 	filter.Kind = strings.TrimSpace(strings.ToLower(filter.Kind))
 	filter.Assignee = strings.TrimSpace(filter.Assignee)
 	filter.Priority = strings.TrimSpace(strings.ToLower(filter.Priority))
@@ -157,7 +196,16 @@ func isValidKind(kind string) bool {
 
 func isValidStatus(status string) bool {
 	switch status {
-	case StatusQueued, StatusReady, StatusInProgress, StatusBlocked, StatusDone:
+	case StatusQueued, StatusReady, StatusInProgress, StatusBlocked, StatusSubmitted, StatusReviewing, StatusReworkRequired, StatusAccepted, StatusPublished, StatusClosed:
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidMediaKind(kind string) bool {
+	switch kind {
+	case MediaKindImage, MediaKindVideo:
 		return true
 	default:
 		return false
@@ -182,12 +230,33 @@ var allowedTransitions = map[string]map[string]bool{
 		StatusBlocked:    true,
 	},
 	StatusInProgress: {
-		StatusBlocked: true,
-		StatusDone:    true,
+		StatusBlocked:   true,
+		StatusSubmitted: true,
+		StatusClosed:    true,
 	},
 	StatusBlocked: {
 		StatusReady:      true,
 		StatusInProgress: true,
+	},
+	StatusSubmitted: {
+		StatusReviewing: true,
+		StatusBlocked:   true,
+	},
+	StatusReviewing: {
+		StatusReworkRequired: true,
+		StatusAccepted:       true,
+		StatusBlocked:        true,
+	},
+	StatusReworkRequired: {
+		StatusInProgress: true,
+		StatusBlocked:    true,
+	},
+	StatusAccepted: {
+		StatusPublished: true,
+		StatusBlocked:   true,
+	},
+	StatusPublished: {
+		StatusClosed: true,
 	},
 }
 

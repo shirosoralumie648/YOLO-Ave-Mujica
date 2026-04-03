@@ -17,6 +17,7 @@ type PostgresRepository struct {
 
 const taskSelectColumns = `
 tasks.id, tasks.project_id, tasks.snapshot_id, tasks.title, tasks.kind, tasks.status,
+tasks.asset_object_key, tasks.media_kind, tasks.frame_index, tasks.ontology_version,
 tasks.priority, tasks.assignee, tasks.due_at, tasks.blocker_reason,
 tasks.last_activity_at, tasks.created_at, tasks.updated_at,
 snapshots.version, datasets.id, datasets.name
@@ -60,16 +61,18 @@ func (r *PostgresRepository) CreateTask(ctx context.Context, in CreateTaskInput)
 		with inserted as (
 			insert into tasks (
 				project_id, snapshot_id, title, kind, status, priority, assignee,
-				due_at, blocker_reason, last_activity_at
+				due_at, blocker_reason, last_activity_at, asset_object_key, media_kind,
+				frame_index, ontology_version
 			)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 			returning id, project_id, snapshot_id, title, kind, status, priority,
+			          asset_object_key, media_kind, frame_index, ontology_version,
 			          assignee, due_at, blocker_reason, last_activity_at, created_at, updated_at
 		)
 		select `+taskSelectColumns+`
 		from inserted tasks
 		`+taskSelectJoins+`
-	`, in.ProjectID, in.SnapshotID, in.Title, in.Kind, in.Status, in.Priority, in.Assignee, in.DueAt, in.BlockerReason, lastActivityAt)
+	`, in.ProjectID, in.SnapshotID, in.Title, in.Kind, in.Status, in.Priority, in.Assignee, in.DueAt, in.BlockerReason, lastActivityAt, in.AssetObjectKey, in.MediaKind, in.FrameIndex, in.OntologyVersion)
 
 	return scanTask(row)
 }
@@ -124,6 +127,7 @@ func (r *PostgresRepository) TransitionTask(ctx context.Context, taskID int64, i
 			    updated_at = now()
 			where id = $1
 			returning id, project_id, snapshot_id, title, kind, status, priority,
+			          asset_object_key, media_kind, frame_index, ontology_version,
 			          assignee, due_at, blocker_reason, last_activity_at, created_at, updated_at
 		)
 		select `+taskSelectColumns+`
@@ -149,6 +153,10 @@ func scanTask(row interface {
 		&task.Title,
 		&task.Kind,
 		&task.Status,
+		&task.AssetObjectKey,
+		&task.MediaKind,
+		&task.FrameIndex,
+		&task.OntologyVersion,
 		&task.Priority,
 		&task.Assignee,
 		&task.DueAt,

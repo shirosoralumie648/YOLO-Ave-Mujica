@@ -18,6 +18,8 @@ func TestHandlerCreateListAndGetTask(t *testing.T) {
 	createReq := httptest.NewRequest(http.MethodPost, "/v1/projects/1/tasks", strings.NewReader(`{
 		"title":"Label loading-dock batch",
 		"kind":"annotation",
+		"asset_object_key":"assets/loading-dock/frame-0001.jpg",
+		"media_kind":"image",
 		"priority":"high",
 		"assignee":"annotator-1"
 	}`))
@@ -58,6 +60,7 @@ func TestHandlerTransitionsTask(t *testing.T) {
 	created, err := svc.CreateTask(context.Background(), CreateTaskInput{
 		ProjectID: 1,
 		Title:     "Transition me",
+		Kind:      KindReview,
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
