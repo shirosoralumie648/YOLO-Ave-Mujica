@@ -46,16 +46,16 @@ export interface PublishBatch {
 
 export interface PublishWorkspace {
   batch: PublishBatch;
-  items?: Array<{
+  items: Array<{
     item_id: number;
     candidate_id: number;
     task_id: number;
     overlay: Record<string, unknown>;
-    diff: Record<string, number>;
-    context: Record<string, unknown>;
+    diff: Record<string, unknown>;
+    context?: Record<string, unknown>;
     feedback: PublishFeedback[];
   }>;
-  history?: Array<{ stage: string; actor: string; action: string; at?: string }>;
+  history: Array<{ stage: string; actor: string; action: string; at?: string }>;
 }
 
 export interface CreateFeedbackPayload {

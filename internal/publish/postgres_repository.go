@@ -142,6 +142,14 @@ func (r *PostgresRepository) GetRecord(ctx context.Context, recordID int64) (Rec
 	return record, nil
 }
 
+func (r *PostgresRepository) BuildWorkspace(ctx context.Context, batchID int64) (Workspace, error) {
+	batch, err := r.GetBatch(ctx, batchID)
+	if err != nil {
+		return Workspace{}, err
+	}
+	return buildWorkspace(batch), nil
+}
+
 func (r *PostgresRepository) ReplaceBatchItems(ctx context.Context, batchID int64, in ReplaceBatchItemsInput) (Batch, error) {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {

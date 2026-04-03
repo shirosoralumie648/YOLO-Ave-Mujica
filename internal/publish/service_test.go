@@ -87,3 +87,38 @@ func TestServiceOwnerEditRequiresReviewApprovalAgain(t *testing.T) {
 		t.Fatal("expected owner approve to fail before renewed reviewer approval")
 	}
 }
+
+func TestServiceBuildWorkspaceReturnsBatchItemsDiffAndFeedback(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo, nil)
+
+	batch, err := svc.CreateBatch(context.Background(), CreateBatchInput{
+		ProjectID:  1,
+		SnapshotID: 17,
+		Source:     SourceSuggested,
+		Items: []CreateBatchItemInput{{
+			CandidateID: 501,
+			TaskID:      61,
+			DatasetID:   10,
+			SnapshotID:  17,
+			ItemPayload: map[string]any{
+				"overlay": map[string]any{"boxes": []any{map[string]any{"label": "car"}}},
+				"diff":    map[string]any{"added": 1, "updated": 0, "removed": 0},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create batch: %v", err)
+	}
+
+	workspace, err := svc.GetWorkspace(context.Background(), batch.ID)
+	if err != nil {
+		t.Fatalf("get workspace: %v", err)
+	}
+	if len(workspace.Items) != 1 {
+		t.Fatalf("expected 1 workspace item, got %d", len(workspace.Items))
+	}
+	if workspace.Items[0].Overlay == nil {
+		t.Fatalf("expected overlay metadata, got %+v", workspace.Items[0])
+	}
+}

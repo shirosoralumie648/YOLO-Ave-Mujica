@@ -92,6 +92,17 @@ func (r *InMemoryRepository) GetRecord(_ context.Context, recordID int64) (Recor
 	return cloneRecord(record), nil
 }
 
+func (r *InMemoryRepository) BuildWorkspace(_ context.Context, batchID int64) (Workspace, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	batch, ok := r.batches[batchID]
+	if !ok {
+		return Workspace{}, fmt.Errorf("publish batch %d not found", batchID)
+	}
+	return buildWorkspace(cloneBatch(batch)), nil
+}
+
 func (r *InMemoryRepository) ReplaceBatchItems(_ context.Context, batchID int64, in ReplaceBatchItemsInput) (Batch, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

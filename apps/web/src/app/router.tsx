@@ -10,6 +10,7 @@ import { SnapshotDiffPage } from "../features/data/snapshot-diff-page";
 import { ReviewQueuePage } from "../features/review/review-queue-page";
 import { PublishCandidatesPage } from "../features/publish/publish-candidates-page";
 import { PublishBatchDetailPage } from "../features/publish/publish-batch-detail-page";
+import { ReviewWorkspacePage } from "../features/review/review-workspace-page";
 
 export const router = createBrowserRouter([
   {
@@ -24,6 +25,7 @@ export const router = createBrowserRouter([
       { path: "data/snapshots/:snapshotId", element: <SnapshotDetailPage /> },
       { path: "data/diff", element: <SnapshotDiffPage /> },
       { path: "review", element: <ReviewQueuePage /> },
+      { path: "review/workspace/:batchId", element: <ReviewWorkspacePage /> },
       { path: "publish/candidates", element: <PublishCandidatesPage /> },
       { path: "publish/batches/:batchId", element: <PublishBatchDetailPage /> },
     ],

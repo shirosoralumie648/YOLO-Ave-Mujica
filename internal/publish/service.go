@@ -22,10 +22,6 @@ type ApprovalInput struct {
 	Feedback []CreateFeedbackInput `json:"feedback,omitempty"`
 }
 
-type Workspace struct {
-	Batch Batch `json:"batch"`
-}
-
 func NewService(repo Repository, taskCreator TaskCreator) *Service {
 	if repo == nil {
 		repo = NewInMemoryRepository()
@@ -77,11 +73,10 @@ func (s *Service) GetRecord(ctx context.Context, recordID int64) (Record, error)
 }
 
 func (s *Service) GetWorkspace(ctx context.Context, batchID int64) (Workspace, error) {
-	batch, err := s.GetBatch(ctx, batchID)
-	if err != nil {
-		return Workspace{}, err
+	if batchID <= 0 {
+		return Workspace{}, fmt.Errorf("batch_id must be > 0")
 	}
-	return Workspace{Batch: batch}, nil
+	return s.repo.BuildWorkspace(ctx, batchID)
 }
 
 func (s *Service) ReplaceBatchItems(ctx context.Context, batchID int64, in ReplaceBatchItemsInput) (Batch, error) {

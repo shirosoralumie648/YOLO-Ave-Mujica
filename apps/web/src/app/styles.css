@@ -321,6 +321,17 @@ a {
   text-underline-offset: 0.14em;
 }
 
+.workspace-preview {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(23, 32, 51, 0.92);
+  color: #f8f3ea;
+  overflow: auto;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
 .inline-link {
   text-decoration: underline;
   text-decoration-thickness: 1px;
