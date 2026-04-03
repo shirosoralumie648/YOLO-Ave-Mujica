@@ -81,6 +81,10 @@ a {
   padding: 32px;
 }
 
+.shell-content--workspace {
+  padding: 24px;
+}
+
 .shell-context {
   display: flex;
   justify-content: space-between;
@@ -173,6 +177,12 @@ a {
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(23, 32, 51, 0.12);
   box-shadow: 0 14px 40px rgba(23, 32, 51, 0.06);
+}
+
+.shell-context--workspace {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.84), rgba(255, 255, 255, 0.68)),
+    radial-gradient(circle at top right, rgba(250, 204, 21, 0.18), transparent 42%);
 }
 
 .panel-accent {
@@ -418,6 +428,80 @@ a {
   border: 1px solid rgba(23, 32, 51, 0.16) !important;
 }
 
+.action-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  font-weight: 700;
+}
+
+.workspace-shell {
+  gap: 18px;
+}
+
+.workspace-hero {
+  align-items: end;
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.3fr) minmax(280px, 0.9fr);
+  gap: 18px;
+}
+
+.workspace-tools,
+.workspace-main,
+.workspace-sidebar {
+  display: grid;
+  gap: 16px;
+}
+
+.workspace-editor {
+  display: grid;
+  gap: 10px;
+  font-weight: 600;
+}
+
+.workspace-editor textarea {
+  min-height: 260px;
+  width: 100%;
+  resize: vertical;
+  border: 1px solid rgba(23, 32, 51, 0.14);
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.88);
+  color: #172033;
+  font: 500 0.9rem/1.5 "IBM Plex Mono", "SFMono-Regular", monospace;
+}
+
+.workspace-summary {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 108px 1fr;
+  gap: 10px 14px;
+}
+
+.workspace-summary dt {
+  color: rgba(23, 32, 51, 0.72);
+}
+
+.workspace-summary dd {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.workspace-note {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(23, 32, 51, 0.08);
+  font-weight: 700;
+}
+
 @media (max-width: 840px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -435,6 +519,7 @@ a {
   .page-hero,
   .overview-layout,
   .tasks-layout,
+  .workspace-grid,
   .detail-grid,
   .task-card__heading {
     grid-template-columns: 1fr;

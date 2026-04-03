@@ -106,6 +106,7 @@ export function TaskDetailPage() {
   const task = taskQuery.data;
   const actions = actionsForStatus(task.status);
   const needsBlockerReason = actions.some((action) => action.requiresReason);
+  const hasWorkspaceLaunch = task.kind === "annotation";
 
   async function handleTransition(action: ActionDefinition) {
     await transitionMutation.mutateAsync({
@@ -168,7 +169,7 @@ export function TaskDetailPage() {
         <section className="panel panel-accent detail-actions">
           <div className="panel-header">
             <h2>Task actions</h2>
-            <span>{actions.length} available</span>
+            <span>{actions.length + (hasWorkspaceLaunch ? 1 : 0)} available</span>
           </div>
           {needsBlockerReason ? (
             <label className="detail-field">
@@ -182,6 +183,11 @@ export function TaskDetailPage() {
           ) : null}
           <div className="action-row">
             {actions.length === 0 ? <p>No further actions available.</p> : null}
+            {hasWorkspaceLaunch ? (
+              <Link to={`/tasks/${task.id}/workspace`} className="button-secondary action-link">
+                Open Workspace
+              </Link>
+            ) : null}
             {actions.map((action) => {
               const disabled =
                 transitionMutation.isPending || (action.requiresReason ? blockerReason.trim() === "" : false);

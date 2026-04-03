@@ -1,6 +1,9 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 export function AppShell() {
+  const location = useLocation();
+  const isWorkspaceRoute = location.pathname.includes("/workspace");
+
   return (
     <div className="app-shell">
       <aside className="shell-sidebar">
@@ -16,10 +19,10 @@ export function AppShell() {
           <NavLink to="/data">Data</NavLink>
         </nav>
       </aside>
-      <main className="shell-content">
-        <header className="shell-context">
-          <span>Project Context</span>
-          <strong>Project 1</strong>
+      <main className={isWorkspaceRoute ? "shell-content shell-content--workspace" : "shell-content"}>
+        <header className={isWorkspaceRoute ? "shell-context shell-context--workspace" : "shell-context"}>
+          <span>{isWorkspaceRoute ? "Workspace Session" : "Project Context"}</span>
+          <strong>{isWorkspaceRoute ? "Annotation Flow" : "Project 1"}</strong>
         </header>
         <Outlet />
       </main>

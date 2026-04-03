@@ -11,8 +11,9 @@ import { ReviewQueuePage } from "../features/review/review-queue-page";
 import { PublishCandidatesPage } from "../features/publish/publish-candidates-page";
 import { PublishBatchDetailPage } from "../features/publish/publish-batch-detail-page";
 import { ReviewWorkspacePage } from "../features/review/review-workspace-page";
+import { AnnotationWorkspacePage } from "../features/workspace/annotation-workspace-page";
 
-export const router = createBrowserRouter([
+export const appRoutes = [
   {
     path: "/",
     element: <AppShell />,
@@ -20,6 +21,7 @@ export const router = createBrowserRouter([
       { index: true, element: <TaskOverviewPage /> },
       { path: "tasks", element: <TaskListPage /> },
       { path: "tasks/:taskId", element: <TaskDetailPage /> },
+      { path: "tasks/:taskId/workspace", element: <AnnotationWorkspacePage /> },
       { path: "data", element: <DatasetListPage /> },
       { path: "data/datasets/:datasetId", element: <DatasetDetailPage /> },
       { path: "data/snapshots/:snapshotId", element: <SnapshotDetailPage /> },
@@ -30,4 +32,6 @@ export const router = createBrowserRouter([
       { path: "publish/batches/:batchId", element: <PublishBatchDetailPage /> },
     ],
   },
-]);
+];
+
+export const router = createBrowserRouter(appRoutes);

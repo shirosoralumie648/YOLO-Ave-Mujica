@@ -133,4 +133,33 @@ describe("TaskDetailPage", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/v1/tasks/4/transition");
   });
+
+  it("shows an annotation workspace launch link for annotation tasks", async () => {
+    const fetchMock = vi.mocked(global.fetch);
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 4,
+        project_id: 1,
+        snapshot_id: 12,
+        snapshot_version: "v7",
+        dataset_id: 5,
+        dataset_name: "dock-night",
+        title: "Annotate lane 4",
+        kind: "annotation",
+        status: "in_progress",
+        priority: "high",
+        assignee: "annotator-2",
+        blocker_reason: "",
+        asset_object_key: "train/images/lane-4.jpg",
+        media_kind: "image",
+        last_activity_at: "2026-04-01T08:00:00Z",
+        created_at: "2026-04-01T08:00:00Z",
+        updated_at: "2026-04-01T08:00:00Z",
+      }),
+    );
+
+    renderPage();
+
+    expect(await screen.findByRole("link", { name: "Open Workspace" })).toHaveAttribute("href", "/tasks/4/workspace");
+  });
 });

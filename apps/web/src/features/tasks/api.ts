@@ -6,6 +6,10 @@ export interface TaskItem {
   snapshot_id?: number;
   title: string;
   kind: string;
+  asset_object_key?: string;
+  media_kind?: string;
+  frame_index?: number;
+  ontology_version?: string;
   status: string;
   priority: string;
   assignee: string;
