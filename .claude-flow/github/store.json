@@ -1,0 +1,15 @@
+{
+  "repos": {},
+  "prs": {
+    "pr-1775152644389": {
+      "id": "pr-1775152644389",
+      "title": "[codex] add task shell and data browsing flow",
+      "status": "open",
+      "branch": "feat/mvp-foundation-inline",
+      "baseBranch": "main",
+      "createdAt": "2026-04-02T17:57:24.390Z"
+    }
+  },
+  "issues": {},
+  "version": "3.0.0"
+}
