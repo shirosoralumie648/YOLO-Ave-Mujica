@@ -192,6 +192,180 @@ paths:
       responses:
         "200":
           description: Candidate rejected
+  /v1/publish/candidates:
+    get:
+      summary: List publish candidate groups
+      parameters:
+        - in: query
+          name: project_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Publish candidate groups
+  /v1/publish/batches:
+    post:
+      summary: Create publish batch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_id, snapshot_id, source, items]
+      responses:
+        "201":
+          description: Publish batch created
+  /v1/publish/batches/{id}:
+    get:
+      summary: Get publish batch detail
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Publish batch detail
+  /v1/publish/batches/{id}/items:
+    post:
+      summary: Replace publish batch items
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Publish batch items replaced
+  /v1/publish/batches/{id}/review-approve:
+    post:
+      summary: Approve publish batch as reviewer
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Reviewer approval recorded
+  /v1/publish/batches/{id}/review-reject:
+    post:
+      summary: Reject publish batch as reviewer
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Reviewer rejection recorded
+  /v1/publish/batches/{id}/review-rework:
+    post:
+      summary: Request publish batch rework as reviewer
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Reviewer rework recorded
+  /v1/publish/batches/{id}/owner-approve:
+    post:
+      summary: Approve publish batch as owner
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Owner approval recorded
+  /v1/publish/batches/{id}/owner-reject:
+    post:
+      summary: Reject publish batch as owner
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Owner rejection recorded
+  /v1/publish/batches/{id}/owner-rework:
+    post:
+      summary: Request publish batch rework as owner
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Owner rework recorded
+  /v1/publish/batches/{id}/feedback:
+    post:
+      summary: Add batch-level publish feedback
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "201":
+          description: Publish batch feedback created
+  /v1/publish/batches/{id}/items/{itemId}/feedback:
+    post:
+      summary: Add item-level publish feedback
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: itemId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "201":
+          description: Publish item feedback created
+  /v1/publish/batches/{id}/workspace:
+    get:
+      summary: Get aggregated review workspace payload
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Review workspace payload
+  /v1/publish/records/{id}:
+    get:
+      summary: Get publish record
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Publish record detail
   /v1/artifacts/packages:
     post:
       summary: Queue artifact package build
