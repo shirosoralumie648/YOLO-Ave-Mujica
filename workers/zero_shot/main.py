@@ -1,6 +1,6 @@
 import os
 
-from workers.common.command_provider import load_provider_items
+from workers.common.command_provider import load_provider_result, provider_items
 from workers.common.job_client import JobClient, emit_terminal
 from workers.common.queue_runner import QueueRunner, poll_forever
 
@@ -38,10 +38,10 @@ def _coerce_bbox(candidate: dict) -> dict:
     }
 
 
-def _build_candidates(job: dict) -> list[dict]:
+def _build_candidates(job: dict, provider_result: dict | None = None) -> list[dict]:
     payload = job.get("payload", {})
     model_name = payload.get("model_name", "zero-shot-mvp")
-    raw_candidates = load_provider_items(payload, "candidates")
+    raw_candidates = provider_items(provider_result, "candidates")
     if raw_candidates is None:
         raw_candidates = payload.get("candidates", [])
     candidates = []
@@ -63,10 +63,22 @@ def _build_candidates(job: dict) -> list[dict]:
     return candidates
 
 
+def _summary_from_provider(provider_result: dict | None, default_total: int) -> tuple[int, int, int]:
+    if provider_result is None:
+        return default_total, default_total, 0
+
+    total = int(provider_result.get("total_items", default_total))
+    succeeded = int(provider_result.get("succeeded_items", default_total))
+    failed = int(provider_result.get("failed_items", max(total-succeeded, 0)))
+    return total, succeeded, failed
+
+
 def run_zero_shot_job(job: dict):
-    candidates = _build_candidates(job)
-    total = len(candidates)
-    result = build_terminal_event(job["job_id"], total=total, ok=total, failed=0)
+    payload = job.get("payload", {})
+    provider_result = load_provider_result(payload)
+    candidates = _build_candidates(job, provider_result=provider_result)
+    total, succeeded, failed = _summary_from_provider(provider_result, len(candidates))
+    result = build_terminal_event(job["job_id"], total=total, ok=succeeded, failed=failed)
     result["events"] = [
         {
             "event_level": "info",
@@ -74,12 +86,12 @@ def run_zero_shot_job(job: dict):
             "message": "persisted review candidates",
             "detail_json": {
                 "result_type": "annotation_candidates",
-                "result_count": total,
+                "result_count": len(candidates),
                 "candidates": candidates,
             },
         }
     ]
-    result["result_ref"] = {"result_type": "annotation_candidates", "result_count": total}
+    result["result_ref"] = {"result_type": "annotation_candidates", "result_count": len(candidates)}
     return result
 
 

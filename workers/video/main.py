@@ -1,6 +1,6 @@
 import os
 
-from workers.common.command_provider import load_provider_items
+from workers.common.command_provider import load_provider_result, provider_items
 from workers.common.job_client import JobClient
 from workers.common.queue_runner import QueueRunner, poll_forever
 from workers.zero_shot.main import summarize_batch
@@ -10,8 +10,8 @@ def summarize_video_extract(total_frames: int, ok_frames: int, failed_frames: in
     return summarize_batch(total=total_frames, ok=ok_frames, failed=failed_frames)
 
 
-def _build_frames(payload: dict) -> list[dict]:
-    frames = load_provider_items(payload, "frames")
+def _build_frames(payload: dict, provider_result: dict | None = None) -> list[dict]:
+    frames = provider_items(provider_result, "frames")
     if frames is None:
         frames = payload.get("frames")
     if frames:
@@ -36,12 +36,21 @@ def _build_frames(payload: dict) -> list[dict]:
     ]
 
 
+def _summary_from_provider(provider_result: dict | None, default_total: int) -> tuple[int, int, int]:
+    if provider_result is None:
+        return default_total, default_total, 0
+
+    total = int(provider_result.get("total_items", default_total))
+    succeeded = int(provider_result.get("succeeded_items", default_total))
+    failed = int(provider_result.get("failed_items", max(total-succeeded, 0)))
+    return total, succeeded, failed
+
+
 def run_video_job(job: dict):
     payload = job.get("payload", {})
-    frames = _build_frames(payload)
-    total = len(frames)
-    ok = total
-    failed = 0
+    provider_result = load_provider_result(payload)
+    frames = _build_frames(payload, provider_result=provider_result)
+    total, ok, failed = _summary_from_provider(provider_result, len(frames))
     status, summary = summarize_video_extract(total_frames=total, ok_frames=ok, failed_frames=failed)
     return {
         "status": status,
@@ -53,12 +62,12 @@ def run_video_job(job: dict):
                 "message": "materialized video frame results",
                 "detail_json": {
                     "result_type": "video_frames",
-                    "result_count": total,
+                    "result_count": len(frames),
                     "frames": frames,
                 },
             }
         ],
-        "result_ref": {"result_type": "video_frames", "result_count": total},
+        "result_ref": {"result_type": "video_frames", "result_count": len(frames)},
     }
 
 

@@ -5,6 +5,43 @@ from workers.video.main import run_video_job
 
 
 class VideoWorkerContractTest(unittest.TestCase):
+    def test_run_video_job_uses_provider_summary_counters(self):
+        result = run_video_job(
+            {
+                "job_id": 9,
+                "payload": {
+                    "dataset_id": 1,
+                    "provider": {
+                        "type": "command",
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import json, sys; "
+                                "json.load(sys.stdin); "
+                                "print(json.dumps({"
+                                "'frames': [{"
+                                "'frame_index': 4, "
+                                "'timestamp_ms': 2000, "
+                                "'object_key': 'clips/a/frame-0004.jpg'"
+                                "}], "
+                                "'total_items': 5, "
+                                "'succeeded_items': 4, "
+                                "'failed_items': 1"
+                                "}))"
+                            ),
+                        ],
+                    },
+                },
+            }
+        )
+
+        self.assertEqual("succeeded_with_errors", result["status"])
+        self.assertEqual(5, result["total_items"])
+        self.assertEqual(4, result["succeeded_items"])
+        self.assertEqual(1, result["failed_items"])
+        self.assertEqual(1, result["events"][0]["detail_json"]["result_count"])
+
     def test_run_video_job_uses_command_provider_output(self):
         result = run_video_job(
             {

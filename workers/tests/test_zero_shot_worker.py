@@ -5,6 +5,47 @@ from workers.zero_shot.main import run_zero_shot_job
 
 
 class ZeroShotWorkerContractTest(unittest.TestCase):
+    def test_run_zero_shot_job_uses_provider_summary_counters(self):
+        result = run_zero_shot_job(
+            {
+                "job_id": 44,
+                "payload": {
+                    "dataset_id": 1,
+                    "snapshot_id": 2,
+                    "prompt": "person",
+                    "provider": {
+                        "type": "command",
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import json, sys; "
+                                "json.load(sys.stdin); "
+                                "print(json.dumps({"
+                                "'candidates': [{"
+                                "'item_id': 100, "
+                                "'object_key': 'images/100.jpg', "
+                                "'category_name': 'person', "
+                                "'confidence': 0.91, "
+                                "'bbox': {'x': 1, 'y': 2, 'w': 3, 'h': 4}"
+                                "}], "
+                                "'total_items': 3, "
+                                "'succeeded_items': 2, "
+                                "'failed_items': 1"
+                                "}))"
+                            ),
+                        ],
+                    },
+                },
+            }
+        )
+
+        self.assertEqual("succeeded_with_errors", result["status"])
+        self.assertEqual(3, result["total_items"])
+        self.assertEqual(2, result["succeeded_items"])
+        self.assertEqual(1, result["failed_items"])
+        self.assertEqual(1, result["events"][0]["detail_json"]["result_count"])
+
     def test_run_zero_shot_job_uses_command_provider_output(self):
         result = run_zero_shot_job(
             {

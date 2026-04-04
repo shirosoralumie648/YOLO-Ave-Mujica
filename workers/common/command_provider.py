@@ -2,7 +2,7 @@ import json
 import subprocess
 
 
-def load_provider_items(payload: dict, result_key: str):
+def load_provider_result(payload: dict):
     provider = payload.get("provider") or {}
     if provider.get("type") != "command":
         return None
@@ -23,9 +23,14 @@ def load_provider_items(payload: dict, result_key: str):
 
     body = completed.stdout.strip()
     if body == "":
-        return []
+        return {}
 
-    document = json.loads(body)
+    return json.loads(body)
+
+
+def provider_items(document: dict | None, result_key: str):
+    if document is None:
+        return None
     items = document.get(result_key)
     if items is None:
         raise ValueError(f"provider output missing {result_key}")
