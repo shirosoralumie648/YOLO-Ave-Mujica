@@ -210,6 +210,7 @@ func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 		"snapshot_id":            job.SnapshotID,
 		"job_type":               job.JobType,
 		"status":                 job.Status,
+		"payload":                job.Payload,
 		"resource_lane":          laneFor(job.RequiredResourceType),
 		"required_resource_type": job.RequiredResourceType,
 		"required_capabilities":  job.RequiredCapabilities,

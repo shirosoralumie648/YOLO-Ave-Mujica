@@ -253,6 +253,44 @@ func TestCreateZeroShotPersistsCommandProviderPayload(t *testing.T) {
 	}
 }
 
+func TestGetJobIncludesPayloadProviderDetails(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/jobs/zero-shot", strings.NewReader(`{
+		"project_id":1,
+		"dataset_id":42,
+		"snapshot_id":9,
+		"prompt":"person",
+		"idempotency_key":"idem-provider-get",
+		"required_resource_type":"gpu",
+		"provider":{
+			"type":"command",
+			"argv":["python3","/opt/providers/zero-shot.py"]
+		}
+	}`))
+	createRec := httptest.NewRecorder()
+	h.CreateZeroShot(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on create, got %d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/jobs/1", nil)
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("job_id", "1")
+	getReq = getReq.WithContext(context.WithValue(getReq.Context(), chi.RouteCtxKey, routeCtx))
+	getRec := httptest.NewRecorder()
+	h.GetJob(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on get, got %d body=%s", getRec.Code, getRec.Body.String())
+	}
+	if !strings.Contains(getRec.Body.String(), `"payload":{"dataset_id":42,"prompt":"person","provider":{"argv":["python3","/opt/providers/zero-shot.py"],"type":"command"},"snapshot_id":9}`) {
+		t.Fatalf("expected payload provider details in job response, got %s", getRec.Body.String())
+	}
+}
+
 func TestCreateJobAppendsDispatchRequestedEvent(t *testing.T) {
 	repo := NewInMemoryRepository()
 	pub := NewInMemoryPublisher()
