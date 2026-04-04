@@ -52,6 +52,13 @@ type Service struct {
 	repo Repository
 }
 
+type bboxKey struct {
+	x float64
+	y float64
+	w float64
+	h float64
+}
+
 func NewService() *Service {
 	return NewServiceWithRepository(nil)
 }
@@ -99,15 +106,12 @@ func (s *Service) DiffSnapshots(before, after []Annotation, iouThreshold float64
 		afterItems := afterGroups[k]
 		matchedBefore := make([]bool, len(beforeItems))
 		matchedAfter := make([]bool, len(afterItems))
+		exactMatches := buildExactMatchIndex(afterItems)
 
 		for bi, b := range beforeItems {
-			for ai, a := range afterItems {
-				if matchedAfter[ai] || !sameBBox(b, a) {
-					continue
-				}
+			if ai, ok := claimExactMatch(exactMatches, b, matchedAfter); ok {
 				matchedBefore[bi] = true
 				matchedAfter[ai] = true
-				break
 			}
 		}
 
@@ -223,6 +227,30 @@ func clamp01(value float64) float64 {
 
 func sameBBox(a, b Annotation) bool {
 	return a.BBoxX == b.BBoxX && a.BBoxY == b.BBoxY && a.BBoxW == b.BBoxW && a.BBoxH == b.BBoxH
+}
+
+func buildExactMatchIndex(items []Annotation) map[bboxKey][]int {
+	index := make(map[bboxKey][]int, len(items))
+	for idx, item := range items {
+		key := bboxKey{x: item.BBoxX, y: item.BBoxY, w: item.BBoxW, h: item.BBoxH}
+		index[key] = append(index[key], idx)
+	}
+	return index
+}
+
+func claimExactMatch(index map[bboxKey][]int, item Annotation, matchedAfter []bool) (int, bool) {
+	key := bboxKey{x: item.BBoxX, y: item.BBoxY, w: item.BBoxW, h: item.BBoxH}
+	candidates := index[key]
+	for len(candidates) > 0 {
+		idx := candidates[0]
+		candidates = candidates[1:]
+		index[key] = candidates
+		if matchedAfter[idx] {
+			continue
+		}
+		return idx, true
+	}
+	return 0, false
 }
 
 func bboxIOU(a, b Annotation) float64 {

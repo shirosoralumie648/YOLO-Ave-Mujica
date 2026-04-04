@@ -231,7 +231,7 @@ func (h *Handler) ReportHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.ReportHeartbeat(jobID, in.WorkerID, in.LeaseSeconds); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeCallbackError(w, err)
 		return
 	}
 	writeJobStatus(w, h.svc, jobID)
@@ -250,7 +250,7 @@ func (h *Handler) ReportProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.ReportProgress(jobID, in.WorkerID, in.TotalItems, in.SucceededItems, in.FailedItems); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeCallbackError(w, err)
 		return
 	}
 	writeJobStatus(w, h.svc, jobID)
@@ -279,7 +279,7 @@ func (h *Handler) ReportItemError(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := h.svc.ReportEvent(jobID, in.ItemID, in.EventLevel, in.EventType, in.Message, in.Detail); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeCallbackError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"job_id": jobID, "status": "accepted"})
@@ -298,7 +298,7 @@ func (h *Handler) ReportTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.ReportTerminal(jobID, in.WorkerID, in.Status, in.TotalItems, in.SucceededItems, in.FailedItems, in.ResultRef); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeCallbackError(w, err)
 		return
 	}
 	writeJobStatus(w, h.svc, jobID)
@@ -323,11 +323,26 @@ func writeJobStatus(w http.ResponseWriter, svc *Service, jobID int64) {
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	encoder := json.NewEncoder(w)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(payload)
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{"error": err.Error()})
+}
+
+func writeCallbackError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, err)
+	case errors.Is(err, ErrValidation):
+		writeError(w, http.StatusUnprocessableEntity, err)
+	default:
+		writeError(w, http.StatusBadRequest, err)
+	}
 }
 
 func requireIdempotencyKey(key string) error {

@@ -2,6 +2,7 @@ package annotations
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -123,6 +124,12 @@ func TestServiceSaveAfterSubmitDoesNotReopenAnnotation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected save after submit to fail")
 	}
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected conflict error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "already submitted") {
+		t.Fatalf("expected already submitted error, got %v", err)
+	}
 }
 
 func TestServiceSaveDraftRejectsContextDrift(t *testing.T) {
@@ -154,6 +161,50 @@ func TestServiceSaveDraftRejectsContextDrift(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected context drift save to fail")
+	}
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "context mismatch") {
+		t.Fatalf("expected context mismatch error, got %v", err)
+	}
+}
+
+func TestServiceSaveDraftRejectsRevisionMismatchAsConflict(t *testing.T) {
+	ctx := context.Background()
+	repo := NewInMemoryRepository()
+	repo.SeedTaskContext(40, 26, "train/images/j.jpg", nil, "v1")
+	svc := NewService(repo)
+
+	initial, err := svc.SaveDraft(ctx, SaveDraftInput{
+		TaskID:          40,
+		Actor:           "annotator-1",
+		SnapshotID:      26,
+		AssetObjectKey:  "train/images/j.jpg",
+		OntologyVersion: "v1",
+		Body:            map[string]any{"objects": []any{}},
+	})
+	if err != nil {
+		t.Fatalf("save draft: %v", err)
+	}
+
+	_, err = svc.SaveDraft(ctx, SaveDraftInput{
+		TaskID:          initial.TaskID,
+		Actor:           "annotator-1",
+		SnapshotID:      26,
+		AssetObjectKey:  "train/images/j.jpg",
+		OntologyVersion: "v1",
+		BaseRevision:    initial.Revision + 1,
+		Body:            map[string]any{"objects": []any{}},
+	})
+	if err == nil {
+		t.Fatal("expected revision mismatch save to fail")
+	}
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected conflict error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "revision mismatch") {
+		t.Fatalf("expected revision mismatch error, got %v", err)
 	}
 }
 
@@ -224,6 +275,12 @@ func TestServiceSaveDraftRejectsInitialContextMismatch(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected initial save with mismatched task context to fail")
+	}
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "context mismatch") {
+		t.Fatalf("expected context mismatch error, got %v", err)
 	}
 }
 

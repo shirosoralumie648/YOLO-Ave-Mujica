@@ -37,25 +37,25 @@ func NewServiceWithTaskService(repo Repository, taskService TaskService) *Servic
 
 func (s *Service) SaveDraft(ctx context.Context, in SaveDraftInput) (Annotation, error) {
 	if in.TaskID <= 0 {
-		return Annotation{}, fmt.Errorf("task_id must be > 0")
+		return Annotation{}, newValidationError("task_id must be > 0")
 	}
 	if in.SnapshotID <= 0 {
-		return Annotation{}, fmt.Errorf("snapshot_id must be > 0")
+		return Annotation{}, newValidationError("snapshot_id must be > 0")
 	}
 	in.Actor = normalizeActor(in.Actor)
 	in.AssetObjectKey = strings.TrimSpace(in.AssetObjectKey)
 	if in.AssetObjectKey == "" {
-		return Annotation{}, fmt.Errorf("asset_object_key is required")
+		return Annotation{}, newValidationError("asset_object_key is required")
 	}
 	if in.FrameIndex != nil && *in.FrameIndex < 0 {
-		return Annotation{}, fmt.Errorf("frame_index must be >= 0 when provided")
+		return Annotation{}, newValidationError("frame_index must be >= 0 when provided")
 	}
 	in.OntologyVersion = strings.TrimSpace(in.OntologyVersion)
 	if in.OntologyVersion == "" {
 		in.OntologyVersion = "v1"
 	}
 	if in.BaseRevision < 0 {
-		return Annotation{}, fmt.Errorf("base_revision must be >= 0")
+		return Annotation{}, newValidationError("base_revision must be >= 0")
 	}
 	if in.Body == nil {
 		in.Body = map[string]any{}
@@ -66,14 +66,14 @@ func (s *Service) SaveDraft(ctx context.Context, in SaveDraftInput) (Annotation,
 
 func (s *Service) Submit(ctx context.Context, in SubmitInput) (Annotation, error) {
 	if in.TaskID <= 0 {
-		return Annotation{}, fmt.Errorf("task_id must be > 0")
+		return Annotation{}, newValidationError("task_id must be > 0")
 	}
 	return s.repo.Submit(ctx, in.TaskID, normalizeActor(in.Actor))
 }
 
 func (s *Service) GetByTaskID(ctx context.Context, taskID int64) (Annotation, error) {
 	if taskID <= 0 {
-		return Annotation{}, fmt.Errorf("task_id must be > 0")
+		return Annotation{}, newValidationError("task_id must be > 0")
 	}
 	return s.repo.GetByTaskID(ctx, taskID)
 }
@@ -184,7 +184,7 @@ func (r errRepository) GetByTaskID(_ context.Context, _ int64) (Annotation, erro
 
 func (s *Service) getTask(ctx context.Context, taskID int64) (tasks.Task, error) {
 	if taskID <= 0 {
-		return tasks.Task{}, fmt.Errorf("task_id must be > 0")
+		return tasks.Task{}, newValidationError("task_id must be > 0")
 	}
 	if s.taskService == nil {
 		return tasks.Task{}, fmt.Errorf("task service is required")
@@ -229,17 +229,17 @@ func syntheticDraft(task tasks.Task) Annotation {
 
 func validateWorkspaceTask(task tasks.Task) error {
 	if task.Kind != tasks.KindAnnotation {
-		return fmt.Errorf("task %d is not an annotation task", task.ID)
+		return newValidationError("task %d is not an annotation task", task.ID)
 	}
 	if strings.TrimSpace(task.AssetObjectKey) == "" {
-		return fmt.Errorf("task %d is missing asset_object_key", task.ID)
+		return newValidationError("task %d is missing asset_object_key", task.ID)
 	}
 	return nil
 }
 
 func ensureSnapshotContext(task tasks.Task) error {
 	if task.SnapshotID == nil || *task.SnapshotID <= 0 {
-		return fmt.Errorf("task %d is missing snapshot context", task.ID)
+		return newValidationError("task %d is missing snapshot context", task.ID)
 	}
 	return nil
 }
@@ -271,5 +271,5 @@ func isNotFoundError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return errors.Is(err, pgx.ErrNoRows) || strings.Contains(strings.ToLower(err.Error()), "not found")
+	return errors.Is(err, ErrNotFound) || errors.Is(err, pgx.ErrNoRows) || strings.Contains(strings.ToLower(err.Error()), "not found")
 }

@@ -348,7 +348,7 @@ func (r *InMemoryRepository) GetItemByObjectKey(_ context.Context, datasetID int
 			return item, nil
 		}
 	}
-	return DatasetItem{}, fmt.Errorf("dataset item %s not found in dataset %d", objectKey, datasetID)
+	return DatasetItem{}, wrapNamedNotFound("dataset item", objectKey)
 }
 
 func (r *InMemoryRepository) EnsureCategory(_ context.Context, projectID int64, categoryName string) (int64, error) {

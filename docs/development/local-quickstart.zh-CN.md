@@ -63,6 +63,14 @@ make web-test
 make web-build
 ```
 
+如果你修改了公开 HTTP 路由或 `api/openapi/mvp.yaml`，还应该额外执行一次路由合同守卫：
+
+```bash
+GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go test ./internal/server -run TestOpenAPIPublicRoutesMatchRegisteredRoutes -count=1
+```
+
+公开合同统一位于 `/v1/*`，再加上 `/healthz` 和 `/readyz`。面向 worker 的内部回调，例如 snapshot import complete、job progress、artifact complete，则位于 `/internal/*`，它们通过各模块自己的测试守护，而不是写进对外 OpenAPI。
+
 ## 运行 Smoke 检查
 
 ```bash

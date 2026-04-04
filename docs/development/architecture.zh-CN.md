@@ -35,6 +35,28 @@
 
 `/healthz` 只反映进程是否存活，`/readyz` 则会继续检查 PostgreSQL、Redis、MinIO 和 bucket 配置是否达到可服务状态。
 
+## 路由与合同治理
+
+公开 HTTP 面统一收敛在 `internal/server/http_server.go` 的 `/v1/*` 路由树下，面向 worker 或内部异步链路的回调则收敛在 `/internal/*` 下。当前需要特别注意两点：
+
+- 对外合同以 `api/openapi/mvp.yaml` 为准，新增或修改公开 `/v1/*` 路由时，必须同步更新 OpenAPI。
+- `/internal/*` 回调不属于外部公开合同，但它们的错误边界需要由各模块自己的 handler 测试守住，例如 job heartbeat、snapshot import complete、artifact complete。
+
+仓库现在有一条自动化守卫：`internal/server/http_server_routes_test.go` 会比对实际注册的公开路由和 OpenAPI 中声明的 path + method，防止 `http_server.go`、README、OpenAPI 各自漂移。
+
+当前已经固定的几个浏览型公开读取接口包括：
+
+- `GET /v1/datasets`
+- `GET /v1/datasets/{id}`
+- `GET /v1/snapshots/{id}`
+- `GET /v1/projects/{id}/overview`
+
+如果修改了公开路由面，至少要重新执行：
+
+```bash
+GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go test ./internal/server -run TestOpenAPIPublicRoutesMatchRegisteredRoutes -count=1
+```
+
 ## Data Hub 请求流
 
 Data Hub 负责数据集及其快照相关的基础能力，包括：

@@ -50,7 +50,7 @@ func (r *InMemoryRepository) SaveDraft(_ context.Context, in SaveDraftInput) (An
 	existing, ok := r.byTaskID[in.TaskID]
 	ctx, hasContext := r.taskContext[in.TaskID]
 	if !hasContext {
-		return Annotation{}, fmt.Errorf("task %d context not found", in.TaskID)
+		return Annotation{}, newNotFoundError("task %d context not found", in.TaskID)
 	}
 	body, err := deepCloneJSONMap(in.Body)
 	if err != nil {
@@ -59,7 +59,7 @@ func (r *InMemoryRepository) SaveDraft(_ context.Context, in SaveDraftInput) (An
 
 	if !ok {
 		if !sameAnnotationContextFromTaskContext(ctx, in) {
-			return Annotation{}, fmt.Errorf("annotation for task %d context mismatch", in.TaskID)
+			return Annotation{}, newValidationError("annotation for task %d context mismatch", in.TaskID)
 		}
 		created := Annotation{
 			ID:              r.nextID,
@@ -82,13 +82,13 @@ func (r *InMemoryRepository) SaveDraft(_ context.Context, in SaveDraftInput) (An
 	}
 
 	if in.BaseRevision > 0 && existing.Revision != in.BaseRevision {
-		return Annotation{}, fmt.Errorf("task %d revision mismatch: expected %d, got %d", in.TaskID, in.BaseRevision, existing.Revision)
+		return Annotation{}, newConflictError("task %d revision mismatch: expected %d, got %d", in.TaskID, in.BaseRevision, existing.Revision)
 	}
 	if existing.State == StateSubmitted {
-		return Annotation{}, fmt.Errorf("annotation for task %d is already submitted", in.TaskID)
+		return Annotation{}, newConflictError("annotation for task %d is already submitted", in.TaskID)
 	}
 	if !sameAnnotationContextInMemory(existing, in) || !sameAnnotationContextFromTaskContext(ctx, in) {
-		return Annotation{}, fmt.Errorf("annotation for task %d context mismatch", in.TaskID)
+		return Annotation{}, newValidationError("annotation for task %d context mismatch", in.TaskID)
 	}
 
 	existing.State = StateDraft
@@ -108,7 +108,7 @@ func (r *InMemoryRepository) Submit(_ context.Context, taskID int64, actor strin
 
 	existing, ok := r.byTaskID[taskID]
 	if !ok {
-		return Annotation{}, fmt.Errorf("annotation for task %d not found", taskID)
+		return Annotation{}, newNotFoundError("annotation for task %d not found", taskID)
 	}
 
 	now := time.Now().UTC()
@@ -131,7 +131,7 @@ func (r *InMemoryRepository) GetByTaskID(_ context.Context, taskID int64) (Annot
 
 	annotation, ok := r.byTaskID[taskID]
 	if !ok {
-		return Annotation{}, fmt.Errorf("annotation for task %d not found", taskID)
+		return Annotation{}, newNotFoundError("annotation for task %d not found", taskID)
 	}
 	return cloneAnnotation(annotation), nil
 }

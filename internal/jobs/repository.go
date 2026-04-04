@@ -111,7 +111,7 @@ func (r *InMemoryRepository) UpdateStatus(id int64, to string) error {
 
 	job, ok := r.byID[id]
 	if !ok {
-		return fmt.Errorf("job %d not found", id)
+		return newNotFoundError("job %d not found", id)
 	}
 	if err := CanTransition(job.Status, to); err != nil {
 		return err
@@ -133,7 +133,7 @@ func (r *InMemoryRepository) Claim(id int64, workerID string, leaseUntil time.Ti
 
 	job, ok := r.byID[id]
 	if !ok {
-		return nil, fmt.Errorf("job %d not found", id)
+		return nil, newNotFoundError("job %d not found", id)
 	}
 	if job.Status == StatusQueued {
 		now := time.Now().UTC()
@@ -151,7 +151,7 @@ func (r *InMemoryRepository) TouchLease(id int64, workerID string, leaseUntil ti
 
 	job, ok := r.byID[id]
 	if !ok {
-		return fmt.Errorf("job %d not found", id)
+		return newNotFoundError("job %d not found", id)
 	}
 	job.WorkerID = workerID
 	job.LeaseUntil = &leaseUntil
@@ -164,7 +164,7 @@ func (r *InMemoryRepository) UpdateProgress(id int64, workerID string, total, su
 
 	job, ok := r.byID[id]
 	if !ok {
-		return fmt.Errorf("job %d not found", id)
+		return newNotFoundError("job %d not found", id)
 	}
 	if job.Status != StatusRunning {
 		if err := CanTransition(job.Status, StatusRunning); err != nil {
@@ -187,7 +187,7 @@ func (r *InMemoryRepository) Complete(id int64, workerID, status string, total, 
 
 	job, ok := r.byID[id]
 	if !ok {
-		return fmt.Errorf("job %d not found", id)
+		return newNotFoundError("job %d not found", id)
 	}
 	fromStatus := job.Status
 	if fromStatus == StatusQueued || fromStatus == StatusRetryWaiting {
@@ -215,7 +215,7 @@ func (r *InMemoryRepository) SetLease(id int64, until time.Time) error {
 
 	job, ok := r.byID[id]
 	if !ok {
-		return fmt.Errorf("job %d not found", id)
+		return newNotFoundError("job %d not found", id)
 	}
 	job.LeaseUntil = &until
 	return nil
@@ -243,7 +243,7 @@ func (r *InMemoryRepository) IncrementRetryCount(id int64) error {
 
 	job, ok := r.byID[id]
 	if !ok {
-		return fmt.Errorf("job %d not found", id)
+		return newNotFoundError("job %d not found", id)
 	}
 	job.RetryCount++
 	return nil
@@ -259,7 +259,7 @@ func (r *InMemoryRepository) MarkFailed(id int64, code, msg string) error {
 
 	job, ok := r.byID[id]
 	if !ok {
-		return fmt.Errorf("job %d not found", id)
+		return newNotFoundError("job %d not found", id)
 	}
 	if err := CanTransition(job.Status, StatusFailed); err != nil {
 		return err
@@ -286,7 +286,7 @@ func (r *InMemoryRepository) AppendEvent(jobID int64, itemID *int64, level, typ,
 	defer r.mu.Unlock()
 
 	if _, ok := r.byID[jobID]; !ok {
-		return Event{}, fmt.Errorf("job %d not found", jobID)
+		return Event{}, newNotFoundError("job %d not found", jobID)
 	}
 
 	ev := Event{

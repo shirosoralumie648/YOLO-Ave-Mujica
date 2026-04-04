@@ -3,7 +3,14 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 )
 
 func okHandler(w http.ResponseWriter, _ *http.Request) {
@@ -132,4 +139,143 @@ func TestMVPRoutesAreRegistered(t *testing.T) {
 			t.Fatalf("route missing: %s %s", tc.method, tc.path)
 		}
 	}
+}
+
+func TestOpenAPIPublicRoutesMatchRegisteredRoutes(t *testing.T) {
+	srv := NewHTTPServerWithModules(newFakeModules())
+
+	mux, ok := srv.Handler.(chi.Routes)
+	if !ok {
+		t.Fatalf("expected chi routes, got %T", srv.Handler)
+	}
+
+	registered := map[string]struct{}{}
+	if err := chi.Walk(mux, func(method string, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		if !isPublicRoute(route) {
+			return nil
+		}
+		registered[method+" "+route] = struct{}{}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk routes: %v", err)
+	}
+
+	documented, err := readOpenAPIPublicRoutes()
+	if err != nil {
+		t.Fatalf("read openapi routes: %v", err)
+	}
+
+	missingFromSpec := diffRouteKeys(registered, documented)
+	if len(missingFromSpec) > 0 {
+		t.Fatalf("public routes missing from OpenAPI: %s", strings.Join(missingFromSpec, ", "))
+	}
+
+	staleInSpec := diffRouteKeys(documented, registered)
+	if len(staleInSpec) > 0 {
+		t.Fatalf("OpenAPI documents routes not registered by server: %s", strings.Join(staleInSpec, ", "))
+	}
+}
+
+func TestParseOpenAPIPublicRoutesRejectsDuplicatePathEntries(t *testing.T) {
+	_, err := parseOpenAPIPublicRoutes(`
+paths:
+  /v1/datasets:
+    get:
+      summary: list
+  /v1/datasets:
+    post:
+      summary: create
+`)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "duplicate path") {
+		t.Fatalf("expected duplicate path error, got %v", err)
+	}
+}
+
+func TestParseOpenAPIPublicRoutesRejectsDuplicateMethodEntries(t *testing.T) {
+	_, err := parseOpenAPIPublicRoutes(`
+paths:
+  /v1/datasets:
+    get:
+      summary: list
+    get:
+      summary: duplicate list
+`)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "duplicate method") {
+		t.Fatalf("expected duplicate method error, got %v", err)
+	}
+}
+
+func readOpenAPIPublicRoutes() (map[string]struct{}, error) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	openapiPath := filepath.Join(filepath.Dir(thisFile), "..", "..", "api", "openapi", "mvp.yaml")
+	raw, err := os.ReadFile(openapiPath)
+	if err != nil {
+		return nil, err
+	}
+	return parseOpenAPIPublicRoutes(string(raw))
+}
+
+func parseOpenAPIPublicRoutes(raw string) (map[string]struct{}, error) {
+	routes := map[string]struct{}{}
+	seenPaths := map[string]struct{}{}
+	seenMethods := map[string]map[string]struct{}{}
+	var currentPath string
+	for _, line := range strings.Split(raw, "\n") {
+		switch {
+		case strings.HasPrefix(line, "  /"):
+			currentPath = strings.TrimSuffix(strings.TrimSpace(line), ":")
+			if _, ok := seenPaths[currentPath]; ok {
+				return nil, &openAPIParseError{kind: "duplicate path", value: currentPath}
+			}
+			seenPaths[currentPath] = struct{}{}
+		case currentPath != "" && strings.HasPrefix(line, "    "):
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasSuffix(trimmed, ":") {
+				continue
+			}
+			method := strings.ToUpper(strings.TrimSuffix(trimmed, ":"))
+			switch method {
+			case http.MethodGet, http.MethodPost, http.MethodPut:
+				if _, ok := seenMethods[currentPath]; !ok {
+					seenMethods[currentPath] = map[string]struct{}{}
+				}
+				if _, ok := seenMethods[currentPath][method]; ok {
+					return nil, &openAPIParseError{kind: "duplicate method", value: method + " " + currentPath}
+				}
+				seenMethods[currentPath][method] = struct{}{}
+				if isPublicRoute(currentPath) {
+					routes[method+" "+currentPath] = struct{}{}
+				}
+			}
+		}
+	}
+	return routes, nil
+}
+
+func isPublicRoute(route string) bool {
+	return route == "/healthz" || route == "/readyz" || strings.HasPrefix(route, "/v1/")
+}
+
+func diffRouteKeys(want, have map[string]struct{}) []string {
+	missing := make([]string, 0)
+	for key := range want {
+		if _, ok := have[key]; ok {
+			continue
+		}
+		missing = append(missing, key)
+	}
+	slices.Sort(missing)
+	return missing
+}
+
+type openAPIParseError struct {
+	kind  string
+	value string
+}
+
+func (e *openAPIParseError) Error() string {
+	return e.kind + ": " + e.value
 }

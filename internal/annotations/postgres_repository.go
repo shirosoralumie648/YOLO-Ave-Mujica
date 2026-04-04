@@ -61,16 +61,19 @@ func (r *PostgresRepository) SaveDraft(ctx context.Context, in SaveDraftInput) (
 		for update
 	`, in.TaskID))
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Annotation{}, newNotFoundError("annotation for task %d not found", in.TaskID)
+		}
 		return Annotation{}, err
 	}
 	if current.State == StateSubmitted {
-		return Annotation{}, fmt.Errorf("annotation for task %d is already submitted", in.TaskID)
+		return Annotation{}, newConflictError("annotation for task %d is already submitted", in.TaskID)
 	}
 	if !sameAnnotationContextPostgres(current, in) {
-		return Annotation{}, fmt.Errorf("annotation for task %d context mismatch", in.TaskID)
+		return Annotation{}, newValidationError("annotation for task %d context mismatch", in.TaskID)
 	}
 	if in.BaseRevision > 0 && current.Revision != in.BaseRevision {
-		return Annotation{}, fmt.Errorf("task %d revision mismatch", in.TaskID)
+		return Annotation{}, newConflictError("task %d revision mismatch", in.TaskID)
 	}
 
 	updated, err := scanAnnotation(tx.QueryRow(ctx, `
@@ -112,6 +115,9 @@ func (r *PostgresRepository) Submit(ctx context.Context, taskID int64, actor str
 		for update
 	`, taskID))
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Annotation{}, newNotFoundError("annotation for task %d not found", taskID)
+		}
 		return Annotation{}, err
 	}
 
@@ -150,7 +156,14 @@ func (r *PostgresRepository) GetByTaskID(ctx context.Context, taskID int64) (Ann
 		from task_annotations
 		where task_id = $1
 	`, taskID)
-	return scanAnnotation(row)
+	annotation, err := scanAnnotation(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Annotation{}, newNotFoundError("annotation for task %d not found", taskID)
+		}
+		return Annotation{}, err
+	}
+	return annotation, nil
 }
 
 func scanAnnotation(row interface {

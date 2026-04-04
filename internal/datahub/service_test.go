@@ -678,6 +678,50 @@ func TestImportSnapshotRejectsUnknownCategory(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unknown category") {
 		t.Fatalf("expected unknown category error, got %v", err)
 	}
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected ErrValidation for unknown category, got %v", err)
+	}
+}
+
+func TestImportSnapshotReturnsNotFoundForUnknownObjectKey(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "missing-item-import",
+		Bucket:    "platform-dev",
+		Prefix:    "train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/a.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+	snapshot, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{})
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+	mustSeedCategory(t, repo, dataset.ProjectID, "person")
+
+	_, err = svc.ImportSnapshot(snapshot.ID, ImportSnapshotInput{
+		Format: "yolo",
+		Entries: []ImportedAnnotation{{
+			ObjectKey:    "train/missing.jpg",
+			CategoryName: "person",
+			BBoxX:        0.1,
+			BBoxY:        0.2,
+			BBoxW:        0.3,
+			BBoxH:        0.4,
+		}},
+	})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "not found") {
+		t.Fatalf("expected not found error, got %v", err)
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for missing object key, got %v", err)
+	}
 }
 
 func TestListDatasetsDatasetWithNoSnapshotsLeavesLatestSnapshotUnset(t *testing.T) {

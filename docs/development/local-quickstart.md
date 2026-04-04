@@ -62,6 +62,14 @@ make web-test
 make web-build
 ```
 
+If you change public HTTP routes or `api/openapi/mvp.yaml`, rerun the route contract guard as well:
+
+```bash
+GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go test ./internal/server -run TestOpenAPIPublicRoutesMatchRegisteredRoutes -count=1
+```
+
+The public contract lives under `/v1/*` plus `/healthz` and `/readyz`. Worker/internal callbacks such as snapshot import completion and job progress reporting live under `/internal/*` and are verified by module-specific tests rather than OpenAPI.
+
 ## Run Smoke Checks
 
 ```bash

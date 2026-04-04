@@ -1,4 +1,4 @@
-package datahub
+package jobs
 
 import (
 	"errors"
@@ -7,6 +7,7 @@ import (
 
 var (
 	ErrNotFound   = errors.New("not found")
+	ErrConflict   = errors.New("conflict")
 	ErrValidation = errors.New("validation")
 )
 
@@ -27,12 +28,12 @@ func newTypedError(kind error, format string, args ...any) error {
 	return typedError{kind: kind, msg: fmt.Sprintf(format, args...)}
 }
 
-func wrapNotFound(resource string, id int64) error {
-	return newTypedError(ErrNotFound, "%s %d: %s", resource, id, ErrNotFound)
+func newNotFoundError(format string, args ...any) error {
+	return newTypedError(ErrNotFound, format, args...)
 }
 
-func wrapNamedNotFound(resource, name string) error {
-	return newTypedError(ErrNotFound, "%s %q: %s", resource, name, ErrNotFound)
+func newConflictError(format string, args ...any) error {
+	return newTypedError(ErrConflict, format, args...)
 }
 
 func newValidationError(format string, args ...any) error {

@@ -218,7 +218,7 @@ func (s *Service) ListEvents(jobID int64) []Event {
 
 func (s *Service) ReportHeartbeat(jobID int64, workerID string, leaseSeconds int) error {
 	if workerID == "" {
-		return errors.New("worker_id is required")
+		return newValidationError("worker_id is required")
 	}
 	if leaseSeconds <= 0 {
 		leaseSeconds = 30
@@ -227,7 +227,7 @@ func (s *Service) ReportHeartbeat(jobID int64, workerID string, leaseSeconds int
 	leaseUntil := time.Now().UTC().Add(time.Duration(leaseSeconds) * time.Second)
 	job, ok := s.repo.Get(jobID)
 	if !ok {
-		return fmt.Errorf("job %d not found", jobID)
+		return newNotFoundError("job %d not found", jobID)
 	}
 
 	if job.Status == StatusRunning {
@@ -249,10 +249,10 @@ func (s *Service) ReportHeartbeat(jobID int64, workerID string, leaseSeconds int
 
 func (s *Service) ReportProgress(jobID int64, workerID string, total, succeeded, failed int) error {
 	if workerID == "" {
-		return errors.New("worker_id is required")
+		return newValidationError("worker_id is required")
 	}
 	if total < 0 || succeeded < 0 || failed < 0 {
-		return errors.New("progress counters must be >= 0")
+		return newValidationError("progress counters must be >= 0")
 	}
 	if err := s.repo.UpdateProgress(jobID, workerID, total, succeeded, failed); err != nil {
 		return err
@@ -272,19 +272,19 @@ func (s *Service) ReportItemError(jobID, itemID int64, message string, detail ma
 
 func (s *Service) ReportEvent(jobID int64, itemID *int64, level, typ, message string, detail map[string]any) error {
 	if itemID != nil && *itemID <= 0 {
-		return errors.New("item_id must be > 0")
+		return newValidationError("item_id must be > 0")
 	}
 	if strings.TrimSpace(typ) == "" {
-		return errors.New("event_type is required")
+		return newValidationError("event_type is required")
 	}
 	if strings.TrimSpace(message) == "" {
-		return errors.New("message is required")
+		return newValidationError("message is required")
 	}
 	if strings.TrimSpace(level) == "" {
 		level = "info"
 	}
 	if itemID == nil && typ == "item_failed" {
-		return errors.New("item_id must be > 0")
+		return newValidationError("item_id must be > 0")
 	}
 	detail, err := s.normalizeEventDetail(jobID, typ, detail)
 	if err != nil {
@@ -296,15 +296,15 @@ func (s *Service) ReportEvent(jobID int64, itemID *int64, level, typ, message st
 
 func (s *Service) ReportTerminal(jobID int64, workerID, status string, total, succeeded, failed int, resultRef map[string]any) error {
 	if workerID == "" {
-		return errors.New("worker_id is required")
+		return newValidationError("worker_id is required")
 	}
 	switch status {
 	case StatusSucceeded, StatusSucceededWithErrors, StatusFailed, StatusCanceled:
 	default:
-		return fmt.Errorf("unsupported terminal status %q", status)
+		return newValidationError("unsupported terminal status %q", status)
 	}
 	if total < 0 || succeeded < 0 || failed < 0 {
-		return errors.New("terminal counters must be >= 0")
+		return newValidationError("terminal counters must be >= 0")
 	}
 	if err := s.repo.Complete(jobID, workerID, status, total, succeeded, failed); err != nil {
 		return err

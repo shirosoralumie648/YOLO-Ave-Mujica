@@ -496,10 +496,59 @@ func TestCompleteImportSnapshotRejectsUnknownCategory(t *testing.T) {
 
 	srv.Handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "unknown category") {
 		t.Fatalf("expected unknown category error, got %s", rec.Body.String())
+	}
+}
+
+func TestCompleteImportSnapshotReturnsNotFoundForUnknownObjectKey(t *testing.T) {
+	repo := datahub.NewInMemoryRepository()
+	svc := datahub.NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(datahub.CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "import-missing-object-dataset",
+		Bucket:    "platform-dev",
+		Prefix:    "train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/a.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+	mustSeedCategory(t, repo, dataset.ProjectID, "person")
+	if _, err := svc.CreateSnapshot(dataset.ID, datahub.CreateSnapshotInput{Note: "import target"}); err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	h := datahub.NewHandler(svc)
+	srv := server.NewHTTPServerWithDataHub(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/snapshots/1/import", strings.NewReader(`{
+		"format":"yolo",
+		"entries":[
+			{
+				"object_key":"train/missing.jpg",
+				"category_name":"person",
+				"bbox_x":0.1,
+				"bbox_y":0.2,
+				"bbox_w":0.3,
+				"bbox_h":0.4
+			}
+		]
+	}`))
+	rec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(strings.ToLower(rec.Body.String()), "not found") {
+		t.Fatalf("expected not found error, got %s", rec.Body.String())
 	}
 }

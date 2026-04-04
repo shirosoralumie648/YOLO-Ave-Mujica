@@ -1,7 +1,5 @@
 package jobs
 
-import "fmt"
-
 // transitions defines the only legal edges in the job lifecycle graph.
 // Explicitly keeping this table small prevents accidental status drift.
 var transitions = map[string]map[string]bool{
@@ -28,11 +26,8 @@ func CanTransition(from, to string) error {
 		return nil
 	}
 	allowed, ok := transitions[from]
-	if !ok {
-		return fmt.Errorf("unsupported from status %q", from)
-	}
-	if !allowed[to] {
-		return fmt.Errorf("invalid transition: %s -> %s", from, to)
+	if !ok || !allowed[to] {
+		return newConflictError("invalid transition: %s -> %s", from, to)
 	}
 	return nil
 }

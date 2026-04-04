@@ -4,9 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -62,7 +63,7 @@ func (r *PostgresRepository) findByKey(ctx context.Context, projectID int64, job
 
 	job, err := scanJob(row)
 	if err != nil {
-		if err.Error() == "no rows in result set" {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, sql.ErrNoRows) {
 			return nil, false, nil
 		}
 		return nil, false, err
@@ -120,7 +121,7 @@ func (r *PostgresRepository) ListRecentFailedJobs(projectID int64, limit int) ([
 func (r *PostgresRepository) UpdateStatus(id int64, to string) error {
 	job, ok := r.Get(id)
 	if !ok {
-		return fmt.Errorf("job %d not found", id)
+		return newNotFoundError("job %d not found", id)
 	}
 	if err := CanTransition(job.Status, to); err != nil {
 		return err
@@ -148,7 +149,7 @@ func (r *PostgresRepository) UpdateStatus(id int64, to string) error {
 func (r *PostgresRepository) Claim(id int64, workerID string, leaseUntil time.Time) (*Job, error) {
 	job, ok := r.Get(id)
 	if !ok {
-		return nil, fmt.Errorf("job %d not found", id)
+		return nil, newNotFoundError("job %d not found", id)
 	}
 	if job.Status != StatusRunning {
 		if err := r.UpdateStatus(id, StatusRunning); err != nil {
@@ -160,24 +161,30 @@ func (r *PostgresRepository) Claim(id int64, workerID string, leaseUntil time.Ti
 	}
 	job, ok = r.Get(id)
 	if !ok {
-		return nil, fmt.Errorf("job %d not found", id)
+		return nil, newNotFoundError("job %d not found", id)
 	}
 	return job, nil
 }
 
 func (r *PostgresRepository) TouchLease(id int64, workerID string, leaseUntil time.Time) error {
-	_, err := r.pool.Exec(context.Background(), `
+	tag, err := r.pool.Exec(context.Background(), `
 		update jobs
 		set worker_id = $2, lease_until = $3
 		where id = $1
 	`, id, workerID, leaseUntil)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return newNotFoundError("job %d not found", id)
+	}
+	return nil
 }
 
 func (r *PostgresRepository) UpdateProgress(id int64, workerID string, total, succeeded, failed int) error {
 	job, ok := r.Get(id)
 	if !ok {
-		return fmt.Errorf("job %d not found", id)
+		return newNotFoundError("job %d not found", id)
 	}
 
 	var startedAt any
@@ -204,7 +211,7 @@ func (r *PostgresRepository) UpdateProgress(id int64, workerID string, total, su
 func (r *PostgresRepository) Complete(id int64, workerID, status string, total, succeeded, failed int) error {
 	job, ok := r.Get(id)
 	if !ok {
-		return fmt.Errorf("job %d not found", id)
+		return newNotFoundError("job %d not found", id)
 	}
 
 	fromStatus := job.Status
@@ -260,12 +267,18 @@ func (r *PostgresRepository) ListExpiredRunning(now time.Time) []*Job {
 }
 
 func (r *PostgresRepository) IncrementRetryCount(id int64) error {
-	_, err := r.pool.Exec(context.Background(), `
+	tag, err := r.pool.Exec(context.Background(), `
 		update jobs
 		set retry_count = retry_count + 1
 		where id = $1
 	`, id)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return newNotFoundError("job %d not found", id)
+	}
+	return nil
 }
 
 func (r *PostgresRepository) MarkRetryWaiting(id int64) error {
@@ -274,15 +287,24 @@ func (r *PostgresRepository) MarkRetryWaiting(id int64) error {
 
 func (r *PostgresRepository) MarkFailed(id int64, code, msg string) error {
 	now := time.Now().UTC()
-	_, err := r.pool.Exec(context.Background(), `
+	tag, err := r.pool.Exec(context.Background(), `
 		update jobs
 		set status = $2, error_code = $3, error_msg = $4, finished_at = $5
 		where id = $1
 	`, id, StatusFailed, code, msg, now)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return newNotFoundError("job %d not found", id)
+	}
+	return nil
 }
 
 func (r *PostgresRepository) AppendEvent(jobID int64, itemID *int64, level, typ, message string, detail map[string]any) (Event, error) {
+	if _, ok := r.Get(jobID); !ok {
+		return Event{}, newNotFoundError("job %d not found", jobID)
+	}
 	detailJSON, err := json.Marshal(detail)
 	if err != nil {
 		return Event{}, err

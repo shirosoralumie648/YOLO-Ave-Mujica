@@ -194,13 +194,13 @@ func (s *Service) ListItems(datasetID int64) ([]DatasetItem, error) {
 // ImportSnapshot persists canonical annotations for an existing snapshot.
 func (s *Service) ImportSnapshot(snapshotID int64, in ImportSnapshotInput) (ImportSnapshotResult, error) {
 	if in.Format == "" {
-		return ImportSnapshotResult{}, errors.New("format is required")
+		return ImportSnapshotResult{}, newValidationError("format is required")
 	}
 	if !isSupportedImportFormat(in.Format) {
-		return ImportSnapshotResult{}, fmt.Errorf("unsupported format: %s", in.Format)
+		return ImportSnapshotResult{}, newValidationError("unsupported format: %s", in.Format)
 	}
 	if len(in.Entries) == 0 {
-		return ImportSnapshotResult{}, errors.New("entries are required")
+		return ImportSnapshotResult{}, newValidationError("entries are required")
 	}
 
 	snapshot, err := s.repo.GetSnapshot(context.Background(), snapshotID)
@@ -220,15 +220,15 @@ func (s *Service) ImportSnapshot(snapshotID int64, in ImportSnapshotInput) (Impo
 	}
 	for _, entry := range in.Entries {
 		if entry.ObjectKey == "" || entry.CategoryName == "" {
-			return ImportSnapshotResult{}, errors.New("object_key and category_name are required")
+			return ImportSnapshotResult{}, newValidationError("object_key and category_name are required")
 		}
 		if entry.BBoxX < 0 || entry.BBoxY < 0 || entry.BBoxW <= 0 || entry.BBoxH <= 0 {
-			return ImportSnapshotResult{}, errors.New("bbox geometry is invalid")
+			return ImportSnapshotResult{}, newValidationError("bbox geometry is invalid")
 		}
 
 		key := fmt.Sprintf("%s|%s|%f|%f|%f|%f", entry.ObjectKey, entry.CategoryName, entry.BBoxX, entry.BBoxY, entry.BBoxW, entry.BBoxH)
 		if _, ok := seen[key]; ok {
-			return ImportSnapshotResult{}, fmt.Errorf("duplicate annotation for %s", entry.ObjectKey)
+			return ImportSnapshotResult{}, newValidationError("duplicate annotation for %s", entry.ObjectKey)
 		}
 		seen[key] = struct{}{}
 
@@ -239,7 +239,7 @@ func (s *Service) ImportSnapshot(snapshotID int64, in ImportSnapshotInput) (Impo
 		categoryID, err := s.repo.LookupCategory(context.Background(), dataset.ProjectID, entry.CategoryName)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
-				return ImportSnapshotResult{}, fmt.Errorf("unknown category: %s", entry.CategoryName)
+				return ImportSnapshotResult{}, newValidationError("unknown category: %s", entry.CategoryName)
 			}
 			return ImportSnapshotResult{}, err
 		}

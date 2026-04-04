@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -380,6 +381,64 @@ func TestServiceReportHeartbeatSetsWorkerLease(t *testing.T) {
 	}
 }
 
+func TestReportHeartbeatReturnsNotFoundForUnknownJob(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/jobs/999/heartbeat", strings.NewReader(`{
+		"worker_id":"worker-a",
+		"lease_seconds":30
+	}`))
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("job_id", "999")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
+	rec := httptest.NewRecorder()
+	h.ReportHeartbeat(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not found") {
+		t.Fatalf("expected not found error, got %s", rec.Body.String())
+	}
+}
+
+func TestReportHeartbeatReturnsUnprocessableEntityForMissingWorkerID(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+	job, err := svc.CreateJob(CreateJobInput{
+		ProjectID:            1,
+		DatasetID:            1,
+		SnapshotID:           1,
+		JobType:              "snapshot-import",
+		RequiredResourceType: "cpu",
+		IdempotencyKey:       "idem-heartbeat-invalid-payload",
+		Payload:              map[string]any{"format": "yolo"},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/jobs/1/heartbeat", strings.NewReader(`{
+		"worker_id":"",
+		"lease_seconds":30
+	}`))
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("job_id", strconv.FormatInt(job.ID, 10))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
+	rec := httptest.NewRecorder()
+	h.ReportHeartbeat(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "worker_id is required") {
+		t.Fatalf("expected worker_id validation error, got %s", rec.Body.String())
+	}
+}
+
 func TestServiceReportProgressUpdatesCounters(t *testing.T) {
 	repo := NewInMemoryRepository()
 	svc := NewService(repo)
@@ -524,6 +583,81 @@ func TestServiceReportTerminalPersistsCounters(t *testing.T) {
 	}
 	if got.FinishedAt == nil {
 		t.Fatal("expected finished_at to be set")
+	}
+}
+
+func TestReportTerminalReturnsConflictWhenJobAlreadyCompleted(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+	job, err := svc.CreateJob(CreateJobInput{
+		ProjectID:            1,
+		DatasetID:            1,
+		SnapshotID:           1,
+		JobType:              "snapshot-import",
+		RequiredResourceType: "cpu",
+		IdempotencyKey:       "idem-terminal-conflict",
+		Payload:              map[string]any{"format": "yolo"},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	callServiceErrorMethod(t, svc, "ReportHeartbeat", job.ID, "worker-a", 30)
+	callServiceErrorMethod(t, svc, "ReportTerminal", job.ID, "worker-a", StatusSucceeded, 1, 1, 0, map[string]any(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/jobs/1/complete", strings.NewReader(`{
+		"worker_id":"worker-a",
+		"status":"failed",
+		"total_items":1,
+		"succeeded_items":0,
+		"failed_items":1
+	}`))
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("job_id", strconv.FormatInt(job.ID, 10))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
+	rec := httptest.NewRecorder()
+	h.ReportTerminal(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid transition") {
+		t.Fatalf("expected invalid transition error, got %s", rec.Body.String())
+	}
+}
+
+func TestReportItemErrorReturnsUnprocessableEntityForMissingItemID(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+	job, err := svc.CreateJob(CreateJobInput{
+		ProjectID:            1,
+		DatasetID:            1,
+		SnapshotID:           1,
+		JobType:              "snapshot-import",
+		RequiredResourceType: "cpu",
+		IdempotencyKey:       "idem-item-event-invalid",
+		Payload:              map[string]any{"format": "yolo"},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/jobs/1/events", strings.NewReader(`{
+		"event_type":"item_failed",
+		"message":"bad annotation line"
+	}`))
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("job_id", strconv.FormatInt(job.ID, 10))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
+	rec := httptest.NewRecorder()
+	h.ReportItemError(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "item_id must be > 0") {
+		t.Fatalf("expected item_id validation error, got %s", rec.Body.String())
 	}
 }
 

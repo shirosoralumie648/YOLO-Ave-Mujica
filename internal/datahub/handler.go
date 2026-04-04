@@ -327,7 +327,7 @@ func (h *Handler) CompleteImportSnapshot(w http.ResponseWriter, r *http.Request)
 		Entries:   entries,
 	})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeImportError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
@@ -349,4 +349,15 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeError(w, http.StatusBadRequest, err)
+}
+
+func writeImportError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, ErrValidation):
+		writeError(w, http.StatusUnprocessableEntity, err)
+	default:
+		writeError(w, http.StatusBadRequest, err)
+	}
 }

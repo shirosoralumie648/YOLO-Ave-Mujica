@@ -3,6 +3,7 @@ package annotations
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -85,17 +86,24 @@ func parseTaskID(r *http.Request) (int64, error) {
 }
 
 func writeServiceError(w http.ResponseWriter, err error) {
-	status := http.StatusBadRequest
-	if isNotFoundError(err) {
-		status = http.StatusNotFound
+	switch {
+	case errors.Is(err, ErrNotFound) || isNotFoundError(err):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, err)
+	case errors.Is(err, ErrValidation):
+		writeError(w, http.StatusUnprocessableEntity, err)
+	default:
+		writeError(w, http.StatusBadRequest, err)
 	}
-	writeError(w, status, err)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	encoder := json.NewEncoder(w)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(payload)
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {

@@ -18,6 +18,11 @@ paths:
         "200":
           description: Ready
   /v1/datasets:
+    get:
+      summary: List datasets for the fixed browse project context
+      responses:
+        "200":
+          description: Dataset summary list
     post:
       summary: Create dataset
       requestBody:
@@ -30,6 +35,20 @@ paths:
       responses:
         "200":
           description: Dataset created
+  /v1/datasets/{id}:
+    get:
+      summary: Get dataset detail with aggregate counts and latest snapshot info
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Dataset detail payload
+        "404":
+          description: Dataset not found
   /v1/datasets/{id}/scan:
     post:
       summary: Scan dataset object keys
@@ -88,6 +107,20 @@ paths:
       responses:
         "200":
           description: Import job accepted
+  /v1/snapshots/{id}:
+    get:
+      summary: Get snapshot detail with effective annotation counts
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Snapshot detail payload
+        "404":
+          description: Snapshot not found
   /v1/snapshots/{id}/export:
     post:
       summary: Queue snapshot export package build (currently yolo only)
