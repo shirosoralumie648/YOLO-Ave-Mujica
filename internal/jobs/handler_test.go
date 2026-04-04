@@ -209,6 +209,50 @@ func TestCreateZeroShotPersistsDatasetAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestCreateZeroShotPersistsCommandProviderPayload(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/jobs/zero-shot", strings.NewReader(`{
+		"project_id":1,
+		"dataset_id":42,
+		"snapshot_id":9,
+		"prompt":"person",
+		"idempotency_key":"idem-provider-payload",
+		"required_resource_type":"gpu",
+		"provider":{
+			"type":"command",
+			"argv":["python3","/opt/providers/zero-shot.py"]
+		}
+	}`))
+	createRec := httptest.NewRecorder()
+	h.CreateZeroShot(createRec, createReq)
+
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on create, got %d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	job, ok := repo.Get(1)
+	if !ok {
+		t.Fatal("expected created job to be persisted")
+	}
+	provider, ok := job.Payload["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected provider payload to be persisted, got %#v", job.Payload["provider"])
+	}
+	if provider["type"] != "command" {
+		t.Fatalf("expected command provider type, got %#v", provider["type"])
+	}
+	argv, ok := provider["argv"].([]string)
+	if !ok {
+		t.Fatalf("expected argv to decode as []string, got %#v", provider["argv"])
+	}
+	if !reflect.DeepEqual([]string{"python3", "/opt/providers/zero-shot.py"}, argv) {
+		t.Fatalf("unexpected provider argv: %#v", argv)
+	}
+}
+
 func TestCreateJobAppendsDispatchRequestedEvent(t *testing.T) {
 	repo := NewInMemoryRepository()
 	pub := NewInMemoryPublisher()
@@ -268,6 +312,33 @@ func TestCreateCleaningPersistsRequiredCapabilities(t *testing.T) {
 	}
 	if !strings.Contains(getRec.Body.String(), `"required_capabilities":["rules_engine","image_stats"]`) {
 		t.Fatalf("expected required capabilities in job response, got %s", getRec.Body.String())
+	}
+}
+
+func TestCreateVideoExtractRejectsCommandProviderWithoutArgv(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs/video-extract", strings.NewReader(`{
+		"project_id":1,
+		"dataset_id":2,
+		"fps":2,
+		"idempotency_key":"idem-video-provider-invalid",
+		"required_resource_type":"cpu",
+		"provider":{
+			"type":"command",
+			"argv":[]
+		}
+	}`))
+	rec := httptest.NewRecorder()
+	h.CreateVideoExtract(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "provider.argv") {
+		t.Fatalf("expected provider argv validation error, got %s", rec.Body.String())
 	}
 }
 

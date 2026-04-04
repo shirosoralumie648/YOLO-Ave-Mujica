@@ -297,12 +297,84 @@ paths:
   /v1/jobs/zero-shot:
     post:
       summary: Queue zero-shot job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_id, dataset_id, snapshot_id, prompt, idempotency_key]
+              properties:
+                project_id:
+                  type: integer
+                dataset_id:
+                  type: integer
+                snapshot_id:
+                  type: integer
+                prompt:
+                  type: string
+                idempotency_key:
+                  type: string
+                required_resource_type:
+                  type: string
+                  enum: [gpu, mixed]
+                required_capabilities:
+                  type: array
+                  items:
+                    type: string
+                provider:
+                  type: object
+                  required: [type, argv]
+                  properties:
+                    type:
+                      type: string
+                      enum: [command]
+                    argv:
+                      type: array
+                      minItems: 1
+                      items:
+                        type: string
       responses:
         "200":
           description: Job accepted
   /v1/jobs/video-extract:
     post:
       summary: Queue video extraction job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_id, dataset_id, fps, idempotency_key]
+              properties:
+                project_id:
+                  type: integer
+                dataset_id:
+                  type: integer
+                fps:
+                  type: integer
+                idempotency_key:
+                  type: string
+                required_resource_type:
+                  type: string
+                  enum: [cpu, mixed]
+                required_capabilities:
+                  type: array
+                  items:
+                    type: string
+                provider:
+                  type: object
+                  required: [type, argv]
+                  properties:
+                    type:
+                      type: string
+                      enum: [command]
+                    argv:
+                      type: array
+                      minItems: 1
+                      items:
+                        type: string
       responses:
         "200":
           description: Job accepted

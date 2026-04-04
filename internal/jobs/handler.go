@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -19,22 +20,24 @@ func NewHandler(svc *Service) *Handler {
 }
 
 type zeroShotRequest struct {
-	ProjectID            int64    `json:"project_id"`
-	DatasetID            int64    `json:"dataset_id"`
-	SnapshotID           int64    `json:"snapshot_id"`
-	Prompt               string   `json:"prompt"`
-	IdempotencyKey       string   `json:"idempotency_key"`
-	RequiredResourceType string   `json:"required_resource_type"`
-	RequiredCapabilities []string `json:"required_capabilities"`
+	ProjectID            int64          `json:"project_id"`
+	DatasetID            int64          `json:"dataset_id"`
+	SnapshotID           int64          `json:"snapshot_id"`
+	Prompt               string         `json:"prompt"`
+	Provider             map[string]any `json:"provider"`
+	IdempotencyKey       string         `json:"idempotency_key"`
+	RequiredResourceType string         `json:"required_resource_type"`
+	RequiredCapabilities []string       `json:"required_capabilities"`
 }
 
 type videoExtractRequest struct {
-	ProjectID            int64    `json:"project_id"`
-	DatasetID            int64    `json:"dataset_id"`
-	FPS                  int      `json:"fps"`
-	IdempotencyKey       string   `json:"idempotency_key"`
-	RequiredResourceType string   `json:"required_resource_type"`
-	RequiredCapabilities []string `json:"required_capabilities"`
+	ProjectID            int64          `json:"project_id"`
+	DatasetID            int64          `json:"dataset_id"`
+	FPS                  int            `json:"fps"`
+	Provider             map[string]any `json:"provider"`
+	IdempotencyKey       string         `json:"idempotency_key"`
+	RequiredResourceType string         `json:"required_resource_type"`
+	RequiredCapabilities []string       `json:"required_capabilities"`
 }
 
 type cleaningRequest struct {
@@ -86,11 +89,19 @@ func (h *Handler) CreateZeroShot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	provider, err := normalizeProvider(in.Provider)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 
 	payload := map[string]any{
 		"dataset_id":  in.DatasetID,
 		"snapshot_id": in.SnapshotID,
 		"prompt":      in.Prompt,
+	}
+	if provider != nil {
+		payload["provider"] = provider
 	}
 	job, err := h.svc.CreateJob(CreateJobInput{
 		ProjectID:            in.ProjectID,
@@ -119,10 +130,18 @@ func (h *Handler) CreateVideoExtract(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	provider, err := normalizeProvider(in.Provider)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 
 	payload := map[string]any{
 		"dataset_id": in.DatasetID,
 		"fps":        in.FPS,
+	}
+	if provider != nil {
+		payload["provider"] = provider
 	}
 	job, err := h.svc.CreateJob(CreateJobInput{
 		ProjectID:            in.ProjectID,
@@ -342,6 +361,54 @@ func writeCallbackError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, err)
 	default:
 		writeError(w, http.StatusBadRequest, err)
+	}
+}
+
+func normalizeProvider(raw map[string]any) (map[string]any, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	providerType := strings.TrimSpace(strings.ToLower(fmt.Sprint(raw["type"])))
+	if providerType == "" {
+		return nil, errors.New("provider.type is required")
+	}
+	if providerType != "command" {
+		return nil, fmt.Errorf("unsupported provider.type %q", providerType)
+	}
+
+	argv, err := normalizeProviderArgv(raw["argv"])
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"type": "command",
+		"argv": argv,
+	}, nil
+}
+
+func normalizeProviderArgv(raw any) ([]string, error) {
+	switch argv := raw.(type) {
+	case []string:
+		if len(argv) == 0 {
+			return nil, errors.New("provider.argv must contain at least one command argument")
+		}
+		return argv, nil
+	case []any:
+		if len(argv) == 0 {
+			return nil, errors.New("provider.argv must contain at least one command argument")
+		}
+		out := make([]string, 0, len(argv))
+		for _, value := range argv {
+			text := strings.TrimSpace(fmt.Sprint(value))
+			if text == "" {
+				return nil, errors.New("provider.argv entries must be non-empty strings")
+			}
+			out = append(out, text)
+		}
+		return out, nil
+	default:
+		return nil, errors.New("provider.argv must be an array of command arguments")
 	}
 }
 
