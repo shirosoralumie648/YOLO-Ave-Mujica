@@ -246,6 +246,13 @@ if [[ "$submit_response" != *"\"status\":\"submitted\""* ]]; then
   fail "workspace submit response missing submitted status: $submit_response"
 fi
 
+resubmit_response="$(curl -fsS -X POST "${api_base}/v1/tasks/${task_id}/workspace/submit" \
+  -H 'Content-Type: application/json' \
+  -d '{"actor":"annotator-1"}')" || fail "workspace resubmit failed"
+if [[ "$resubmit_response" != *"\"status\":\"submitted\""* ]]; then
+  fail "workspace resubmit response missing submitted status: $resubmit_response"
+fi
+
 zero_shot_idempotency_key="smoke-zero-shot-${dataset_id}-${snapshot_id}"
 import_idempotency_key="smoke-snapshot-import-${dataset_id}-${snapshot_id}"
 

@@ -97,6 +97,9 @@ exit 0
 			t.Fatalf("expected smoke script to call %s, got log:\n%s", fragment, callText)
 		}
 	}
+	if got := strings.Count(callText, "/v1/tasks/1/workspace/submit"); got < 2 {
+		t.Fatalf("expected smoke script to exercise duplicate workspace submit path, got %d submit calls in log:\n%s", got, callText)
+	}
 }
 
 func TestSmokeRecoversFromMissingFutureMigrationVersion(t *testing.T) {
