@@ -107,6 +107,10 @@ paths:
       responses:
         "200":
           description: Import job accepted
+        "400":
+          description: Invalid import request
+        "404":
+          description: Snapshot not found
   /v1/snapshots/{id}:
     get:
       summary: Get snapshot detail with effective annotation counts
@@ -275,6 +279,10 @@ paths:
       responses:
         "200":
           description: Annotation workspace payload
+        "404":
+          description: Task or workspace context not found
+        "422":
+          description: Task cannot be opened as an annotation workspace
   /v1/tasks/{id}/workspace/draft:
     put:
       summary: Save annotation workspace draft
@@ -294,6 +302,12 @@ paths:
       responses:
         "200":
           description: Updated workspace payload
+        "404":
+          description: Task or workspace context not found
+        "409":
+          description: Workspace draft conflict, such as revision mismatch or already submitted state
+        "422":
+          description: Task cannot accept workspace draft updates
   /v1/tasks/{id}/workspace/submit:
     post:
       summary: Submit annotation workspace task
@@ -313,6 +327,12 @@ paths:
       responses:
         "200":
           description: Submitted workspace payload
+        "404":
+          description: Task or workspace context not found
+        "409":
+          description: Workspace submit conflict
+        "422":
+          description: Task cannot be submitted as an annotation workspace
   /v1/jobs/zero-shot:
     post:
       summary: Queue zero-shot job

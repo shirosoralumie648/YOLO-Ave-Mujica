@@ -245,6 +245,59 @@ func TestOpenAPIArtifactPackageDocumentsYoloOnlyRequestFormat(t *testing.T) {
 	}
 }
 
+func TestOpenAPIWorkspaceRoutesDocumentFailureResponses(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+
+	workspaceBlock, err := extractOpenAPIPathBlock(raw, "/v1/tasks/{id}/workspace")
+	if err != nil {
+		t.Fatalf("extract workspace path block: %v", err)
+	}
+	for _, code := range []string{`"404":`, `"422":`} {
+		if !strings.Contains(workspaceBlock, code) {
+			t.Fatalf("expected workspace path to document %s, got:\n%s", code, workspaceBlock)
+		}
+	}
+
+	draftBlock, err := extractOpenAPIPathBlock(raw, "/v1/tasks/{id}/workspace/draft")
+	if err != nil {
+		t.Fatalf("extract workspace draft path block: %v", err)
+	}
+	for _, code := range []string{`"404":`, `"409":`, `"422":`} {
+		if !strings.Contains(draftBlock, code) {
+			t.Fatalf("expected workspace draft path to document %s, got:\n%s", code, draftBlock)
+		}
+	}
+
+	submitBlock, err := extractOpenAPIPathBlock(raw, "/v1/tasks/{id}/workspace/submit")
+	if err != nil {
+		t.Fatalf("extract workspace submit path block: %v", err)
+	}
+	for _, code := range []string{`"404":`, `"409":`, `"422":`} {
+		if !strings.Contains(submitBlock, code) {
+			t.Fatalf("expected workspace submit path to document %s, got:\n%s", code, submitBlock)
+		}
+	}
+}
+
+func TestOpenAPISnapshotImportDocumentsFailureResponses(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+	block, err := extractOpenAPIPathBlock(raw, "/v1/snapshots/{id}/import")
+	if err != nil {
+		t.Fatalf("extract snapshot import path block: %v", err)
+	}
+	for _, code := range []string{`"400":`, `"404":`} {
+		if !strings.Contains(block, code) {
+			t.Fatalf("expected snapshot import path to document %s, got:\n%s", code, block)
+		}
+	}
+}
+
 func readOpenAPIPublicRoutes() (map[string]struct{}, error) {
 	raw, err := readOpenAPIDocument()
 	if err != nil {
