@@ -24,6 +24,7 @@ type Repository interface {
 	EnsureCategory(ctx context.Context, projectID int64, categoryName string) (int64, error)
 	LookupCategory(ctx context.Context, projectID int64, categoryName string) (int64, error)
 	CreateAnnotation(ctx context.Context, snapshotID, datasetID, itemID int64, objectKey string, categoryID int64, categoryName string, bboxX, bboxY, bboxW, bboxH float64) error
+	ListAnnotationsForSnapshot(ctx context.Context, snapshotID int64) ([]StoredAnnotation, error)
 	RecordAnnotationChange(ctx context.Context, change AnnotationChange) error
 }
 
@@ -395,6 +396,19 @@ func (r *InMemoryRepository) CreateAnnotation(_ context.Context, snapshotID, dat
 		BBoxH:        bboxH,
 	})
 	return nil
+}
+
+func (r *InMemoryRepository) ListAnnotationsForSnapshot(_ context.Context, snapshotID int64) ([]StoredAnnotation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	out := make([]StoredAnnotation, 0)
+	for _, annotation := range r.annotations {
+		if annotation.SnapshotID == snapshotID {
+			out = append(out, annotation)
+		}
+	}
+	return out, nil
 }
 
 func (r *InMemoryRepository) RecordAnnotationChange(_ context.Context, change AnnotationChange) error {

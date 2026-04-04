@@ -6,6 +6,7 @@ import (
 )
 
 var ErrNotFound = errors.New("not found")
+var ErrConflict = errors.New("conflict")
 var ErrArtifactNotReady = errors.New("artifact not ready")
 
 func wrapArtifactNotFound(id int64) error {
@@ -27,4 +28,20 @@ func (e artifactStateError) Error() string {
 
 func (e artifactStateError) Unwrap() error {
 	return ErrArtifactNotReady
+}
+
+type artifactConflictError struct {
+	artifactID int64
+	msg        string
+}
+
+func (e artifactConflictError) Error() string {
+	if e.msg != "" {
+		return e.msg
+	}
+	return fmt.Sprintf("artifact %d conflict: %s", e.artifactID, ErrConflict)
+}
+
+func (e artifactConflictError) Unwrap() error {
+	return ErrConflict
 }

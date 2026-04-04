@@ -531,3 +531,61 @@ func TestCompleteArtifactIsIdempotentWhenAlreadyReady(t *testing.T) {
 		t.Fatalf("expected package and manifest uploads only once, got %d uploads", store.uploadCalls)
 	}
 }
+
+func TestCompleteArtifactReturnsConflictForDifferentReplay(t *testing.T) {
+	store := newArtifactStorageStub()
+	svc := NewServiceWithRepositoryAndStorage(NewInMemoryRepository(), store.upload, store.presign)
+	h := NewHandler(svc)
+	srv := server.NewHTTPServerWithModules(server.Modules{
+		Artifacts: server.ArtifactRoutes{
+			CreatePackage:    h.CreatePackage,
+			CompleteArtifact: h.CompleteArtifact,
+		},
+	})
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/artifacts/packages", strings.NewReader(`{"dataset_id":1,"snapshot_id":2,"format":"yolo","version":"v1"}`))
+	createRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("create package failed: %d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	firstBody := `{
+		"entries":[
+			{
+				"path":"labels/0001.txt",
+				"body":"MCAwLjUgMC41IDAuMiAwLjIK",
+				"checksum":"fe1d19931e4f3092800a55299efc6f6e0b806bed3838aa14aebbc94ba55aa549"
+			}
+		]
+	}`
+	firstReq := httptest.NewRequest(http.MethodPost, "/internal/artifacts/1/complete", strings.NewReader(firstBody))
+	firstRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("first complete artifact failed: %d body=%s", firstRec.Code, firstRec.Body.String())
+	}
+
+	conflictBody := `{
+		"entries":[
+			{
+				"path":"labels/0002.txt",
+				"body":"MCAwLjQgMC40IDAuMSAwLjEK",
+				"checksum":"c028d7aa15e851b0eefb31638a1856498a237faf1829050832d3b9b19f9ab75f"
+			}
+		]
+	}`
+	conflictReq := httptest.NewRequest(http.MethodPost, "/internal/artifacts/1/complete", strings.NewReader(conflictBody))
+	conflictRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(conflictRec, conflictReq)
+
+	if conflictRec.Code != http.StatusConflict {
+		t.Fatalf("expected conflicting replay to return 409, got %d body=%s", conflictRec.Code, conflictRec.Body.String())
+	}
+	if !strings.Contains(strings.ToLower(conflictRec.Body.String()), "different bundle entries") {
+		t.Fatalf("expected conflict detail, got %s", conflictRec.Body.String())
+	}
+	if store.uploadCalls != 2 {
+		t.Fatalf("expected conflicting replay to avoid extra uploads, got %d uploads", store.uploadCalls)
+	}
+}

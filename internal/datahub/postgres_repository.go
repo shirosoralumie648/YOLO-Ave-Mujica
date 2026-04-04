@@ -351,6 +351,52 @@ func (r *PostgresRepository) CreateAnnotation(ctx context.Context, snapshotID, d
 	return err
 }
 
+func (r *PostgresRepository) ListAnnotationsForSnapshot(ctx context.Context, snapshotID int64) ([]StoredAnnotation, error) {
+	rows, err := r.pool.Query(ctx, `
+		select
+			a.created_at_snapshot_id,
+			a.dataset_id,
+			a.item_id,
+			di.object_key,
+			a.category_id,
+			c.name,
+			a.bbox_x,
+			a.bbox_y,
+			a.bbox_w,
+			a.bbox_h
+		from annotations a
+		join dataset_items di on di.id = a.item_id
+		join categories c on c.id = a.category_id
+		where a.created_at_snapshot_id = $1 and a.deleted_at_snapshot_id is null
+		order by a.id
+	`, snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]StoredAnnotation, 0)
+	for rows.Next() {
+		var annotation StoredAnnotation
+		if err := rows.Scan(
+			&annotation.SnapshotID,
+			&annotation.DatasetID,
+			&annotation.ItemID,
+			&annotation.ObjectKey,
+			&annotation.CategoryID,
+			&annotation.CategoryName,
+			&annotation.BBoxX,
+			&annotation.BBoxY,
+			&annotation.BBoxW,
+			&annotation.BBoxH,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, annotation)
+	}
+	return out, rows.Err()
+}
+
 func (r *PostgresRepository) RecordAnnotationChange(ctx context.Context, change AnnotationChange) error {
 	beforeJSON, err := marshalAnnotationChangePayload(change.Before)
 	if err != nil {

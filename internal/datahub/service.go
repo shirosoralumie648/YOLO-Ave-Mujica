@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 )
 
 // PresignFunc resolves a short-lived object URL for a dataset item.
@@ -211,6 +212,20 @@ func (s *Service) ImportSnapshot(snapshotID int64, in ImportSnapshotInput) (Impo
 	if err != nil {
 		return ImportSnapshotResult{}, err
 	}
+	existingAnnotations, err := s.repo.ListAnnotationsForSnapshot(context.Background(), snapshot.ID)
+	if err != nil {
+		return ImportSnapshotResult{}, err
+	}
+	if len(existingAnnotations) > 0 {
+		if importEntriesMatchSnapshot(existingAnnotations, in.Entries) {
+			return ImportSnapshotResult{
+				DatasetID:           dataset.ID,
+				SnapshotID:          snapshot.ID,
+				ImportedAnnotations: len(existingAnnotations),
+			}, nil
+		}
+		return ImportSnapshotResult{}, newConflictError("snapshot %d import already completed with different annotations", snapshot.ID)
+	}
 
 	imported := 0
 	seen := make(map[string]struct{}, len(in.Entries))
@@ -283,6 +298,42 @@ func (s *Service) ImportSnapshot(snapshotID int64, in ImportSnapshotInput) (Impo
 		SnapshotID:          snapshot.ID,
 		ImportedAnnotations: imported,
 	}, nil
+}
+
+func importEntriesMatchSnapshot(existing []StoredAnnotation, incoming []ImportedAnnotation) bool {
+	if len(existing) != len(incoming) {
+		return false
+	}
+
+	existingKeys := make([]string, 0, len(existing))
+	for _, annotation := range existing {
+		existingKeys = append(existingKeys, importedAnnotationKey(ImportedAnnotation{
+			ObjectKey:    annotation.ObjectKey,
+			CategoryName: annotation.CategoryName,
+			BBoxX:        annotation.BBoxX,
+			BBoxY:        annotation.BBoxY,
+			BBoxW:        annotation.BBoxW,
+			BBoxH:        annotation.BBoxH,
+		}))
+	}
+
+	incomingKeys := make([]string, 0, len(incoming))
+	for _, entry := range incoming {
+		incomingKeys = append(incomingKeys, importedAnnotationKey(entry))
+	}
+
+	sort.Strings(existingKeys)
+	sort.Strings(incomingKeys)
+	for idx := range existingKeys {
+		if existingKeys[idx] != incomingKeys[idx] {
+			return false
+		}
+	}
+	return true
+}
+
+func importedAnnotationKey(entry ImportedAnnotation) string {
+	return fmt.Sprintf("%s|%s|%f|%f|%f|%f", entry.ObjectKey, entry.CategoryName, entry.BBoxX, entry.BBoxY, entry.BBoxW, entry.BBoxH)
 }
 
 func isSupportedImportFormat(format string) bool {

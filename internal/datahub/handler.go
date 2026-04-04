@@ -355,6 +355,8 @@ func writeImportError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, err)
 	case errors.Is(err, ErrValidation):
 		writeError(w, http.StatusUnprocessableEntity, err)
 	default:

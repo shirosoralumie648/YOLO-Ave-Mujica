@@ -552,3 +552,127 @@ func TestCompleteImportSnapshotReturnsNotFoundForUnknownObjectKey(t *testing.T) 
 		t.Fatalf("expected not found error, got %s", rec.Body.String())
 	}
 }
+
+func TestCompleteImportSnapshotIsIdempotentForExactReplay(t *testing.T) {
+	repo := datahub.NewInMemoryRepository()
+	svc := datahub.NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(datahub.CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "import-idempotent-handler-dataset",
+		Bucket:    "platform-dev",
+		Prefix:    "train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/a.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+	mustSeedCategory(t, repo, dataset.ProjectID, "person")
+	if _, err := svc.CreateSnapshot(dataset.ID, datahub.CreateSnapshotInput{Note: "import target"}); err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	h := datahub.NewHandler(svc)
+	srv := server.NewHTTPServerWithDataHub(h)
+
+	body := `{
+		"format":"yolo",
+		"entries":[
+			{
+				"object_key":"train/a.jpg",
+				"category_name":"person",
+				"bbox_x":0.1,
+				"bbox_y":0.2,
+				"bbox_w":0.3,
+				"bbox_h":0.4
+			}
+		]
+	}`
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/internal/snapshots/1/import", strings.NewReader(body))
+	firstRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("expected first import 200, got %d body=%s", firstRec.Code, firstRec.Body.String())
+	}
+
+	retryReq := httptest.NewRequest(http.MethodPost, "/internal/snapshots/1/import", strings.NewReader(body))
+	retryRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(retryRec, retryReq)
+	if retryRec.Code != http.StatusOK {
+		t.Fatalf("expected idempotent replay 200, got %d body=%s", retryRec.Code, retryRec.Body.String())
+	}
+
+	if len(repo.AnnotationsForSnapshot(1)) != 1 {
+		t.Fatalf("expected idempotent replay to keep one stored annotation, got %+v", repo.AnnotationsForSnapshot(1))
+	}
+}
+
+func TestCompleteImportSnapshotReturnsConflictForDifferentReplay(t *testing.T) {
+	repo := datahub.NewInMemoryRepository()
+	svc := datahub.NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(datahub.CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "import-conflict-handler-dataset",
+		Bucket:    "platform-dev",
+		Prefix:    "train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/a.jpg", "train/b.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+	mustSeedCategory(t, repo, dataset.ProjectID, "person")
+	if _, err := svc.CreateSnapshot(dataset.ID, datahub.CreateSnapshotInput{Note: "import target"}); err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	h := datahub.NewHandler(svc)
+	srv := server.NewHTTPServerWithDataHub(h)
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/internal/snapshots/1/import", strings.NewReader(`{
+		"format":"yolo",
+		"entries":[
+			{
+				"object_key":"train/a.jpg",
+				"category_name":"person",
+				"bbox_x":0.1,
+				"bbox_y":0.2,
+				"bbox_w":0.3,
+				"bbox_h":0.4
+			}
+		]
+	}`))
+	firstRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("expected first import 200, got %d body=%s", firstRec.Code, firstRec.Body.String())
+	}
+
+	conflictReq := httptest.NewRequest(http.MethodPost, "/internal/snapshots/1/import", strings.NewReader(`{
+		"format":"yolo",
+		"entries":[
+			{
+				"object_key":"train/b.jpg",
+				"category_name":"person",
+				"bbox_x":0.11,
+				"bbox_y":0.22,
+				"bbox_w":0.33,
+				"bbox_h":0.44
+			}
+		]
+	}`))
+	conflictRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(conflictRec, conflictReq)
+
+	if conflictRec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d body=%s", conflictRec.Code, conflictRec.Body.String())
+	}
+	if !strings.Contains(strings.ToLower(conflictRec.Body.String()), "already completed") {
+		t.Fatalf("expected conflict detail, got %s", conflictRec.Body.String())
+	}
+}

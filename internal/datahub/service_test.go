@@ -294,6 +294,120 @@ func TestImportSnapshotRecordsAnnotationChanges(t *testing.T) {
 	}
 }
 
+func TestImportSnapshotIsIdempotentForExactReplay(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "import-idempotent-dataset",
+		Bucket:    "platform-dev",
+		Prefix:    "train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/a.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+	mustSeedCategory(t, repo, dataset.ProjectID, "person")
+	snapshot, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{Note: "import target"})
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	input := ImportSnapshotInput{
+		Format: "yolo",
+		Entries: []ImportedAnnotation{{
+			ObjectKey:    "train/a.jpg",
+			CategoryName: "person",
+			BBoxX:        0.1,
+			BBoxY:        0.2,
+			BBoxW:        0.3,
+			BBoxH:        0.4,
+		}},
+	}
+
+	first, err := svc.ImportSnapshot(snapshot.ID, input)
+	if err != nil {
+		t.Fatalf("first import snapshot: %v", err)
+	}
+	second, err := svc.ImportSnapshot(snapshot.ID, input)
+	if err != nil {
+		t.Fatalf("second import snapshot: %v", err)
+	}
+
+	if first.ImportedAnnotations != 1 || second.ImportedAnnotations != 1 {
+		t.Fatalf("expected idempotent imports to report one imported annotation, got first=%+v second=%+v", first, second)
+	}
+	annotations := repo.AnnotationsForSnapshot(snapshot.ID)
+	if len(annotations) != 1 {
+		t.Fatalf("expected exact replay to keep a single stored annotation, got %+v", annotations)
+	}
+	changes := repo.AnnotationChangesForSnapshot(snapshot.ID)
+	if len(changes) != 1 {
+		t.Fatalf("expected exact replay to avoid duplicating change log entries, got %+v", changes)
+	}
+}
+
+func TestImportSnapshotRejectsConflictingReplayAfterCompletion(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "import-conflict-dataset",
+		Bucket:    "platform-dev",
+		Prefix:    "train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/a.jpg", "train/b.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+	mustSeedCategory(t, repo, dataset.ProjectID, "person")
+	snapshot, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{Note: "import target"})
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	_, err = svc.ImportSnapshot(snapshot.ID, ImportSnapshotInput{
+		Format: "yolo",
+		Entries: []ImportedAnnotation{{
+			ObjectKey:    "train/a.jpg",
+			CategoryName: "person",
+			BBoxX:        0.1,
+			BBoxY:        0.2,
+			BBoxW:        0.3,
+			BBoxH:        0.4,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("first import snapshot: %v", err)
+	}
+
+	_, err = svc.ImportSnapshot(snapshot.ID, ImportSnapshotInput{
+		Format: "yolo",
+		Entries: []ImportedAnnotation{{
+			ObjectKey:    "train/b.jpg",
+			CategoryName: "person",
+			BBoxX:        0.11,
+			BBoxY:        0.22,
+			BBoxW:        0.33,
+			BBoxH:        0.44,
+		}},
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict for conflicting replay, got %v", err)
+	}
+
+	annotations := repo.AnnotationsForSnapshot(snapshot.ID)
+	if len(annotations) != 1 {
+		t.Fatalf("expected conflicting replay to avoid additional writes, got %+v", annotations)
+	}
+}
+
 func findDatasetSummaryByID(items []DatasetSummary, datasetID int64) (DatasetSummary, bool) {
 	for _, item := range items {
 		if item.ID == datasetID {

@@ -196,7 +196,20 @@ func (s *Service) CompleteArtifact(id int64, entries []BundleEntry) (Artifact, e
 	}
 	switch artifact.Status {
 	case StatusReady:
-		return artifact, nil
+		if len(entries) == 0 {
+			return Artifact{}, errors.New("entries are required")
+		}
+		checksum, _, err := buildArtifactCompletionPackage(artifact.ID, artifact.Version, entries)
+		if err != nil {
+			return Artifact{}, err
+		}
+		if NormalizeSHA256Checksum(artifact.Checksum) == checksum {
+			return artifact, nil
+		}
+		return Artifact{}, artifactConflictError{
+			artifactID: artifact.ID,
+			msg:        fmt.Sprintf("artifact %d already completed with different bundle entries", artifact.ID),
+		}
 	case StatusPending, StatusQueued, StatusBuilding:
 		// Continue with completion.
 	case StatusFailed:
@@ -211,16 +224,7 @@ func (s *Service) CompleteArtifact(id int64, entries []BundleEntry) (Artifact, e
 		return Artifact{}, errors.New("artifact storage upload is not configured")
 	}
 
-	pulled := struct {
-		ArtifactID int64         `json:"artifact_id"`
-		Version    string        `json:"version"`
-		Entries    []BundleEntry `json:"entries"`
-	}{
-		ArtifactID: artifact.ID,
-		Version:    artifact.Version,
-		Entries:    entries,
-	}
-	packageBody, err := json.MarshalIndent(pulled, "", "  ")
+	checksum, packageBody, err := buildArtifactCompletionPackage(artifact.ID, artifact.Version, entries)
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -245,11 +249,28 @@ func (s *Service) CompleteArtifact(id int64, entries []BundleEntry) (Artifact, e
 		return Artifact{}, err
 	}
 
-	sum := sha256.Sum256(packageBody)
-	if err := s.MarkArtifactReady(artifact.ID, artifact.URI, artifact.ManifestURI, NormalizeSHA256Checksum(hex.EncodeToString(sum[:])), size); err != nil {
+	if err := s.MarkArtifactReady(artifact.ID, artifact.URI, artifact.ManifestURI, checksum, size); err != nil {
 		return Artifact{}, err
 	}
 	return s.GetArtifact(artifact.ID)
+}
+
+func buildArtifactCompletionPackage(artifactID int64, version string, entries []BundleEntry) (string, []byte, error) {
+	pulled := struct {
+		ArtifactID int64         `json:"artifact_id"`
+		Version    string        `json:"version"`
+		Entries    []BundleEntry `json:"entries"`
+	}{
+		ArtifactID: artifactID,
+		Version:    version,
+		Entries:    entries,
+	}
+	packageBody, err := json.MarshalIndent(pulled, "", "  ")
+	if err != nil {
+		return "", nil, err
+	}
+	sum := sha256.Sum256(packageBody)
+	return NormalizeSHA256Checksum(hex.EncodeToString(sum[:])), packageBody, nil
 }
 
 func (s *Service) MarkArtifactReady(id int64, uri, manifestURI, checksum string, size int64) error {

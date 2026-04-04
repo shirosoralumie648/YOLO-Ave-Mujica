@@ -7,6 +7,7 @@ import (
 
 var (
 	ErrNotFound   = errors.New("not found")
+	ErrConflict   = errors.New("conflict")
 	ErrValidation = errors.New("validation")
 )
 
@@ -37,4 +38,8 @@ func wrapNamedNotFound(resource, name string) error {
 
 func newValidationError(format string, args ...any) error {
 	return newTypedError(ErrValidation, format, args...)
+}
+
+func newConflictError(format string, args ...any) error {
+	return newTypedError(ErrConflict, format, args...)
 }
