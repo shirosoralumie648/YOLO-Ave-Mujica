@@ -1,5 +1,6 @@
 import os
 
+from workers.common.command_provider import load_provider_items
 from workers.common.job_client import JobClient, emit_terminal
 from workers.common.queue_runner import QueueRunner, poll_forever
 
@@ -40,8 +41,11 @@ def _coerce_bbox(candidate: dict) -> dict:
 def _build_candidates(job: dict) -> list[dict]:
     payload = job.get("payload", {})
     model_name = payload.get("model_name", "zero-shot-mvp")
+    raw_candidates = load_provider_items(payload, "candidates")
+    if raw_candidates is None:
+        raw_candidates = payload.get("candidates", [])
     candidates = []
-    for raw in payload.get("candidates", []):
+    for raw in raw_candidates:
         candidates.append(
             {
                 "dataset_id": int(raw.get("dataset_id", payload.get("dataset_id", 0))),

@@ -1,9 +1,46 @@
 import unittest
+import sys
 
 from workers.zero_shot.main import run_zero_shot_job
 
 
 class ZeroShotWorkerContractTest(unittest.TestCase):
+    def test_run_zero_shot_job_uses_command_provider_output(self):
+        result = run_zero_shot_job(
+            {
+                "job_id": 43,
+                "payload": {
+                    "dataset_id": 1,
+                    "snapshot_id": 2,
+                    "prompt": "person",
+                    "provider": {
+                        "type": "command",
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import json, sys; "
+                                "json.load(sys.stdin); "
+                                "print(json.dumps({'candidates': [{"
+                                "'item_id': 99, "
+                                "'object_key': 'images/99.jpg', "
+                                "'category_name': 'person', "
+                                "'confidence': 0.88, "
+                                "'bbox': {'x': 5, 'y': 6, 'w': 7, 'h': 8}"
+                                "}]}))"
+                            ),
+                        ],
+                    },
+                },
+            }
+        )
+
+        self.assertEqual("succeeded", result["status"])
+        self.assertEqual(1, result["total_items"])
+        self.assertEqual(1, result["events"][0]["detail_json"]["result_count"])
+        self.assertEqual(99, result["events"][0]["detail_json"]["candidates"][0]["item_id"])
+        self.assertEqual("images/99.jpg", result["events"][0]["detail_json"]["candidates"][0]["object_key"])
+
     def test_run_zero_shot_job_emits_candidate_materialization_event_and_result_ref(self):
         result = run_zero_shot_job(
             {

@@ -1,5 +1,6 @@
 import os
 
+from workers.common.command_provider import load_provider_items
 from workers.common.job_client import JobClient
 from workers.common.queue_runner import QueueRunner, poll_forever
 from workers.zero_shot.main import summarize_batch
@@ -10,7 +11,9 @@ def summarize_video_extract(total_frames: int, ok_frames: int, failed_frames: in
 
 
 def _build_frames(payload: dict) -> list[dict]:
-    frames = payload.get("frames")
+    frames = load_provider_items(payload, "frames")
+    if frames is None:
+        frames = payload.get("frames")
     if frames:
         return [
             {
