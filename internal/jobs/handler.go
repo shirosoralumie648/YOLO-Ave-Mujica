@@ -59,18 +59,21 @@ type workerProgressRequest struct {
 	FailedItems    int    `json:"failed_items"`
 }
 
-type workerItemErrorRequest struct {
-	ItemID  int64          `json:"item_id"`
-	Message string         `json:"message"`
-	Detail  map[string]any `json:"detail_json"`
+type workerEventRequest struct {
+	ItemID     *int64         `json:"item_id,omitempty"`
+	EventLevel string         `json:"event_level"`
+	EventType  string         `json:"event_type"`
+	Message    string         `json:"message"`
+	Detail     map[string]any `json:"detail_json"`
 }
 
 type workerTerminalRequest struct {
-	WorkerID       string `json:"worker_id"`
-	Status         string `json:"status"`
-	TotalItems     int    `json:"total_items"`
-	SucceededItems int    `json:"succeeded_items"`
-	FailedItems    int    `json:"failed_items"`
+	WorkerID       string         `json:"worker_id"`
+	Status         string         `json:"status"`
+	TotalItems     int            `json:"total_items"`
+	SucceededItems int            `json:"succeeded_items"`
+	FailedItems    int            `json:"failed_items"`
+	ResultRef      map[string]any `json:"result_ref,omitempty"`
 }
 
 func (h *Handler) CreateZeroShot(w http.ResponseWriter, r *http.Request) {
@@ -188,9 +191,18 @@ func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 		"snapshot_id":            job.SnapshotID,
 		"job_type":               job.JobType,
 		"status":                 job.Status,
+		"resource_lane":          laneFor(job.RequiredResourceType),
 		"required_resource_type": job.RequiredResourceType,
 		"required_capabilities":  job.RequiredCapabilities,
 		"idempotency_key":        job.IdempotencyKey,
+		"worker_id":              job.WorkerID,
+		"lease_until":            job.LeaseUntil,
+		"retry_count":            job.RetryCount,
+		"error_code":             job.ErrorCode,
+		"error_msg":              job.ErrorMsg,
+		"result_type":            job.ResultType,
+		"result_count":           job.ResultCount,
+		"result_ref":             job.ResultRef,
 		"total_items":            job.TotalItems,
 		"succeeded_items":        job.SucceededItems,
 		"failed_items":           job.FailedItems,
@@ -251,12 +263,22 @@ func (h *Handler) ReportItemError(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var in workerItemErrorRequest
+	var in workerEventRequest
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := h.svc.ReportItemError(jobID, in.ItemID, in.Message, in.Detail); err != nil {
+	if in.EventType == "" {
+		in.EventType = "item_failed"
+	}
+	if in.EventLevel == "" {
+		if in.EventType == "item_failed" {
+			in.EventLevel = "error"
+		} else {
+			in.EventLevel = "warn"
+		}
+	}
+	if err := h.svc.ReportEvent(jobID, in.ItemID, in.EventLevel, in.EventType, in.Message, in.Detail); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -275,7 +297,7 @@ func (h *Handler) ReportTerminal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := h.svc.ReportTerminal(jobID, in.WorkerID, in.Status, in.TotalItems, in.SucceededItems, in.FailedItems); err != nil {
+	if err := h.svc.ReportTerminal(jobID, in.WorkerID, in.Status, in.TotalItems, in.SucceededItems, in.FailedItems, in.ResultRef); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}

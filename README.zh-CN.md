@@ -55,7 +55,7 @@ make api-dev
 make web-dev
 ```
 
-默认前端地址是 `http://127.0.0.1:5173`，会把 `/v1/*` 代理到 `http://127.0.0.1:8080`。默认首页是 `/projects/1/overview`。
+默认前端地址是 `http://127.0.0.1:5173`，会把 `/v1/*` 代理到 `http://127.0.0.1:8080`。默认首页是 `/`，侧边导航对应 `/tasks`、`/review`、`/publish/candidates` 和 `/data`。
 
 常用验证命令：
 

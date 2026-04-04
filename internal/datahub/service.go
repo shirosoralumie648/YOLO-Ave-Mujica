@@ -3,6 +3,7 @@ package datahub
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 // PresignFunc resolves a short-lived object URL for a dataset item.
@@ -195,6 +196,9 @@ func (s *Service) ImportSnapshot(snapshotID int64, in ImportSnapshotInput) (Impo
 	if in.Format == "" {
 		return ImportSnapshotResult{}, errors.New("format is required")
 	}
+	if !isSupportedImportFormat(in.Format) {
+		return ImportSnapshotResult{}, fmt.Errorf("unsupported format: %s", in.Format)
+	}
 	if len(in.Entries) == 0 {
 		return ImportSnapshotResult{}, errors.New("entries are required")
 	}
@@ -209,20 +213,34 @@ func (s *Service) ImportSnapshot(snapshotID int64, in ImportSnapshotInput) (Impo
 	}
 
 	imported := 0
+	seen := make(map[string]struct{}, len(in.Entries))
+	fromSnapshotID := snapshot.ID
+	if snapshot.BasedOnSnapshot != nil {
+		fromSnapshotID = *snapshot.BasedOnSnapshot
+	}
 	for _, entry := range in.Entries {
 		if entry.ObjectKey == "" || entry.CategoryName == "" {
 			return ImportSnapshotResult{}, errors.New("object_key and category_name are required")
 		}
-		if entry.BBoxW <= 0 || entry.BBoxH <= 0 {
-			return ImportSnapshotResult{}, errors.New("bbox_w and bbox_h must be > 0")
+		if entry.BBoxX < 0 || entry.BBoxY < 0 || entry.BBoxW <= 0 || entry.BBoxH <= 0 {
+			return ImportSnapshotResult{}, errors.New("bbox geometry is invalid")
 		}
+
+		key := fmt.Sprintf("%s|%s|%f|%f|%f|%f", entry.ObjectKey, entry.CategoryName, entry.BBoxX, entry.BBoxY, entry.BBoxW, entry.BBoxH)
+		if _, ok := seen[key]; ok {
+			return ImportSnapshotResult{}, fmt.Errorf("duplicate annotation for %s", entry.ObjectKey)
+		}
+		seen[key] = struct{}{}
 
 		item, err := s.repo.GetItemByObjectKey(context.Background(), dataset.ID, entry.ObjectKey)
 		if err != nil {
 			return ImportSnapshotResult{}, err
 		}
-		categoryID, err := s.repo.EnsureCategory(context.Background(), dataset.ProjectID, entry.CategoryName)
+		categoryID, err := s.repo.LookupCategory(context.Background(), dataset.ProjectID, entry.CategoryName)
 		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return ImportSnapshotResult{}, fmt.Errorf("unknown category: %s", entry.CategoryName)
+			}
 			return ImportSnapshotResult{}, err
 		}
 		if err := s.repo.CreateAnnotation(
@@ -240,6 +258,23 @@ func (s *Service) ImportSnapshot(snapshotID int64, in ImportSnapshotInput) (Impo
 		); err != nil {
 			return ImportSnapshotResult{}, err
 		}
+		if err := s.repo.RecordAnnotationChange(context.Background(), AnnotationChange{
+			FromSnapshotID: fromSnapshotID,
+			ToSnapshotID:   snapshot.ID,
+			ItemID:         item.ID,
+			ChangeType:     "added",
+			After: &AnnotationChangePayload{
+				ObjectKey:    item.ObjectKey,
+				CategoryID:   categoryID,
+				CategoryName: entry.CategoryName,
+				BBoxX:        entry.BBoxX,
+				BBoxY:        entry.BBoxY,
+				BBoxW:        entry.BBoxW,
+				BBoxH:        entry.BBoxH,
+			},
+		}); err != nil {
+			return ImportSnapshotResult{}, err
+		}
 		imported++
 	}
 
@@ -248,6 +283,15 @@ func (s *Service) ImportSnapshot(snapshotID int64, in ImportSnapshotInput) (Impo
 		SnapshotID:          snapshot.ID,
 		ImportedAnnotations: imported,
 	}, nil
+}
+
+func isSupportedImportFormat(format string) bool {
+	switch format {
+	case "yolo", "coco":
+		return true
+	default:
+		return false
+	}
 }
 
 // PresignObject produces a short-lived object URL for dataset consumers.

@@ -37,34 +37,6 @@ func (f JobSourceFunc) ListRecentFailedJobs(projectID int64, limit int) ([]jobs.
 	return f(projectID, limit)
 }
 
-type SummaryCard struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	Count int    `json:"count"`
-	Href  string `json:"href"`
-}
-
-type BlockerCard struct {
-	ID     string `json:"id"`
-	Title  string `json:"title"`
-	Reason string `json:"reason"`
-	Href   string `json:"href"`
-}
-
-type FailedJobItem struct {
-	ID       int64  `json:"id"`
-	JobType  string `json:"job_type"`
-	Status   string `json:"status"`
-	ErrorMsg string `json:"error_msg"`
-}
-
-type Response struct {
-	SummaryCards   []SummaryCard   `json:"summary_cards"`
-	Blockers       []BlockerCard   `json:"blockers"`
-	LongestIdleTask *tasks.Task    `json:"longest_idle_task,omitempty"`
-	RecentFailedJobs []FailedJobItem `json:"recent_failed_jobs"`
-}
-
 type Service struct {
 	tasks  TaskSource
 	review ReviewSource
@@ -75,18 +47,18 @@ func NewService(taskSource TaskSource, reviewSource ReviewSource, jobSource JobS
 	return &Service{tasks: taskSource, review: reviewSource, jobs: jobSource}
 }
 
-func (s *Service) BuildOverview(projectID int64) (Response, error) {
+func (s *Service) BuildOverview(projectID int64) (ProjectOverview, error) {
 	taskItems, err := s.tasks.ListTasks(projectID, tasks.ListTasksFilter{})
 	if err != nil {
-		return Response{}, err
+		return ProjectOverview{}, err
 	}
 	reviewBacklog, err := s.review.PendingCandidateCount(projectID)
 	if err != nil {
-		return Response{}, err
+		return ProjectOverview{}, err
 	}
 	failedJobs, err := s.jobs.ListRecentFailedJobs(projectID, 5)
 	if err != nil {
-		return Response{}, err
+		return ProjectOverview{}, err
 	}
 
 	var (
@@ -148,10 +120,10 @@ func (s *Service) BuildOverview(projectID int64) (Response, error) {
 		})
 	}
 
-	return Response{
-		SummaryCards:    summaryCards,
-		Blockers:        blockers,
-		LongestIdleTask: longestIdle,
+	return ProjectOverview{
+		SummaryCards:     summaryCards,
+		Blockers:         blockers,
+		LongestIdleTask:  longestIdle,
 		RecentFailedJobs: recent,
 	}, nil
 }

@@ -144,3 +144,27 @@ func TestDiffBySnapshotIDsUsesRepositoryState(t *testing.T) {
 		t.Fatalf("unexpected diff stats from snapshot ids: %+v", out.Stats)
 	}
 }
+
+func TestDiffReturnsPerCategoryDelta(t *testing.T) {
+	out := NewService().DiffSnapshots(
+		[]Annotation{
+			{ItemID: 1, CategoryID: 1, BBoxX: 0, BBoxY: 0, BBoxW: 10, BBoxH: 10},
+			{ItemID: 2, CategoryID: 2, BBoxX: 5, BBoxY: 5, BBoxW: 8, BBoxH: 8},
+		},
+		[]Annotation{
+			{ItemID: 1, CategoryID: 1, BBoxX: 1, BBoxY: 1, BBoxW: 10, BBoxH: 10},
+			{ItemID: 3, CategoryID: 2, BBoxX: 6, BBoxY: 6, BBoxW: 5, BBoxH: 5},
+		},
+		0.5,
+	)
+
+	if len(out.Stats.PerCategoryDelta) != 2 {
+		t.Fatalf("expected per-category delta entries, got %+v", out.Stats.PerCategoryDelta)
+	}
+	if out.Stats.PerCategoryDelta[0].CategoryID != 1 || out.Stats.PerCategoryDelta[0].UpdatedCount != 1 {
+		t.Fatalf("expected category 1 update delta, got %+v", out.Stats.PerCategoryDelta)
+	}
+	if out.Stats.PerCategoryDelta[1].CategoryID != 2 || out.Stats.PerCategoryDelta[1].AddedCount != 1 || out.Stats.PerCategoryDelta[1].RemovedCount != 1 {
+		t.Fatalf("expected category 2 add/remove delta, got %+v", out.Stats.PerCategoryDelta)
+	}
+}

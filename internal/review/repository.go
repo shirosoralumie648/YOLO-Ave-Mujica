@@ -11,6 +11,7 @@ type Repository interface {
 	Accept(candidateID int64, reviewer string) error
 	Reject(candidateID int64, reviewer, reasonCode string) error
 	ListPublishableCandidates(projectID int64) ([]PublishableCandidate, error)
+	PersistCandidates(jobID int64, items []PersistCandidateInput) ([]Candidate, error)
 }
 
 type PublishableCandidate struct {
@@ -29,6 +30,7 @@ type PublishableCandidate struct {
 
 type InMemoryRepository struct {
 	mu          sync.Mutex
+	nextID      int64
 	candidates  map[int64]Candidate
 	annotations []Annotation
 	audits      []AuditEvent
@@ -36,6 +38,7 @@ type InMemoryRepository struct {
 
 func NewInMemoryRepository() *InMemoryRepository {
 	return &InMemoryRepository{
+		nextID:      1,
 		candidates:  make(map[int64]Candidate),
 		annotations: []Annotation{},
 		audits:      []AuditEvent{},
@@ -160,6 +163,40 @@ func (r *InMemoryRepository) ListPublishableCandidates(projectID int64) ([]Publi
 		})
 	}
 	return items, nil
+}
+
+func (r *InMemoryRepository) PersistCandidates(jobID int64, items []PersistCandidateInput) ([]Candidate, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now().UTC()
+	out := make([]Candidate, 0, len(items))
+	for _, item := range items {
+		id := r.nextID
+		r.nextID++
+
+		candidate := normalizeCandidate(Candidate{
+			ID:           id,
+			DatasetID:    item.DatasetID,
+			SnapshotID:   item.SnapshotID,
+			ItemID:       item.ItemID,
+			ObjectKey:    item.ObjectKey,
+			CategoryID:   item.CategoryID,
+			BBox:         item.BBox,
+			Status:       CandidateStatusQueuedForReview,
+			ReviewStatus: CandidateStatusQueuedForReview,
+			Source: CandidateSource{
+				JobID:      &jobID,
+				Confidence: item.Confidence,
+				ModelName:  item.ModelName,
+				IsPseudo:   true,
+				CreatedAt:  &now,
+			},
+		})
+		r.candidates[candidate.ID] = candidate
+		out = append(out, candidate)
+	}
+	return out, nil
 }
 
 func (r *InMemoryRepository) AnnotationCount() int {

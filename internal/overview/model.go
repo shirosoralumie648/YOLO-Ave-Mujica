@@ -1,28 +1,31 @@
 package overview
 
-import "time"
+import "yolo-ave-mujica/internal/tasks"
 
-type IdleTask struct {
-	ID             int64     `json:"id"`
-	Title          string    `json:"title"`
-	Assignee       string    `json:"assignee,omitempty"`
-	Status         string    `json:"status"`
-	LastActivityAt time.Time `json:"last_activity_at"`
+type SummaryCard struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Count int    `json:"count"`
+	Href  string `json:"href"`
 }
 
 type BlockerCard struct {
-	Kind        string `json:"kind"`
-	Severity    string `json:"severity"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Href        string `json:"href"`
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Reason string `json:"reason"`
+	Href   string `json:"href"`
+}
+
+type FailedJobItem struct {
+	ID       int64  `json:"id"`
+	JobType  string `json:"job_type"`
+	Status   string `json:"status"`
+	ErrorMsg string `json:"error_msg"`
 }
 
 type ProjectOverview struct {
-	ProjectID        int64         `json:"project_id"`
-	OpenTaskCount    int           `json:"open_task_count"`
-	ReviewBacklog    int           `json:"review_backlog"`
-	FailedRecentJobs int           `json:"failed_recent_jobs"`
-	LongestIdleTask  *IdleTask     `json:"longest_idle_task,omitempty"`
-	Blockers         []BlockerCard `json:"blockers"`
+	SummaryCards     []SummaryCard   `json:"summary_cards"`
+	Blockers         []BlockerCard   `json:"blockers"`
+	LongestIdleTask  *tasks.Task     `json:"longest_idle_task,omitempty"`
+	RecentFailedJobs []FailedJobItem `json:"recent_failed_jobs"`
 }

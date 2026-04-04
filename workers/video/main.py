@@ -9,17 +9,63 @@ def summarize_video_extract(total_frames: int, ok_frames: int, failed_frames: in
     return summarize_batch(total=total_frames, ok=ok_frames, failed=failed_frames)
 
 
+def _build_frames(payload: dict) -> list[dict]:
+    frames = payload.get("frames")
+    if frames:
+        return [
+            {
+                "frame_index": int(frame.get("frame_index", 0)),
+                "timestamp_ms": int(frame.get("timestamp_ms", 0)),
+                "object_key": frame.get("object_key", ""),
+            }
+            for frame in frames
+        ]
+
+    total_frames = int(payload.get("total_frames", 0))
+    fps = max(int(payload.get("fps", 1)), 1)
+    return [
+        {
+            "frame_index": index,
+            "timestamp_ms": int((index / fps) * 1000),
+            "object_key": "",
+        }
+        for index in range(total_frames)
+    ]
+
+
 def run_video_job(job: dict):
     payload = job.get("payload", {})
-    total = payload.get("total_frames", 0)
-    ok = payload.get("ok_frames", total)
-    failed = payload.get("failed_frames", 0)
+    frames = _build_frames(payload)
+    total = len(frames)
+    ok = total
+    failed = 0
     status, summary = summarize_video_extract(total_frames=total, ok_frames=ok, failed_frames=failed)
-    return {"status": status, **summary}
+    return {
+        "status": status,
+        **summary,
+        "events": [
+            {
+                "event_level": "info",
+                "event_type": "video_frames_materialized",
+                "message": "materialized video frame results",
+                "detail_json": {
+                    "result_type": "video_frames",
+                    "result_count": total,
+                    "frames": frames,
+                },
+            }
+        ],
+        "result_ref": {"result_type": "video_frames", "result_count": total},
+    }
 
 
 def build_video_runner(worker_id: str | None = None):
-    return QueueRunner(worker_id=worker_id or os.getenv("WORKER_ID", "video-local"), accepted_job_types={"video-extract"})
+    return QueueRunner(
+        worker_id=worker_id or os.getenv("WORKER_ID", "video-local"),
+        accepted_job_types={"video-extract"},
+        resource_lane="jobs:cpu",
+        capabilities={"video_decode"},
+    )
 
 
 def main():

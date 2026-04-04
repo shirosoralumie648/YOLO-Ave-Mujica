@@ -1,6 +1,7 @@
 package datahub_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -18,6 +19,16 @@ func newTestServerWithFakePresigner() *server.HTTPServer {
 	})
 	h := datahub.NewHandler(svc)
 	return server.NewHTTPServerWithDataHub(h)
+}
+
+func mustSeedCategory(t *testing.T, repo *datahub.InMemoryRepository, projectID int64, categoryName string) int64 {
+	t.Helper()
+
+	categoryID, err := repo.EnsureCategory(context.Background(), projectID, categoryName)
+	if err != nil {
+		t.Fatalf("seed category %s: %v", categoryName, err)
+	}
+	return categoryID
 }
 
 func TestPresignEndpointReturnsURL(t *testing.T) {
@@ -259,6 +270,45 @@ func TestImportSnapshotQueuesJobWithResolvedDataset(t *testing.T) {
 	}
 }
 
+func TestImportSnapshotRejectsUnsupportedFormatBeforeQueueing(t *testing.T) {
+	repo := datahub.NewInMemoryRepository()
+	svc := datahub.NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(datahub.CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "unsupported-queue-format",
+		Bucket:    "platform-dev",
+		Prefix:    "train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.CreateSnapshot(dataset.ID, datahub.CreateSnapshotInput{}); err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	jobsSvc := jobs.NewService(jobs.NewInMemoryRepository())
+	h := datahub.NewHandlerWithJobs(svc, jobsSvc)
+	srv := server.NewHTTPServerWithDataHub(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/snapshots/1/import", strings.NewReader(`{
+		"format":"pascal-voc",
+		"idempotency_key":"snapshot-import-invalid"
+	}`))
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unsupported format") {
+		t.Fatalf("expected unsupported format error, got %s", rec.Body.String())
+	}
+	if _, ok := jobsSvc.GetJob(1); ok {
+		t.Fatal("did not expect invalid import format to be queued")
+	}
+}
+
 func TestImportSnapshotQueuesInlinePayloadForWorker(t *testing.T) {
 	repo := datahub.NewInMemoryRepository()
 	svc := datahub.NewServiceWithRepository(nil, repo)
@@ -373,6 +423,7 @@ func TestCompleteImportSnapshotPersistsCanonicalAnnotations(t *testing.T) {
 	if _, err := svc.ScanDataset(dataset.ID, []string{"train/a.jpg"}); err != nil {
 		t.Fatalf("scan dataset: %v", err)
 	}
+	mustSeedCategory(t, repo, dataset.ProjectID, "person")
 	if _, err := svc.CreateSnapshot(dataset.ID, datahub.CreateSnapshotInput{Note: "import target"}); err != nil {
 		t.Fatalf("create snapshot: %v", err)
 	}
@@ -402,5 +453,53 @@ func TestCompleteImportSnapshotPersistsCanonicalAnnotations(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"ImportedAnnotations":1`) {
 		t.Fatalf("expected imported annotation count in response, got %s", rec.Body.String())
+	}
+}
+
+func TestCompleteImportSnapshotRejectsUnknownCategory(t *testing.T) {
+	repo := datahub.NewInMemoryRepository()
+	svc := datahub.NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(datahub.CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "import-unknown-category-dataset",
+		Bucket:    "platform-dev",
+		Prefix:    "train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/a.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+	if _, err := svc.CreateSnapshot(dataset.ID, datahub.CreateSnapshotInput{Note: "import target"}); err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	h := datahub.NewHandler(svc)
+	srv := server.NewHTTPServerWithDataHub(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/snapshots/1/import", strings.NewReader(`{
+		"format":"yolo",
+		"entries":[
+			{
+				"object_key":"train/a.jpg",
+				"category_name":"person",
+				"bbox_x":0.1,
+				"bbox_y":0.2,
+				"bbox_w":0.3,
+				"bbox_h":0.4
+			}
+		]
+	}`))
+	rec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unknown category") {
+		t.Fatalf("expected unknown category error, got %s", rec.Body.String())
 	}
 }

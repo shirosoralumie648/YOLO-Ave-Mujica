@@ -3,6 +3,7 @@ package versioning
 import (
 	"fmt"
 	"math"
+	"sort"
 )
 
 type Annotation struct {
@@ -23,11 +24,20 @@ type Change struct {
 }
 
 type DiffStats struct {
-	AddedCount      int     `json:"added_count"`
-	RemovedCount    int     `json:"removed_count"`
-	UpdatedCount    int     `json:"updated_count"`
-	TotalBoxDelta   int     `json:"total_box_delta"`
-	AverageIOUDrift float64 `json:"average_iou_drift"`
+	AddedCount       int             `json:"added_count"`
+	RemovedCount     int             `json:"removed_count"`
+	UpdatedCount     int             `json:"updated_count"`
+	TotalBoxDelta    int             `json:"total_box_delta"`
+	AverageIOUDrift  float64         `json:"average_iou_drift"`
+	PerCategoryDelta []CategoryDelta `json:"per_category_delta"`
+}
+
+type CategoryDelta struct {
+	CategoryID   int64 `json:"category_id"`
+	AddedCount   int   `json:"added_count"`
+	RemovedCount int   `json:"removed_count"`
+	UpdatedCount int   `json:"updated_count"`
+	NetBoxDelta  int   `json:"net_box_delta"`
 }
 
 type DiffResult struct {
@@ -75,6 +85,7 @@ func (s *Service) DiffSnapshots(before, after []Annotation, iouThreshold float64
 	}
 
 	var iouSum float64
+	categoryDelta := make(map[int64]*CategoryDelta)
 	keys := make(map[string]struct{}, len(beforeGroups)+len(afterGroups))
 	for k := range beforeGroups {
 		keys[k] = struct{}{}
@@ -123,6 +134,7 @@ func (s *Service) DiffSnapshots(before, after []Annotation, iouThreshold float64
 				copyA := afterItems[bestIdx]
 				out.Updates = append(out.Updates, Change{ItemID: copyA.ItemID, CategoryID: copyA.CategoryID, Before: &copyB, After: &copyA, IOU: bestIOU})
 				iouSum += bestIOU
+				recordCategoryDelta(categoryDelta, copyA.CategoryID).UpdatedCount++
 				matchedBefore[bi] = true
 				matchedAfter[bestIdx] = true
 				continue
@@ -130,6 +142,9 @@ func (s *Service) DiffSnapshots(before, after []Annotation, iouThreshold float64
 
 			copyB := b
 			out.Removes = append(out.Removes, Change{ItemID: b.ItemID, CategoryID: b.CategoryID, Before: &copyB})
+			delta := recordCategoryDelta(categoryDelta, b.CategoryID)
+			delta.RemovedCount++
+			delta.NetBoxDelta--
 			matchedBefore[bi] = true
 		}
 
@@ -139,6 +154,9 @@ func (s *Service) DiffSnapshots(before, after []Annotation, iouThreshold float64
 			}
 			copyA := a
 			out.Adds = append(out.Adds, Change{ItemID: a.ItemID, CategoryID: a.CategoryID, After: &copyA})
+			delta := recordCategoryDelta(categoryDelta, a.CategoryID)
+			delta.AddedCount++
+			delta.NetBoxDelta++
 			matchedAfter[ai] = true
 		}
 	}
@@ -152,6 +170,7 @@ func (s *Service) DiffSnapshots(before, after []Annotation, iouThreshold float64
 	if len(out.Updates) > 0 {
 		out.Stats.AverageIOUDrift = iouSum / float64(len(out.Updates))
 	}
+	out.Stats.PerCategoryDelta = flattenCategoryDelta(categoryDelta)
 	out.CompatibilityScore = compatibilityScore(len(before), len(after), len(out.Adds), len(out.Removes), out.Updates)
 
 	return out
@@ -226,4 +245,24 @@ func bboxIOU(a, b Annotation) float64 {
 		return 0
 	}
 	return inter / denom
+}
+
+func recordCategoryDelta(items map[int64]*CategoryDelta, categoryID int64) *CategoryDelta {
+	if existing, ok := items[categoryID]; ok {
+		return existing
+	}
+	item := &CategoryDelta{CategoryID: categoryID}
+	items[categoryID] = item
+	return item
+}
+
+func flattenCategoryDelta(items map[int64]*CategoryDelta) []CategoryDelta {
+	out := make([]CategoryDelta, 0, len(items))
+	for _, item := range items {
+		out = append(out, *item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CategoryID < out[j].CategoryID
+	})
+	return out
 }

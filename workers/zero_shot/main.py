@@ -27,16 +27,65 @@ def build_terminal_event(job_id: int, total: int, ok: int, failed: int):
     )
 
 
-def run_zero_shot_job(job: dict):
+def _coerce_bbox(candidate: dict) -> dict:
+    bbox = candidate.get("bbox", {})
+    return {
+        "x": float(bbox.get("x", 0)),
+        "y": float(bbox.get("y", 0)),
+        "w": float(bbox.get("w", 0)),
+        "h": float(bbox.get("h", 0)),
+    }
+
+
+def _build_candidates(job: dict) -> list[dict]:
     payload = job.get("payload", {})
-    total = payload.get("total_items", 0)
-    ok = payload.get("succeeded_items", total)
-    failed = payload.get("failed_items", 0)
-    return build_terminal_event(job["job_id"], total=total, ok=ok, failed=failed)
+    model_name = payload.get("model_name", "zero-shot-mvp")
+    candidates = []
+    for raw in payload.get("candidates", []):
+        candidates.append(
+            {
+                "dataset_id": int(raw.get("dataset_id", payload.get("dataset_id", 0))),
+                "snapshot_id": int(raw.get("snapshot_id", payload.get("snapshot_id", 0))),
+                "item_id": int(raw.get("item_id", 0)),
+                "object_key": raw.get("object_key", ""),
+                "category_id": int(raw.get("category_id", 0)),
+                "category_name": raw.get("category_name", payload.get("prompt", "")),
+                "confidence": float(raw.get("confidence", 0)),
+                "model_name": raw.get("model_name", model_name),
+                "is_pseudo": True,
+                "bbox": _coerce_bbox(raw),
+            }
+        )
+    return candidates
+
+
+def run_zero_shot_job(job: dict):
+    candidates = _build_candidates(job)
+    total = len(candidates)
+    result = build_terminal_event(job["job_id"], total=total, ok=total, failed=0)
+    result["events"] = [
+        {
+            "event_level": "info",
+            "event_type": "review_candidates_materialized",
+            "message": "persisted review candidates",
+            "detail_json": {
+                "result_type": "annotation_candidates",
+                "result_count": total,
+                "candidates": candidates,
+            },
+        }
+    ]
+    result["result_ref"] = {"result_type": "annotation_candidates", "result_count": total}
+    return result
 
 
 def build_zero_shot_runner(worker_id: str | None = None):
-    return QueueRunner(worker_id=worker_id or os.getenv("WORKER_ID", "zero-shot-local"), accepted_job_types={"zero-shot"})
+    return QueueRunner(
+        worker_id=worker_id or os.getenv("WORKER_ID", "zero-shot-local"),
+        accepted_job_types={"zero-shot"},
+        resource_lane="jobs:gpu",
+        capabilities={"zero_shot_inference"},
+    )
 
 
 def main():

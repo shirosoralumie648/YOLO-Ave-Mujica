@@ -1,6 +1,7 @@
 package datahub
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -10,6 +11,16 @@ import (
 
 type fakeScanner struct {
 	objects []ScannedObject
+}
+
+func mustSeedCategory(t *testing.T, repo *InMemoryRepository, projectID int64, categoryName string) int64 {
+	t.Helper()
+
+	categoryID, err := repo.EnsureCategory(context.Background(), projectID, categoryName)
+	if err != nil {
+		t.Fatalf("seed category %s: %v", categoryName, err)
+	}
+	return categoryID
 }
 
 func (s fakeScanner) ListObjects(bucket, prefix string) ([]ScannedObject, error) {
@@ -131,6 +142,7 @@ func TestImportSnapshotCreatesCanonicalAnnotations(t *testing.T) {
 	if _, err := svc.ScanDataset(dataset.ID, []string{"train/a.jpg"}); err != nil {
 		t.Fatalf("scan dataset: %v", err)
 	}
+	mustSeedCategory(t, repo, dataset.ProjectID, "person")
 	snapshot, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{Note: "import target"})
 	if err != nil {
 		t.Fatalf("create snapshot: %v", err)
@@ -194,6 +206,91 @@ func TestImportSnapshotCreatesCanonicalAnnotations(t *testing.T) {
 	}
 	if got := stored.FieldByName("CategoryName").String(); got != "person" {
 		t.Fatalf("expected stored category person, got %s", got)
+	}
+}
+
+func TestImportSnapshotRecordsAnnotationChanges(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "import-change-log",
+		Bucket:    "platform-dev",
+		Prefix:    "train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/a.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+	item, err := repo.GetItemByObjectKey(context.Background(), dataset.ID, "train/a.jpg")
+	if err != nil {
+		t.Fatalf("lookup dataset item: %v", err)
+	}
+	parent, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{Note: "baseline"})
+	if err != nil {
+		t.Fatalf("create parent snapshot: %v", err)
+	}
+	child, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{
+		BasedOnSnapshotID: &parent.ID,
+		Note:              "import target",
+	})
+	if err != nil {
+		t.Fatalf("create child snapshot: %v", err)
+	}
+	mustSeedCategory(t, repo, dataset.ProjectID, "person")
+
+	result, err := svc.ImportSnapshot(child.ID, ImportSnapshotInput{
+		Format: "yolo",
+		Entries: []ImportedAnnotation{{
+			ObjectKey:    "train/a.jpg",
+			CategoryName: "person",
+			BBoxX:        0.1,
+			BBoxY:        0.2,
+			BBoxW:        0.3,
+			BBoxH:        0.4,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("import snapshot: %v", err)
+	}
+	if result.ImportedAnnotations != 1 {
+		t.Fatalf("expected 1 imported annotation, got %d", result.ImportedAnnotations)
+	}
+
+	changes := repo.AnnotationChangesForSnapshot(child.ID)
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 annotation change, got %d", len(changes))
+	}
+	change := changes[0]
+	if change.FromSnapshotID != parent.ID {
+		t.Fatalf("expected from_snapshot_id=%d, got %d", parent.ID, change.FromSnapshotID)
+	}
+	if change.ToSnapshotID != child.ID {
+		t.Fatalf("expected to_snapshot_id=%d, got %d", child.ID, change.ToSnapshotID)
+	}
+	if change.ItemID != item.ID {
+		t.Fatalf("expected item_id=%d, got %d", item.ID, change.ItemID)
+	}
+	if change.ChangeType != "added" {
+		t.Fatalf("expected change_type=added, got %s", change.ChangeType)
+	}
+	if change.Before != nil {
+		t.Fatalf("expected nil before payload for added annotation, got %+v", change.Before)
+	}
+	if change.After == nil {
+		t.Fatal("expected after payload to be recorded")
+	}
+	if change.After.ObjectKey != "train/a.jpg" {
+		t.Fatalf("expected after object key train/a.jpg, got %s", change.After.ObjectKey)
+	}
+	if change.After.CategoryName != "person" {
+		t.Fatalf("expected after category person, got %s", change.After.CategoryName)
+	}
+	if change.After.BBoxW != 0.3 || change.After.BBoxH != 0.4 {
+		t.Fatalf("unexpected after bbox payload: %+v", change.After)
 	}
 }
 
@@ -364,6 +461,7 @@ func TestGetSnapshotDetailReturnsDatasetAndAnnotationDetails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create child snapshot: %v", err)
 	}
+	mustSeedCategory(t, repo, dataset.ProjectID, "car")
 	if _, err := svc.ImportSnapshot(child.ID, ImportSnapshotInput{
 		Format:    "yolo",
 		SourceURI: "s3://platform-dev/imports/yard-day.zip",
@@ -426,6 +524,7 @@ func TestGetSnapshotDetailCountsEffectiveAnnotationsInheritedFromParent(t *testi
 	if err != nil {
 		t.Fatalf("create parent snapshot: %v", err)
 	}
+	mustSeedCategory(t, repo, dataset.ProjectID, "car")
 	if _, err := svc.ImportSnapshot(parent.ID, ImportSnapshotInput{
 		Format: "yolo",
 		Entries: []ImportedAnnotation{
@@ -456,6 +555,128 @@ func TestGetSnapshotDetailCountsEffectiveAnnotationsInheritedFromParent(t *testi
 	}
 	if detail.AnnotationCount != 1 {
 		t.Fatalf("expected inherited annotation_count=1, got %d", detail.AnnotationCount)
+	}
+}
+
+func TestImportSnapshotRejectsUnsupportedFormat(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "unsupported-import-format",
+		Bucket:    "platform-dev",
+		Prefix:    "train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/a.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+	snapshot, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{})
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	_, err = svc.ImportSnapshot(snapshot.ID, ImportSnapshotInput{
+		Format: "pascal-voc",
+		Entries: []ImportedAnnotation{{
+			ObjectKey:    "train/a.jpg",
+			CategoryName: "person",
+			BBoxX:        1,
+			BBoxY:        2,
+			BBoxW:        3,
+			BBoxH:        4,
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported format") {
+		t.Fatalf("expected unsupported format error, got %v", err)
+	}
+}
+
+func TestImportSnapshotRejectsDuplicateBoxes(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "duplicate-import-boxes",
+		Bucket:    "platform-dev",
+		Prefix:    "train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/a.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+	snapshot, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{})
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+	mustSeedCategory(t, repo, dataset.ProjectID, "person")
+
+	_, err = svc.ImportSnapshot(snapshot.ID, ImportSnapshotInput{
+		Format: "yolo",
+		Entries: []ImportedAnnotation{
+			{
+				ObjectKey:    "train/a.jpg",
+				CategoryName: "person",
+				BBoxX:        1,
+				BBoxY:        2,
+				BBoxW:        3,
+				BBoxH:        4,
+			},
+			{
+				ObjectKey:    "train/a.jpg",
+				CategoryName: "person",
+				BBoxX:        1,
+				BBoxY:        2,
+				BBoxW:        3,
+				BBoxH:        4,
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate annotation") {
+		t.Fatalf("expected duplicate annotation error, got %v", err)
+	}
+}
+
+func TestImportSnapshotRejectsUnknownCategory(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewServiceWithRepository(nil, repo)
+
+	dataset, err := svc.CreateDataset(CreateDatasetInput{
+		ProjectID: 1,
+		Name:      "unknown-category-import",
+		Bucket:    "platform-dev",
+		Prefix:    "train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := svc.ScanDataset(dataset.ID, []string{"train/a.jpg"}); err != nil {
+		t.Fatalf("scan dataset: %v", err)
+	}
+	snapshot, err := svc.CreateSnapshot(dataset.ID, CreateSnapshotInput{})
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	_, err = svc.ImportSnapshot(snapshot.ID, ImportSnapshotInput{
+		Format: "yolo",
+		Entries: []ImportedAnnotation{{
+			ObjectKey:    "train/a.jpg",
+			CategoryName: "person",
+			BBoxX:        0.1,
+			BBoxY:        0.2,
+			BBoxW:        0.3,
+			BBoxH:        0.4,
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unknown category") {
+		t.Fatalf("expected unknown category error, got %v", err)
 	}
 }
 

@@ -46,6 +46,7 @@ func buildDispatchPayload(job *Job) map[string]any {
 		"dataset_id":             job.DatasetID,
 		"snapshot_id":            job.SnapshotID,
 		"job_type":               job.JobType,
+		"resource_lane":          laneFor(job.RequiredResourceType),
 		"required_resource_type": job.RequiredResourceType,
 		"required_capabilities":  job.RequiredCapabilities,
 		"payload":                job.Payload,

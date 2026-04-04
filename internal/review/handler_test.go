@@ -54,6 +54,24 @@ func (r *fakeRepository) ListPublishableCandidates(projectID int64) ([]Publishab
 	}, nil
 }
 
+func (r *fakeRepository) PersistCandidates(_ int64, items []PersistCandidateInput) ([]Candidate, error) {
+	out := make([]Candidate, 0, len(items))
+	for idx, item := range items {
+		out = append(out, Candidate{
+			ID:           int64(idx + 1),
+			DatasetID:    item.DatasetID,
+			SnapshotID:   item.SnapshotID,
+			ItemID:       item.ItemID,
+			ObjectKey:    item.ObjectKey,
+			CategoryID:   item.CategoryID,
+			BBox:         item.BBox,
+			Status:       CandidateStatusQueuedForReview,
+			ReviewStatus: CandidateStatusQueuedForReview,
+		})
+	}
+	return out, nil
+}
+
 func TestServiceUsesRepositoryPendingCandidates(t *testing.T) {
 	repo := &fakeRepository{
 		pending: []Candidate{{

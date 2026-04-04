@@ -4,14 +4,20 @@ from urllib import request
 
 def emit_item_error(job_id: int, item_id: int, message: str, detail: dict):
     """Build a normalized item-level failure event payload for job_events."""
-    return {
+    return emit_event(job_id=job_id, event_type="item_failed", message=message, detail=detail, level="error", item_id=item_id)
+
+
+def emit_event(job_id: int, event_type: str, message: str, detail: dict, level: str = "warn", item_id: int | None = None):
+    payload = {
         "job_id": job_id,
-        "item_id": item_id,
-        "event_level": "error",
-        "event_type": "item_failed",
+        "event_level": level,
+        "event_type": event_type,
         "message": message,
         "detail_json": detail,
     }
+    if item_id is not None:
+        payload["item_id"] = item_id
+    return payload
 
 
 def emit_heartbeat(job_id: int, worker_id: str, lease_seconds: int):
@@ -39,9 +45,9 @@ def emit_progress(job_id: int, worker_id: str, total: int, ok: int, failed: int)
     }
 
 
-def emit_terminal(job_id: int, worker_id: str, status: str, total: int, ok: int, failed: int):
+def emit_terminal(job_id: int, worker_id: str, status: str, total: int, ok: int, failed: int, result_ref: dict | None = None):
     """Build a terminal job summary payload consumed by worker-side job updaters."""
-    return {
+    payload = {
         "job_id": job_id,
         "worker_id": worker_id,
         "status": status,
@@ -49,6 +55,9 @@ def emit_terminal(job_id: int, worker_id: str, status: str, total: int, ok: int,
         "succeeded_items": ok,
         "failed_items": failed,
     }
+    if result_ref:
+        payload["result_ref"] = result_ref
+    return payload
 
 
 class JobClient:
@@ -76,19 +85,43 @@ class JobClient:
         payload = emit_item_error(job_id=job_id, item_id=item_id, message=message, detail=detail)
         return {
             "item_id": payload["item_id"],
+            "event_level": payload["event_level"],
+            "event_type": payload["event_type"],
             "message": payload["message"],
             "detail_json": payload["detail_json"],
         }
 
-    def build_terminal(self, job_id: int, worker_id: str, status: str, total: int, ok: int, failed: int):
-        payload = emit_terminal(job_id=job_id, worker_id=worker_id, status=status, total=total, ok=ok, failed=failed)
-        return {
+    def build_event(self, job_id: int, event_type: str, message: str, detail: dict, level: str = "warn", item_id: int | None = None):
+        payload = emit_event(
+            job_id=job_id,
+            event_type=event_type,
+            message=message,
+            detail=detail,
+            level=level,
+            item_id=item_id,
+        )
+        body = {
+            "event_level": payload["event_level"],
+            "event_type": payload["event_type"],
+            "message": payload["message"],
+            "detail_json": payload["detail_json"],
+        }
+        if item_id is not None:
+            body["item_id"] = item_id
+        return body
+
+    def build_terminal(self, job_id: int, worker_id: str, status: str, total: int, ok: int, failed: int, result_ref: dict | None = None):
+        payload = emit_terminal(job_id=job_id, worker_id=worker_id, status=status, total=total, ok=ok, failed=failed, result_ref=result_ref)
+        body = {
             "worker_id": payload["worker_id"],
             "status": payload["status"],
             "total_items": payload["total_items"],
             "succeeded_items": payload["succeeded_items"],
             "failed_items": payload["failed_items"],
         }
+        if result_ref:
+            body["result_ref"] = payload["result_ref"]
+        return body
 
     def post_heartbeat(self, job_id: int, worker_id: str, lease_seconds: int):
         body = self.build_heartbeat(job_id=job_id, worker_id=worker_id, lease_seconds=lease_seconds)
@@ -102,8 +135,19 @@ class JobClient:
         body = self.build_item_error(job_id=job_id, item_id=item_id, message=message, detail=detail)
         return self._post_json(f"/internal/jobs/{job_id}/events", body)
 
-    def post_terminal(self, job_id: int, worker_id: str, status: str, total: int, ok: int, failed: int):
-        body = self.build_terminal(job_id=job_id, worker_id=worker_id, status=status, total=total, ok=ok, failed=failed)
+    def post_event(self, job_id: int, event_type: str, message: str, detail: dict, level: str = "warn", item_id: int | None = None):
+        body = self.build_event(
+            job_id=job_id,
+            event_type=event_type,
+            message=message,
+            detail=detail,
+            level=level,
+            item_id=item_id,
+        )
+        return self._post_json(f"/internal/jobs/{job_id}/events", body)
+
+    def post_terminal(self, job_id: int, worker_id: str, status: str, total: int, ok: int, failed: int, result_ref: dict | None = None):
+        body = self.build_terminal(job_id=job_id, worker_id=worker_id, status=status, total=total, ok=ok, failed=failed, result_ref=result_ref)
         return self._post_json(f"/internal/jobs/{job_id}/complete", body)
 
     def _post_json(self, path: str, body: dict):

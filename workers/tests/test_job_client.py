@@ -58,6 +58,41 @@ class JobClientContractTest(unittest.TestCase):
         self.assertEqual("POST", request.get_method())
         self.assertIn(b'"status": "succeeded"', request.data)
 
+    def test_job_client_posts_terminal_result_ref(self):
+        opener = _FakeOpener()
+        client = JobClient(base_url="http://api.local", opener=opener)
+
+        client.post_terminal(
+            job_id=5,
+            worker_id="worker-a",
+            status="succeeded",
+            total=3,
+            ok=3,
+            failed=0,
+            result_ref={"result_type": "annotation_candidates", "result_count": 3},
+        )
+
+        request = opener.requests[0]
+        self.assertIn(b'"result_ref": {"result_type": "annotation_candidates", "result_count": 3}', request.data)
+
+    def test_job_client_posts_dispatch_event(self):
+        opener = _FakeOpener()
+        client = JobClient(base_url="http://api.local", opener=opener)
+
+        client.post_event(
+            job_id=5,
+            event_type="dispatch_rejected",
+            message="worker cannot handle dispatched job",
+            detail={"reason": "missing_capabilities"},
+            level="warn",
+        )
+
+        self.assertEqual(1, len(opener.requests))
+        request = opener.requests[0]
+        self.assertEqual("http://api.local/internal/jobs/5/events", request.full_url)
+        self.assertEqual("POST", request.get_method())
+        self.assertIn(b'"event_type": "dispatch_rejected"', request.data)
+
 
 if __name__ == "__main__":
     unittest.main()

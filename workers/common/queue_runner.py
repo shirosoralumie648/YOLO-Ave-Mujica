@@ -121,16 +121,59 @@ def _read_resp_bulk_string(file) -> str | None:
     return payload[:length].decode("utf-8")
 
 
+def _lane_for_resource(resource_type: str | None) -> str | None:
+    if resource_type == "gpu":
+        return "jobs:gpu"
+    if resource_type == "mixed":
+        return "jobs:mixed"
+    if resource_type == "cpu":
+        return "jobs:cpu"
+    return None
+
+
 class QueueRunner:
-    def __init__(self, worker_id: str, accepted_job_types: set[str]):
+    def __init__(
+        self,
+        worker_id: str,
+        accepted_job_types: set[str],
+        resource_lane: str | None = None,
+        capabilities: set[str] | None = None,
+    ):
         self.worker_id = worker_id
         self.accepted_job_types = accepted_job_types
+        self.resource_lane = resource_lane
+        self.capabilities = set(capabilities or set())
 
-    def can_handle(self, payload: dict) -> bool:
-        return bool(payload) and payload.get("job_type") in self.accepted_job_types
+    def worker_descriptor(self) -> dict:
+        return {
+            "worker_id": self.worker_id,
+            "resource_lane": self.resource_lane,
+            "capabilities": sorted(self.capabilities),
+            "job_types": sorted(self.accepted_job_types),
+        }
 
-    def handle_once(self, payload: dict, handler):
-        if not self.can_handle(payload):
+    def mismatch_reason(self, payload: dict, lane: str | None = None) -> str | None:
+        if not payload:
+            return "empty_payload"
+        if payload.get("job_type") not in self.accepted_job_types:
+            return "job_type_mismatch"
+
+        required_lane = payload.get("resource_lane") or _lane_for_resource(payload.get("required_resource_type"))
+        if self.resource_lane and required_lane and self.resource_lane != required_lane:
+            return "resource_lane_mismatch"
+        if lane and required_lane and lane != required_lane:
+            return "resource_lane_mismatch"
+
+        required_capabilities = set(payload.get("required_capabilities") or [])
+        if not required_capabilities.issubset(self.capabilities):
+            return "missing_capabilities"
+        return None
+
+    def can_handle(self, payload: dict, lane: str | None = None) -> bool:
+        return self.mismatch_reason(payload, lane=lane) is None
+
+    def handle_once(self, payload: dict, handler, lane: str | None = None):
+        if not self.can_handle(payload, lane=lane):
             return False
         handler(payload)
         return True
@@ -140,8 +183,24 @@ def dispatch_once(queue_client, lane: str, runner: QueueRunner, handler, timeout
     payload = queue_client.pop_json(lane, timeout_seconds=timeout_seconds)
     if payload is None:
         return False
-    if not runner.can_handle(payload):
-        queue_client.push_json(lane, payload)
+    mismatch_reason = runner.mismatch_reason(payload, lane=lane)
+    if mismatch_reason is not None:
+        target_lane = payload.get("resource_lane") or _lane_for_resource(payload.get("required_resource_type")) or lane
+        queue_client.push_json(target_lane, payload)
+        if job_client is not None and payload.get("job_id") is not None and hasattr(job_client, "post_event"):
+            event_type = "dispatch_requeued" if target_lane != lane else "dispatch_rejected"
+            job_client.post_event(
+                payload["job_id"],
+                event_type,
+                "worker cannot handle dispatched job",
+                {
+                    "reason": mismatch_reason,
+                    "queue_lane": lane,
+                    "target_lane": target_lane,
+                    "worker": runner.worker_descriptor(),
+                },
+                level="warn",
+            )
         return False
     if job_client is not None:
         job_client.post_heartbeat(payload["job_id"], runner.worker_id, lease_seconds)
@@ -154,8 +213,17 @@ def dispatch_once(queue_client, lane: str, runner: QueueRunner, handler, timeout
         if isinstance(handled, dict):
             result = {**result, **handled}
 
-    dispatched = runner.handle_once(payload, wrapped)
+    dispatched = runner.handle_once(payload, wrapped, lane=lane)
     if dispatched and job_client is not None:
+        for event in result.get("events", []):
+            job_client.post_event(
+                payload["job_id"],
+                event["event_type"],
+                event["message"],
+                event.get("detail_json", {}),
+                level=event.get("event_level", "info"),
+                item_id=event.get("item_id"),
+            )
         job_client.post_terminal(
             payload["job_id"],
             runner.worker_id,
@@ -163,6 +231,7 @@ def dispatch_once(queue_client, lane: str, runner: QueueRunner, handler, timeout
             result["total_items"],
             result["succeeded_items"],
             result["failed_items"],
+            result_ref=result.get("result_ref"),
         )
     return dispatched
 

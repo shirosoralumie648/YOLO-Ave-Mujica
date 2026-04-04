@@ -6,6 +6,7 @@ import os
 import zipfile
 from urllib import request
 
+from workers.common.coco import load_coco_document, parse_coco_document
 from workers.common.job_client import JobClient
 from workers.common.queue_runner import QueueRunner, poll_forever
 
@@ -84,6 +85,22 @@ def _load_yolo_archive(url: str, fallback_names: list[str] | None = None) -> tup
 
 def parse_import_payload(payload: dict) -> list[dict]:
     fmt = payload.get("format")
+    if fmt == "coco":
+        document = {
+            "images": payload.get("images") or [],
+            "categories": payload.get("categories") or [],
+            "annotations": payload.get("annotations") or [],
+        }
+        if not document["annotations"]:
+            source_download_url = payload.get("source_download_url")
+            if not source_download_url:
+                source_uri = payload.get("source_uri", "")
+                if source_uri.startswith(("file://", "http://", "https://")):
+                    source_download_url = source_uri
+            if not source_download_url:
+                raise ValueError("no supported import source provided")
+            document = load_coco_document(source_download_url)
+        return parse_coco_document(document)
     if fmt != "yolo":
         raise ValueError(f"unsupported format: {fmt}")
 
@@ -145,7 +162,12 @@ def run_import_job(job_payload: dict, base_url: str | None = None, opener=None) 
 
 
 def build_importer_runner(worker_id: str | None = None):
-    return QueueRunner(worker_id=worker_id or os.getenv("WORKER_ID", "importer-local"), accepted_job_types={"snapshot-import"})
+    return QueueRunner(
+        worker_id=worker_id or os.getenv("WORKER_ID", "importer-local"),
+        accepted_job_types={"snapshot-import"},
+        resource_lane="jobs:cpu",
+        capabilities={"snapshot_import"},
+    )
 
 
 def main():

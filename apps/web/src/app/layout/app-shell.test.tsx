@@ -5,34 +5,24 @@ import { MemoryRouter, Outlet, Route, Routes } from "react-router-dom";
 import { AppShell } from "./app-shell";
 
 describe("AppShell", () => {
-  it("renders the task-first navigation and keeps version context visible", () => {
+  it("renders root-scoped navigation and project context", () => {
     render(
-      <MemoryRouter
-        future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
-        initialEntries={["/projects/1/overview?snapshot_id=snap-009"]}
-      >
+      <MemoryRouter initialEntries={["/tasks?status=blocked"]}>
         <Routes>
-          <Route path="/projects/:projectId" element={<AppShell />}>
-            <Route path="overview" element={<OutletContent />} />
+          <Route path="/" element={<AppShell />}>
+            <Route path="tasks" element={<OutletContent />} />
           </Route>
         </Routes>
       </MemoryRouter>,
     );
 
     expect(screen.getByText("Project 1")).toBeInTheDocument();
-    expect(screen.getAllByText("snap-009")).toHaveLength(2);
-    expect(screen.getByRole("link", { name: /Overview/ })).toHaveAttribute(
-      "href",
-      "/projects/1/overview?snapshot_id=snap-009",
-    );
-    expect(screen.getByRole("link", { name: /Tasks/ })).toHaveAttribute(
-      "href",
-      "/projects/1/tasks?snapshot_id=snap-009",
-    );
-    expect(screen.getByText("Overview body")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Overview/ })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: /Tasks/ })).toHaveAttribute("href", "/tasks");
+    expect(screen.getByText("Tasks body")).toBeInTheDocument();
   });
 });
 
 function OutletContent() {
-  return <div>Overview body</div>;
+  return <div>Tasks body</div>;
 }

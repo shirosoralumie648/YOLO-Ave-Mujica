@@ -76,7 +76,9 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 
 	redisClient := queue.NewRedisClient(cfg)
 	jobsRepo := jobs.NewPostgresRepository(pool)
-	jobsSvc := jobs.NewServiceWithPublisher(jobsRepo, jobs.NewRedisPublisher(redisClient))
+	reviewRepo := review.NewPostgresRepository(pool)
+	reviewSvc := review.NewServiceWithRepository(reviewRepo)
+	jobsSvc := jobs.NewServiceWithReviewSink(jobsRepo, jobs.NewRedisPublisher(redisClient), reviewCandidateSinkAdapter{svc: reviewSvc})
 	jobsHandler := jobs.NewHandler(jobsSvc)
 	dataHubHandler := datahub.NewHandlerWithJobsAndSourcePresign(dataHubSvc, jobsSvc, func(sourceURI string, ttlSeconds int) (string, error) {
 		return storage.PresignURI(s3Client, sourceURI, time.Duration(ttlSeconds)*time.Second)
@@ -84,8 +86,7 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	jobSweeper := jobs.NewSweeper(jobsRepo, jobs.NewRedisPublisher(redisClient), 3)
 
 	versioningHandler := versioning.NewHandler(versioning.NewServiceWithRepository(versioning.NewPostgresRepository(pool)))
-	reviewRepo := review.NewPostgresRepository(pool)
-	reviewHandler := review.NewHandler(review.NewServiceWithRepository(reviewRepo))
+	reviewHandler := review.NewHandler(reviewSvc)
 	taskRepo := tasks.NewPostgresRepository(pool)
 	taskSvc := tasks.NewService(taskRepo)
 	taskHandler := tasks.NewHandler(taskSvc)
@@ -206,6 +207,42 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 
 type s3ObjectScanner struct {
 	client *minio.Client
+}
+
+type reviewCandidateSinkAdapter struct {
+	svc *review.Service
+}
+
+func (a reviewCandidateSinkAdapter) PersistCandidates(jobID int64, items []jobs.ReviewCandidateInput) ([]jobs.PersistedReviewCandidate, error) {
+	inputs := make([]review.PersistCandidateInput, 0, len(items))
+	for _, item := range items {
+		inputs = append(inputs, review.PersistCandidateInput{
+			DatasetID:    item.DatasetID,
+			SnapshotID:   item.SnapshotID,
+			ItemID:       item.ItemID,
+			ObjectKey:    item.ObjectKey,
+			CategoryID:   item.CategoryID,
+			CategoryName: item.CategoryName,
+			BBox: review.CandidateBBox{
+				X: item.BBox.X,
+				Y: item.BBox.Y,
+				W: item.BBox.W,
+				H: item.BBox.H,
+			},
+			Confidence: item.Confidence,
+			ModelName:  item.ModelName,
+			IsPseudo:   item.IsPseudo,
+		})
+	}
+	persisted, err := a.svc.PersistCandidates(jobID, inputs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]jobs.PersistedReviewCandidate, 0, len(persisted))
+	for _, candidate := range persisted {
+		out = append(out, jobs.PersistedReviewCandidate{ID: candidate.ID})
+	}
+	return out, nil
 }
 
 func (s s3ObjectScanner) ListObjects(bucket, prefix string) ([]datahub.ScannedObject, error) {

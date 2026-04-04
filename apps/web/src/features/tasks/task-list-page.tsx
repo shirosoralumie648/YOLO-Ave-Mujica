@@ -3,7 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { createTask, listTasks, type CreateTaskPayload, type TaskItem } from "./api";
 
-function toTitleCase(value: string) {
+function toTitleCase(value: string | null | undefined) {
+  if (!value) {
+    return "";
+  }
+
   return value
     .split("_")
     .filter(Boolean)
@@ -11,8 +15,17 @@ function toTitleCase(value: string) {
     .join(" ");
 }
 
-function formatRelativeTime(iso: string) {
-  const diffMs = Date.now() - new Date(iso).getTime();
+function formatRelativeTime(iso: string | null | undefined) {
+  if (!iso) {
+    return "No recent activity";
+  }
+
+  const timestamp = new Date(iso).getTime();
+  if (Number.isNaN(timestamp)) {
+    return "No recent activity";
+  }
+
+  const diffMs = Date.now() - timestamp;
   const diffHours = Math.max(1, Math.round(diffMs / (1000 * 60 * 60)));
   if (diffHours < 24) {
     return `${diffHours}h ago`;
@@ -27,7 +40,9 @@ function taskMeta(task: TaskItem) {
     toTitleCase(task.status),
     toTitleCase(task.priority),
     task.assignee || "Unassigned",
-  ].join(" · ");
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 const defaultFormState: CreateTaskPayload = {

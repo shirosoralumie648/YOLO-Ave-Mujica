@@ -69,7 +69,7 @@ func (h *Handler) GetArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	a, err := h.svc.GetArtifact(id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err)
+		writeArtifactError(w, err)
 		return
 	}
 	if a.Status == StatusPending || a.Status == StatusQueued {
@@ -92,7 +92,7 @@ func (h *Handler) PresignArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	url, err := h.svc.PresignArtifact(id, in.TTLSeconds)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeArtifactError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"url": url})
@@ -130,7 +130,7 @@ func (h *Handler) DownloadArtifact(w http.ResponseWriter, r *http.Request) {
 
 	reader, _, artifact, err := h.svc.OpenArtifactArchive(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err)
+		writeArtifactError(w, err)
 		return
 	}
 	defer reader.Close()
@@ -181,7 +181,7 @@ func (h *Handler) CompleteArtifact(w http.ResponseWriter, r *http.Request) {
 
 	artifact, err := h.svc.CompleteArtifact(id, in.Entries)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeArtifactError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, artifact)
@@ -226,4 +226,15 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{"error": err.Error()})
+}
+
+func writeArtifactError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, ErrArtifactNotReady):
+		writeError(w, http.StatusConflict, err)
+	default:
+		writeError(w, http.StatusBadRequest, err)
+	}
 }

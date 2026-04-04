@@ -19,12 +19,34 @@ type CandidateSource struct {
 	CreatedAt  *time.Time `json:"created_at,omitempty"`
 }
 
+type CandidateBBox struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	W float64 `json:"w"`
+	H float64 `json:"h"`
+}
+
+type PersistCandidateInput struct {
+	DatasetID    int64
+	SnapshotID   int64
+	ItemID       int64
+	ObjectKey    string
+	CategoryID   int64
+	CategoryName string
+	BBox         CandidateBBox
+	Confidence   *float64
+	ModelName    string
+	IsPseudo     bool
+}
+
 type Candidate struct {
 	ID           int64           `json:"id"`
 	DatasetID    int64           `json:"dataset_id"`
 	SnapshotID   int64           `json:"snapshot_id"`
 	ItemID       int64           `json:"item_id"`
+	ObjectKey    string          `json:"object_key,omitempty"`
 	CategoryID   int64           `json:"category_id"`
+	BBox         CandidateBBox   `json:"bbox"`
 	Status       string          `json:"status"`
 	ReviewStatus string          `json:"review_status"`
 	ReviewerID   string          `json:"reviewer_id,omitempty"`
@@ -86,6 +108,33 @@ func (s *Service) RejectCandidate(candidateID int64, reviewer, reasonCode string
 		return fmt.Errorf("reason_code is required")
 	}
 	return s.repo.Reject(candidateID, reviewer, reasonCode)
+}
+
+func (s *Service) PersistCandidates(jobID int64, items []PersistCandidateInput) ([]Candidate, error) {
+	if jobID <= 0 {
+		return nil, fmt.Errorf("job_id is required")
+	}
+	if len(items) == 0 {
+		return nil, fmt.Errorf("at least one candidate is required")
+	}
+
+	normalized := make([]PersistCandidateInput, 0, len(items))
+	for _, item := range items {
+		if item.DatasetID <= 0 || item.SnapshotID <= 0 || item.ItemID <= 0 {
+			return nil, fmt.Errorf("dataset_id, snapshot_id, and item_id are required")
+		}
+		if item.CategoryID <= 0 && strings.TrimSpace(item.CategoryName) == "" {
+			return nil, fmt.Errorf("category_id or category_name is required")
+		}
+		if item.BBox.W <= 0 || item.BBox.H <= 0 {
+			return nil, fmt.Errorf("bbox.w and bbox.h must be > 0")
+		}
+		item.CategoryName = strings.TrimSpace(item.CategoryName)
+		item.ModelName = strings.TrimSpace(item.ModelName)
+		item.IsPseudo = true
+		normalized = append(normalized, item)
+	}
+	return s.repo.PersistCandidates(jobID, normalized)
 }
 
 func (s *Service) AnnotationCount() int {

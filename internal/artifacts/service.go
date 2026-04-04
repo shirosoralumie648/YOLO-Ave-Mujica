@@ -111,6 +111,9 @@ func (s *Service) CreateArtifact(in PackageRequest, status string) (Artifact, er
 	if in.Format == "" {
 		return Artifact{}, errors.New("format is required")
 	}
+	if in.Format != "yolo" {
+		return Artifact{}, fmt.Errorf("unsupported format: %s", in.Format)
+	}
 	if in.Version == "" {
 		in.Version = fmt.Sprintf("v%d", in.SnapshotID)
 	}
@@ -157,7 +160,7 @@ func (s *Service) GetArtifact(id int64) (Artifact, error) {
 		return Artifact{}, err
 	}
 	if !ok {
-		return Artifact{}, fmt.Errorf("artifact %d not found", id)
+		return Artifact{}, wrapArtifactNotFound(id)
 	}
 	return a, nil
 }
@@ -187,16 +190,25 @@ func (s *Service) ResolveArtifact(dataset, format, version string) (Artifact, er
 }
 
 func (s *Service) CompleteArtifact(id int64, entries []BundleEntry) (Artifact, error) {
+	artifact, err := s.GetArtifact(id)
+	if err != nil {
+		return Artifact{}, err
+	}
+	switch artifact.Status {
+	case StatusReady:
+		return artifact, nil
+	case StatusPending, StatusQueued, StatusBuilding:
+		// Continue with completion.
+	case StatusFailed:
+		return Artifact{}, artifactStateError{artifactID: artifact.ID, status: artifact.Status, action: "completed"}
+	default:
+		return Artifact{}, artifactStateError{artifactID: artifact.ID, status: artifact.Status, action: "completed"}
+	}
 	if len(entries) == 0 {
 		return Artifact{}, errors.New("entries are required")
 	}
 	if s.upload == nil {
 		return Artifact{}, errors.New("artifact storage upload is not configured")
-	}
-
-	artifact, err := s.GetArtifact(id)
-	if err != nil {
-		return Artifact{}, err
 	}
 
 	pulled := struct {
@@ -270,10 +282,13 @@ func (s *Service) PresignArtifact(id int64, ttlSeconds int) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if a.Status != StatusReady {
+		return "", artifactStateError{artifactID: a.ID, status: a.Status, action: "downloaded"}
+	}
 	if ttlSeconds <= 0 {
 		ttlSeconds = 120
 	}
-	if a.Status == StatusReady && s.presign != nil {
+	if s.presign != nil {
 		return s.presign(a.URI, ttlSeconds)
 	}
 	return fmt.Sprintf("https://signed.local/artifacts/%d?ttl=%d&uri=%s", a.ID, ttlSeconds, a.URI), nil
@@ -281,15 +296,15 @@ func (s *Service) PresignArtifact(id int64, ttlSeconds int) (string, error) {
 
 // OpenArtifactArchive opens a ready artifact archive for HTTP download.
 func (s *Service) OpenArtifactArchive(ctx context.Context, id int64) (ReadSeekCloser, int64, Artifact, error) {
-	if s.storage == nil {
-		return nil, 0, Artifact{}, fmt.Errorf("artifact storage is not configured")
-	}
 	artifact, err := s.GetArtifact(id)
 	if err != nil {
 		return nil, 0, Artifact{}, err
 	}
 	if artifact.Status != StatusReady {
-		return nil, 0, Artifact{}, fmt.Errorf("artifact %d is not ready", id)
+		return nil, 0, Artifact{}, artifactStateError{artifactID: artifact.ID, status: artifact.Status, action: "downloaded"}
+	}
+	if s.storage == nil {
+		return nil, 0, Artifact{}, fmt.Errorf("artifact storage is not configured")
 	}
 	reader, size, err := s.storage.OpenArchive(ctx, artifact.URI)
 	if err != nil {

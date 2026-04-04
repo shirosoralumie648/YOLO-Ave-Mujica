@@ -63,7 +63,7 @@ In another terminal:
 make web-dev
 ```
 
-The web console opens on `http://127.0.0.1:5173` and proxies `/v1/*` to `http://127.0.0.1:8080` by default. The default entry route is `/projects/1/overview`.
+The web console opens on `http://127.0.0.1:5173` and proxies `/v1/*` to `http://127.0.0.1:8080` by default. The default entry route is `/`, with shell navigation mounted at `/tasks`, `/review`, `/publish/candidates`, and `/data`.
 
 Run verification with:
 

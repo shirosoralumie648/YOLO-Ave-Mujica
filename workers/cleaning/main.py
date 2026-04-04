@@ -62,7 +62,12 @@ def run_cleaning_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def build_cleaning_runner(worker_id: str = "cleaning-local") -> QueueRunner:
-    return QueueRunner(worker_id=worker_id, accepted_job_types={"cleaning"})
+    return QueueRunner(
+        worker_id=worker_id,
+        accepted_job_types={"cleaning"},
+        resource_lane="jobs:cpu",
+        capabilities={"rules_engine", "image_stats"},
+    )
 
 
 def main():

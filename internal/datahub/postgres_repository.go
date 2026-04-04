@@ -3,6 +3,7 @@ package datahub
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -326,6 +327,19 @@ func (r *PostgresRepository) EnsureCategory(ctx context.Context, projectID int64
 	return categoryID, err
 }
 
+func (r *PostgresRepository) LookupCategory(ctx context.Context, projectID int64, categoryName string) (int64, error) {
+	var categoryID int64
+	err := r.pool.QueryRow(ctx, `
+		select id
+		from categories
+		where project_id = $1 and name = $2
+	`, projectID, categoryName).Scan(&categoryID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, wrapNamedNotFound("category", categoryName)
+	}
+	return categoryID, err
+}
+
 func (r *PostgresRepository) CreateAnnotation(ctx context.Context, snapshotID, datasetID, itemID int64, _ string, categoryID int64, _ string, bboxX, bboxY, bboxW, bboxH float64) error {
 	_, err := r.pool.Exec(ctx, `
 		insert into annotations (
@@ -335,4 +349,30 @@ func (r *PostgresRepository) CreateAnnotation(ctx context.Context, snapshotID, d
 		values ($1, $2, $3, $4, $5, $6, $7, 'import', $8, 'verified', false)
 	`, datasetID, itemID, categoryID, bboxX, bboxY, bboxW, bboxH, snapshotID)
 	return err
+}
+
+func (r *PostgresRepository) RecordAnnotationChange(ctx context.Context, change AnnotationChange) error {
+	beforeJSON, err := marshalAnnotationChangePayload(change.Before)
+	if err != nil {
+		return err
+	}
+	afterJSON, err := marshalAnnotationChangePayload(change.After)
+	if err != nil {
+		return err
+	}
+
+	_, err = r.pool.Exec(ctx, `
+		insert into annotation_changes (
+			from_snapshot_id, to_snapshot_id, item_id, change_type, before_json, after_json
+		)
+		values ($1, $2, $3, $4, $5, $6)
+	`, change.FromSnapshotID, change.ToSnapshotID, change.ItemID, change.ChangeType, beforeJSON, afterJSON)
+	return err
+}
+
+func marshalAnnotationChangePayload(payload *AnnotationChangePayload) ([]byte, error) {
+	if payload == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(payload)
 }

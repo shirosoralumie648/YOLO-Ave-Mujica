@@ -17,18 +17,6 @@ type HTTPServer struct {
 // ReadyCheck reports whether a required runtime dependency is ready for traffic.
 type ReadyCheck func(ctx context.Context) error
 
-// OverviewRoutes groups handlers for project-level operational summaries.
-type OverviewRoutes struct {
-	GetProjectOverview http.HandlerFunc
-}
-
-// TaskRoutes groups handlers for project task creation and inspection.
-type TaskRoutes struct {
-	ListProjectTasks  http.HandlerFunc
-	CreateProjectTask http.HandlerFunc
-	GetTask           http.HandlerFunc
-}
-
 // DataHubRoutes groups handlers for dataset and object-management endpoints.
 type DataHubRoutes struct {
 	CreateDataset          http.HandlerFunc
@@ -129,9 +117,7 @@ type Modules struct {
 	Review      ReviewRoutes
 	Publish     PublishRoutes
 	Artifacts   ArtifactRoutes
-	Tasks       TaskRoutes
 	Annotations AnnotationRoutes
-	Overview    OverviewRoutes
 	ReadyChecks []ReadyCheck
 }
 
@@ -225,11 +211,6 @@ func NewHTTPServerWithModules(m Modules) *HTTPServer {
 	})
 
 	r.Route("/v1", func(r chi.Router) {
-		r.Get("/projects/{id}/overview", handlerOrNotImplemented(m.Overview.GetProjectOverview))
-		r.Get("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.ListProjectTasks))
-		r.Post("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.CreateProjectTask))
-		r.Get("/tasks/{id}", handlerOrNotImplemented(m.Tasks.GetTask))
-
 		r.Post("/datasets", handlerOrNotImplemented(m.DataHub.CreateDataset))
 		r.Get("/datasets", handlerOrNotImplemented(m.DataHub.ListDatasets))
 		r.Get("/datasets/{id}", handlerOrNotImplemented(m.DataHub.GetDatasetDetail))
@@ -240,6 +221,7 @@ func NewHTTPServerWithModules(m Modules) *HTTPServer {
 		r.Post("/objects/presign", handlerOrNotImplemented(m.DataHub.PresignObject))
 		r.Get("/snapshots/{id}", handlerOrNotImplemented(m.DataHub.GetSnapshotDetail))
 		r.Post("/snapshots/{id}/import", handlerOrNotImplemented(m.DataHub.ImportSnapshot))
+
 		r.Get("/projects/{id}/overview", handlerOrNotImplemented(m.Overview.GetProjectOverview))
 		r.Get("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.ListTasks))
 		r.Post("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.CreateTask))

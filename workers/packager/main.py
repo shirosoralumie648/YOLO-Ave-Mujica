@@ -74,7 +74,12 @@ def run_package_job(job: dict, base_url: str | None = None, opener=None):
 
 
 def build_packager_runner(worker_id: str | None = None):
-    return QueueRunner(worker_id=worker_id or os.getenv("WORKER_ID", "packager-local"), accepted_job_types={"artifact-package"})
+    return QueueRunner(
+        worker_id=worker_id or os.getenv("WORKER_ID", "packager-local"),
+        accepted_job_types={"artifact-package"},
+        resource_lane="jobs:cpu",
+        capabilities={"artifact_packaging"},
+    )
 
 
 def main():

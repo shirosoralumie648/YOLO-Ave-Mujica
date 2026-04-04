@@ -9,17 +9,18 @@ import { TaskListPage } from "./task-list-page";
 import { TaskDetailPage } from "./task-detail-page";
 
 describe("AppShell", () => {
-  it("renders primary navigation links", () => {
+  it("renders primary navigation links on the root-scoped shell route", () => {
     render(
-      <MemoryRouter initialEntries={["/projects/1/overview"]}>
+      <MemoryRouter initialEntries={["/"]}>
         <Routes>
-          <Route path="/projects/:projectId" element={<AppShell />}>
-            <Route path="overview" element={<div>Overview Page</div>} />
+          <Route path="/" element={<AppShell />}>
+            <Route index element={<div>Overview Page</div>} />
           </Route>
         </Routes>
       </MemoryRouter>,
     );
 
+    expect(screen.getByText("Overview Page")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /overview/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /tasks/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /data/i })).toBeInTheDocument();
@@ -57,11 +58,14 @@ function renderWithProviders(path: string, element: ReactNode, route: string) {
 }
 
 it("renders task list rows", async () => {
-  renderWithProviders("/projects/1/tasks", <TaskListPage />, "/projects/:projectId/tasks");
+  renderWithProviders("/tasks", <TaskListPage />, "/tasks");
   expect(await screen.findByText("Annotate loading-dock batch")).toBeInTheDocument();
+  expect(await screen.findByText("Queued · High · annotator-1")).toBeInTheDocument();
+  expect(await screen.findByText("No recent activity")).toBeInTheDocument();
 });
 
 it("renders task detail metadata", async () => {
-  renderWithProviders("/projects/1/tasks/1", <TaskDetailPage />, "/projects/:projectId/tasks/:taskId");
+  renderWithProviders("/tasks/1", <TaskDetailPage />, "/tasks/:taskId");
   expect(await screen.findByText(/annotator-1/i)).toBeInTheDocument();
+  expect(await screen.findByText(/Unspecified task assigned to annotator-1/i)).toBeInTheDocument();
 });

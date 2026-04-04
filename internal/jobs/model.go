@@ -43,6 +43,9 @@ type Job struct {
 	RetryCount           int
 	ErrorCode            string
 	ErrorMsg             string
+	ResultType           string
+	ResultCount          int
+	ResultRef            map[string]any
 }
 
 type CreateJobInput struct {

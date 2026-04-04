@@ -22,7 +22,9 @@ type Repository interface {
 	ListItems(ctx context.Context, datasetID int64) ([]DatasetItem, error)
 	GetItemByObjectKey(ctx context.Context, datasetID int64, objectKey string) (DatasetItem, error)
 	EnsureCategory(ctx context.Context, projectID int64, categoryName string) (int64, error)
+	LookupCategory(ctx context.Context, projectID int64, categoryName string) (int64, error)
 	CreateAnnotation(ctx context.Context, snapshotID, datasetID, itemID int64, objectKey string, categoryID int64, categoryName string, bboxX, bboxY, bboxW, bboxH float64) error
+	RecordAnnotationChange(ctx context.Context, change AnnotationChange) error
 }
 
 type StoredAnnotation struct {
@@ -38,6 +40,25 @@ type StoredAnnotation struct {
 	BBoxH        float64
 }
 
+type AnnotationChangePayload struct {
+	ObjectKey    string  `json:"object_key"`
+	CategoryID   int64   `json:"category_id"`
+	CategoryName string  `json:"category_name"`
+	BBoxX        float64 `json:"bbox_x"`
+	BBoxY        float64 `json:"bbox_y"`
+	BBoxW        float64 `json:"bbox_w"`
+	BBoxH        float64 `json:"bbox_h"`
+}
+
+type AnnotationChange struct {
+	FromSnapshotID int64                    `json:"from_snapshot_id"`
+	ToSnapshotID   int64                    `json:"to_snapshot_id"`
+	ItemID         int64                    `json:"item_id"`
+	ChangeType     string                   `json:"change_type"`
+	Before         *AnnotationChangePayload `json:"before,omitempty"`
+	After          *AnnotationChangePayload `json:"after,omitempty"`
+}
+
 type InMemoryRepository struct {
 	mu            sync.Mutex
 	nextDataset   int64
@@ -50,6 +71,7 @@ type InMemoryRepository struct {
 	categoryIDs   map[string]int64
 	categoryNames map[int64]string
 	annotations   []StoredAnnotation
+	changes       []AnnotationChange
 }
 
 func NewInMemoryRepository() *InMemoryRepository {
@@ -64,6 +86,7 @@ func NewInMemoryRepository() *InMemoryRepository {
 		categoryIDs:   make(map[string]int64),
 		categoryNames: make(map[int64]string),
 		annotations:   []StoredAnnotation{},
+		changes:       []AnnotationChange{},
 	}
 }
 
@@ -344,6 +367,17 @@ func (r *InMemoryRepository) EnsureCategory(_ context.Context, projectID int64, 
 	return id, nil
 }
 
+func (r *InMemoryRepository) LookupCategory(_ context.Context, projectID int64, categoryName string) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	key := fmt.Sprintf("%d:%s", projectID, categoryName)
+	if id, ok := r.categoryIDs[key]; ok {
+		return id, nil
+	}
+	return 0, wrapNamedNotFound("category", categoryName)
+}
+
 func (r *InMemoryRepository) CreateAnnotation(_ context.Context, snapshotID, datasetID, itemID int64, objectKey string, categoryID int64, categoryName string, bboxX, bboxY, bboxW, bboxH float64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -363,6 +397,14 @@ func (r *InMemoryRepository) CreateAnnotation(_ context.Context, snapshotID, dat
 	return nil
 }
 
+func (r *InMemoryRepository) RecordAnnotationChange(_ context.Context, change AnnotationChange) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.changes = append(r.changes, cloneAnnotationChange(change))
+	return nil
+}
+
 func (r *InMemoryRepository) AnnotationsForSnapshot(snapshotID int64) []StoredAnnotation {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -374,4 +416,36 @@ func (r *InMemoryRepository) AnnotationsForSnapshot(snapshotID int64) []StoredAn
 		}
 	}
 	return out
+}
+
+func (r *InMemoryRepository) AnnotationChangesForSnapshot(snapshotID int64) []AnnotationChange {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	out := make([]AnnotationChange, 0)
+	for _, change := range r.changes {
+		if change.ToSnapshotID == snapshotID {
+			out = append(out, cloneAnnotationChange(change))
+		}
+	}
+	return out
+}
+
+func cloneAnnotationChange(change AnnotationChange) AnnotationChange {
+	return AnnotationChange{
+		FromSnapshotID: change.FromSnapshotID,
+		ToSnapshotID:   change.ToSnapshotID,
+		ItemID:         change.ItemID,
+		ChangeType:     change.ChangeType,
+		Before:         cloneAnnotationChangePayload(change.Before),
+		After:          cloneAnnotationChangePayload(change.After),
+	}
+}
+
+func cloneAnnotationChangePayload(payload *AnnotationChangePayload) *AnnotationChangePayload {
+	if payload == nil {
+		return nil
+	}
+	copy := *payload
+	return &copy
 }

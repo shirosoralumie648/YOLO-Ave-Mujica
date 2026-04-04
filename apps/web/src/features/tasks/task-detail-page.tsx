@@ -3,7 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import { getTask, transitionTask } from "./api";
 
-function toTitleCase(value: string) {
+function toTitleCase(value: string | null | undefined) {
+  if (!value) {
+    return "";
+  }
+
   return value
     .split("_")
     .filter(Boolean)
@@ -16,7 +20,12 @@ function formatRelativeTime(iso: string | undefined) {
     return "No recent activity";
   }
 
-  const diffMs = Date.now() - new Date(iso).getTime();
+  const timestamp = new Date(iso).getTime();
+  if (Number.isNaN(timestamp)) {
+    return "No recent activity";
+  }
+
+  const diffMs = Date.now() - timestamp;
   const diffHours = Math.max(1, Math.round(diffMs / (1000 * 60 * 60)));
   if (diffHours < 24) {
     return `${diffHours}h ago`;
@@ -32,7 +41,7 @@ type ActionDefinition = {
   tone?: "primary" | "secondary";
 };
 
-function actionsForStatus(status: string): ActionDefinition[] {
+function actionsForStatus(status: string | null | undefined): ActionDefinition[] {
   switch (status) {
     case "queued":
       return [{ label: "Mark Ready", status: "ready" }];
@@ -104,6 +113,9 @@ export function TaskDetailPage() {
   }
 
   const task = taskQuery.data;
+  const taskKindLabel = toTitleCase(task.kind) || "Unspecified";
+  const taskStatusLabel = toTitleCase(task.status) || "Unknown";
+  const taskPriorityLabel = toTitleCase(task.priority) || "Unknown";
   const actions = actionsForStatus(task.status);
   const needsBlockerReason = actions.some((action) => action.requiresReason);
   const hasWorkspaceLaunch = task.kind === "annotation";
@@ -122,12 +134,12 @@ export function TaskDetailPage() {
           <p className="page-kicker">Task {task.id}</p>
           <h1>{task.title}</h1>
           <p className="page-summary">
-            {toTitleCase(task.kind)} task assigned to {task.assignee || "unassigned"}.
+            {taskKindLabel} task assigned to {task.assignee || "unassigned"}.
           </p>
         </div>
         <div className="hero-meter">
           <span>Status</span>
-          <strong>{toTitleCase(task.status)}</strong>
+          <strong>{taskStatusLabel}</strong>
           <small>{formatRelativeTime(task.last_activity_at)}</small>
         </div>
       </header>
@@ -136,7 +148,7 @@ export function TaskDetailPage() {
         <section className="panel detail-meta">
           <div className="panel-header">
             <h2>Task metadata</h2>
-            <span>{toTitleCase(task.priority)}</span>
+            <span>{taskPriorityLabel}</span>
           </div>
           <dl>
             <dt>Assignee</dt>

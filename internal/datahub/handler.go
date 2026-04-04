@@ -235,6 +235,10 @@ func (h *Handler) ImportSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("format is required"))
 		return
 	}
+	if !isSupportedImportFormat(in.Format) {
+		writeError(w, http.StatusBadRequest, errors.New("unsupported format"))
+		return
+	}
 	if in.IdempotencyKey == "" {
 		writeError(w, http.StatusBadRequest, errors.New("idempotency_key is required"))
 		return
@@ -298,6 +302,10 @@ func (h *Handler) CompleteImportSnapshot(w http.ResponseWriter, r *http.Request)
 	var in completeImportSnapshotRequest
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !isSupportedImportFormat(in.Format) {
+		writeError(w, http.StatusBadRequest, errors.New("unsupported format"))
 		return
 	}
 

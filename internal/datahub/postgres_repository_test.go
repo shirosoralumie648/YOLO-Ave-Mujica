@@ -3,6 +3,7 @@ package datahub
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"yolo-ave-mujica/internal/config"
@@ -200,5 +201,110 @@ func TestPostgresRepositoryBrowseQueries(t *testing.T) {
 	}
 	if snapshot.AnnotationCount != 1 {
 		t.Fatalf("expected effective annotation_count=1, got %d", snapshot.AnnotationCount)
+	}
+}
+
+func TestPostgresRepositoryLookupCategoryAndRecordAnnotationChange(t *testing.T) {
+	databaseURL := os.Getenv("INTEGRATION_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("INTEGRATION_DATABASE_URL is required")
+	}
+
+	cfg := config.Config{DatabaseURL: databaseURL}
+	ctx := context.Background()
+	pool, err := store.NewPostgresPool(ctx, cfg)
+	if err != nil {
+		t.Fatalf("new pool: %v", err)
+	}
+	defer pool.Close()
+
+	var projectID int64
+	if err := pool.QueryRow(ctx, `
+		insert into projects (name, owner)
+		values ('integration-change-project', 'test-owner')
+		returning id
+	`).Scan(&projectID); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+
+	repo := NewPostgresRepository(pool)
+	dataset, err := repo.CreateDataset(ctx, CreateDatasetInput{
+		ProjectID: projectID,
+		Name:      "change-log",
+		Bucket:    "platform-dev",
+		Prefix:    "train",
+	})
+	if err != nil {
+		t.Fatalf("create dataset: %v", err)
+	}
+	if _, err := repo.InsertItems(ctx, dataset.ID, []string{"train/a.jpg"}); err != nil {
+		t.Fatalf("insert items: %v", err)
+	}
+	parent, err := repo.CreateSnapshot(ctx, dataset.ID, CreateSnapshotInput{Note: "baseline"})
+	if err != nil {
+		t.Fatalf("create parent snapshot: %v", err)
+	}
+	child, err := repo.CreateSnapshot(ctx, dataset.ID, CreateSnapshotInput{
+		BasedOnSnapshotID: &parent.ID,
+		Note:              "import target",
+	})
+	if err != nil {
+		t.Fatalf("create child snapshot: %v", err)
+	}
+	categoryID, err := repo.EnsureCategory(ctx, projectID, "person")
+	if err != nil {
+		t.Fatalf("ensure category: %v", err)
+	}
+	lookedUpCategoryID, err := repo.LookupCategory(ctx, projectID, "person")
+	if err != nil {
+		t.Fatalf("lookup category: %v", err)
+	}
+	if lookedUpCategoryID != categoryID {
+		t.Fatalf("expected category id %d, got %d", categoryID, lookedUpCategoryID)
+	}
+	item, err := repo.GetItemByObjectKey(ctx, dataset.ID, "train/a.jpg")
+	if err != nil {
+		t.Fatalf("get item by object key: %v", err)
+	}
+
+	if err := repo.RecordAnnotationChange(ctx, AnnotationChange{
+		FromSnapshotID: parent.ID,
+		ToSnapshotID:   child.ID,
+		ItemID:         item.ID,
+		ChangeType:     "added",
+		After: &AnnotationChangePayload{
+			ObjectKey:    item.ObjectKey,
+			CategoryID:   categoryID,
+			CategoryName: "person",
+			BBoxX:        0.1,
+			BBoxY:        0.2,
+			BBoxW:        0.3,
+			BBoxH:        0.4,
+		},
+	}); err != nil {
+		t.Fatalf("record annotation change: %v", err)
+	}
+
+	var changeType string
+	var categoryName string
+	var objectKey string
+	if err := pool.QueryRow(ctx, `
+		select
+			change_type,
+			after_json->>'category_name',
+			after_json->>'object_key'
+		from annotation_changes
+		where from_snapshot_id = $1 and to_snapshot_id = $2 and item_id = $3
+	`, parent.ID, child.ID, item.ID).Scan(&changeType, &categoryName, &objectKey); err != nil {
+		t.Fatalf("query annotation change: %v", err)
+	}
+	if changeType != "added" {
+		t.Fatalf("expected change_type=added, got %s", changeType)
+	}
+	if categoryName != "person" {
+		t.Fatalf("expected category_name=person, got %s", categoryName)
+	}
+	if !strings.HasSuffix(objectKey, "train/a.jpg") {
+		t.Fatalf("expected object_key=train/a.jpg, got %s", objectKey)
 	}
 }

@@ -200,92 +200,116 @@ exit 96
 func fakeCurlScript() string {
 	return `#!/usr/bin/env bash
 url=""
+data=""
+write_out=""
+prev=""
 for arg in "$@"; do
+  if [[ "$prev" == "-d" || "$prev" == "--data" || "$prev" == "--data-raw" ]]; then
+    data="$arg"
+  fi
+  if [[ "$prev" == "-w" || "$prev" == "--write-out" ]]; then
+    write_out="$arg"
+  fi
   if [[ "$arg" == http://* || "$arg" == https://* ]]; then
     url="$arg"
   fi
+  prev="$arg"
 done
 if [[ -n "$CALL_LOG" && -n "$url" ]]; then
   printf '%s\n' "$url" >> "$CALL_LOG"
 fi
+status="200"
+body=""
 case "$url" in
   */healthz|*/readyz)
-    exit 0
+    body=""
     ;;
   */v1/datasets)
-    printf '{"dataset_id":1}\n'
+    body='{"dataset_id":1}'
     ;;
   */v1/datasets/1/snapshots)
-    printf '{"id":1,"dataset_id":1,"version":"v1"}\n'
+    body='{"id":1,"dataset_id":1,"version":"v1"}'
     ;;
   */v1/projects/1/tasks)
-    printf '{"id":1,"project_id":1,"snapshot_id":1,"title":"Annotate smoke image","kind":"annotation","status":"in_progress","priority":"high","assignee":"annotator-1","asset_object_key":"train/a.jpg","media_kind":"image","ontology_version":"v1"}\n'
+    body='{"id":1,"project_id":1,"snapshot_id":1,"title":"Annotate smoke image","kind":"annotation","status":"in_progress","priority":"high","assignee":"annotator-1","asset_object_key":"train/a.jpg","media_kind":"image","ontology_version":"v1"}'
     ;;
   */v1/tasks/1/workspace/draft)
-    printf '{"task":{"id":1,"status":"in_progress","kind":"annotation","asset_object_key":"train/a.jpg","media_kind":"image"},"asset":{"dataset_id":1,"dataset_name":"smoke-dataset","snapshot_id":1,"snapshot_version":"v1","object_key":"train/a.jpg"},"draft":{"id":21,"task_id":1,"state":"draft","revision":1,"body":{"objects":[{"id":"box-1","label":"person"}]}}}\n'
+    body='{"task":{"id":1,"status":"in_progress","kind":"annotation","asset_object_key":"train/a.jpg","media_kind":"image"},"asset":{"dataset_id":1,"dataset_name":"smoke-dataset","snapshot_id":1,"snapshot_version":"v1","object_key":"train/a.jpg"},"draft":{"id":21,"task_id":1,"state":"draft","revision":1,"body":{"objects":[{"id":"box-1","label":"person"}]}}}'
     ;;
   */v1/tasks/1/workspace/submit)
-    printf '{"task":{"id":1,"status":"submitted","kind":"annotation","asset_object_key":"train/a.jpg","media_kind":"image"},"asset":{"dataset_id":1,"dataset_name":"smoke-dataset","snapshot_id":1,"snapshot_version":"v1","object_key":"train/a.jpg"},"draft":{"id":21,"task_id":1,"state":"submitted","revision":2,"body":{"objects":[{"id":"box-1","label":"person"}]}}}\n'
+    body='{"task":{"id":1,"status":"submitted","kind":"annotation","asset_object_key":"train/a.jpg","media_kind":"image"},"asset":{"dataset_id":1,"dataset_name":"smoke-dataset","snapshot_id":1,"snapshot_version":"v1","object_key":"train/a.jpg"},"draft":{"id":21,"task_id":1,"state":"submitted","revision":2,"body":{"objects":[{"id":"box-1","label":"person"}]}}}'
     ;;
   */v1/tasks/1/workspace)
-    printf '{"task":{"id":1,"status":"in_progress","kind":"annotation","asset_object_key":"train/a.jpg","media_kind":"image"},"asset":{"dataset_id":1,"dataset_name":"smoke-dataset","snapshot_id":1,"snapshot_version":"v1","object_key":"train/a.jpg"},"draft":{"task_id":1,"state":"draft","revision":0,"body":{}}}\n'
+    body='{"task":{"id":1,"status":"in_progress","kind":"annotation","asset_object_key":"train/a.jpg","media_kind":"image"},"asset":{"dataset_id":1,"dataset_name":"smoke-dataset","snapshot_id":1,"snapshot_version":"v1","object_key":"train/a.jpg"},"draft":{"task_id":1,"state":"draft","revision":0,"body":{}}}'
     ;;
   */v1/snapshots/1/import)
-    printf '{"job_id":3,"status":"queued","dataset_id":1,"snapshot_id":1}\n'
+    body='{"job_id":3,"status":"queued","dataset_id":1,"snapshot_id":1}'
     ;;
   */v1/jobs/3)
-    printf '{"id":3,"status":"succeeded","dataset_id":1,"snapshot_id":1}\n'
+    body='{"id":3,"status":"succeeded","dataset_id":1,"snapshot_id":1}'
     ;;
   */v1/publish/candidates*project_id=1)
-    printf '{"items":[]}\n'
+    body='{"items":[]}'
     ;;
   */v1/publish/batches/71/feedback)
-    printf '{"id":2,"scope":"batch","stage":"review","action":"comment","reason_code":"smoke_ready","severity":"low","influence_weight":1,"comment":"smoke batch feedback"}\n'
+    body='{"id":2,"scope":"batch","stage":"review","action":"comment","reason_code":"smoke_ready","severity":"low","influence_weight":1,"comment":"smoke batch feedback"}'
     ;;
   */v1/publish/batches/71/review-approve)
-    printf '{"ok":true}\n'
+    body='{"ok":true}'
     ;;
   */v1/publish/batches/71/owner-approve)
-    printf '{"publish_record_id":91}\n'
+    body='{"publish_record_id":91}'
     ;;
   */v1/publish/batches/71/workspace)
-    printf '{"batch":{"id":71,"snapshot_id":1,"status":"published"},"items":[{"item_id":801,"candidate_id":401,"task_id":51,"overlay":{"boxes":[{"label":"car"}]},"diff":{"added":1,"updated":0,"removed":0},"feedback":[]}],"history":[{"stage":"review","actor":"reviewer-1","action":"approve"}]}\n'
+    body='{"batch":{"id":71,"snapshot_id":1,"status":"published"},"items":[{"item_id":801,"candidate_id":401,"task_id":51,"overlay":{"boxes":[{"label":"car"}]},"diff":{"added":1,"updated":0,"removed":0},"feedback":[]}],"history":[{"stage":"review","actor":"reviewer-1","action":"approve"}]}'
     ;;
   */v1/publish/records/91)
-    printf '{"id":91,"publish_batch_id":71,"status":"published"}\n'
+    body='{"id":91,"publish_batch_id":71,"status":"published"}'
     ;;
   */v1/publish/batches/71)
-    printf '{"id":71,"project_id":1,"snapshot_id":1,"status":"draft","items":[{"id":801,"candidate_id":401,"task_id":51,"dataset_id":1,"snapshot_id":1,"item_payload":{"overlay":{"boxes":[{"label":"car"}]},"diff":{"added":1,"updated":0,"removed":0}}}],"feedback":[]}\n'
+    body='{"id":71,"project_id":1,"snapshot_id":1,"status":"draft","items":[{"id":801,"candidate_id":401,"task_id":51,"dataset_id":1,"snapshot_id":1,"item_payload":{"overlay":{"boxes":[{"label":"car"}]},"diff":{"added":1,"updated":0,"removed":0}}}],"feedback":[]}'
     ;;
   */v1/publish/batches)
-    printf '{"id":71,"project_id":1,"snapshot_id":1,"status":"draft","items":[{"id":801,"candidate_id":401,"task_id":51,"dataset_id":1,"snapshot_id":1,"item_payload":{"overlay":{"boxes":[{"label":"car"}]},"diff":{"added":1,"updated":0,"removed":0}}}],"feedback":[]}\n'
+    body='{"id":71,"project_id":1,"snapshot_id":1,"status":"draft","items":[{"id":801,"candidate_id":401,"task_id":51,"dataset_id":1,"snapshot_id":1,"item_payload":{"overlay":{"boxes":[{"label":"car"}]},"diff":{"added":1,"updated":0,"removed":0}}}],"feedback":[]}'
     ;;
   */scan)
-    printf '{"added_items":2}\n'
+    body='{"added_items":2}'
     ;;
   */items)
-    printf '{"items":[{"object_key":"train/a.jpg"}]}\n'
+    body='{"items":[{"object_key":"train/a.jpg"}]}'
     ;;
   */v1/snapshots/1/export)
-    printf '{"job_id":5,"artifact_id":5,"status":"pending"}\n'
+    if [[ "$data" == *'"format":"coco"'* ]]; then
+      body='{"error":"unsupported format"}'
+      status="400"
+    else
+      body='{"job_id":5,"artifact_id":5,"status":"pending"}'
+    fi
     ;;
   */v1/artifacts/5)
-    printf '{"id":5,"format":"yolo","version":"v-smoke-1","status":"ready"}\n'
+    body='{"id":5,"format":"yolo","version":"v-smoke-1","status":"ready"}'
     ;;
   */v1/artifacts/resolve*dataset=smoke-dataset*format=yolo*version=v-smoke-1)
-    printf '{"id":5,"format":"yolo","version":"v-smoke-1","download_url":"http://127.0.0.1:8080/v1/artifacts/5/download"}\n'
+    body='{"id":5,"format":"yolo","version":"v-smoke-1","download_url":"http://127.0.0.1:8080/v1/artifacts/5/download"}'
     ;;
   */objects/presign)
-    printf '{"url":"http://signed.local/object"}\n'
+    body='{"url":"http://signed.local/object"}'
     ;;
   */jobs/zero-shot)
-    printf '{"job_id":1}\n'
+    body='{"job_id":1}'
     ;;
   *)
     echo "unexpected curl url: $url" >&2
     exit 97
     ;;
 esac
+if [[ -n "$body" ]]; then
+  printf '%s\n' "$body"
+fi
+if [[ -n "$write_out" ]]; then
+  rendered="${write_out//\%\{http_code\}/$status}"
+  printf '%b' "$rendered"
+fi
 `
 }
 

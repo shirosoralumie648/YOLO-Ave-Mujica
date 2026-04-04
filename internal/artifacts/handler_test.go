@@ -1,6 +1,7 @@
 package artifacts
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -79,7 +80,7 @@ func TestCreatePackageReturnsJobID(t *testing.T) {
 	}
 }
 
-func TestCreatePackageReturnsArtifactIDThatCanBeFetchedAndPresigned(t *testing.T) {
+func TestCreatePackageReturnsArtifactIDAndRejectsPresignUntilReady(t *testing.T) {
 	svc := NewService()
 	h := NewHandler(svc)
 	srv := server.NewHTTPServerWithModules(server.Modules{
@@ -121,8 +122,39 @@ func TestCreatePackageReturnsArtifactIDThatCanBeFetchedAndPresigned(t *testing.T
 	presignReq := httptest.NewRequest(http.MethodPost, "/v1/artifacts/1/presign", strings.NewReader(`{"ttl_seconds":60}`))
 	presignRec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(presignRec, presignReq)
-	if presignRec.Code != http.StatusOK || !strings.Contains(presignRec.Body.String(), "https://signed.local/artifacts/1") {
-		t.Fatalf("presign artifact failed: %d body=%s", presignRec.Code, presignRec.Body.String())
+	if presignRec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for pending artifact presign, got %d body=%s", presignRec.Code, presignRec.Body.String())
+	}
+	if !strings.Contains(presignRec.Body.String(), "pending") {
+		t.Fatalf("expected pending artifact status in presign error, got %s", presignRec.Body.String())
+	}
+}
+
+func TestDownloadArtifactRejectsPendingArtifactWithConflict(t *testing.T) {
+	svc := NewServiceWithDependencies(NewInMemoryRepository(), nil, nil, newArtifactStorageStub())
+	h := NewHandler(svc)
+	srv := server.NewHTTPServerWithModules(server.Modules{
+		Artifacts: server.ArtifactRoutes{
+			CreatePackage:    h.CreatePackage,
+			DownloadArtifact: h.DownloadArtifact,
+		},
+	})
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/artifacts/packages", strings.NewReader(`{"dataset_id":1,"snapshot_id":2,"format":"yolo"}`))
+	createRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("create package failed: %d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	downloadReq := httptest.NewRequest(http.MethodGet, "/v1/artifacts/1/download", nil)
+	downloadRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(downloadRec, downloadReq)
+	if downloadRec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for pending artifact download, got %d body=%s", downloadRec.Code, downloadRec.Body.String())
+	}
+	if !strings.Contains(downloadRec.Body.String(), "pending") {
+		t.Fatalf("expected pending artifact status in download error, got %s", downloadRec.Body.String())
 	}
 }
 
@@ -240,6 +272,27 @@ func TestExportSnapshotQueuesPackageJob(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"job_id"`) || !strings.Contains(rec.Body.String(), `"artifact_id"`) {
 		t.Fatalf("expected job and artifact ids, got %s", rec.Body.String())
+	}
+}
+
+func TestExportSnapshotRejectsUnsupportedFormat(t *testing.T) {
+	svc := NewService()
+	h := NewHandler(svc)
+	srv := server.NewHTTPServerWithModules(server.Modules{
+		Artifacts: server.ArtifactRoutes{
+			ExportSnapshot: h.ExportSnapshot,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/snapshots/2/export", strings.NewReader(`{"dataset_id":1,"format":"coco","version":"v2"}`))
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unsupported format") {
+		t.Fatalf("expected unsupported format error, got %s", rec.Body.String())
 	}
 }
 
@@ -399,7 +452,8 @@ func TestCompleteArtifactMarksReadyAndGetArtifactReturnsStorageMetadata(t *testi
 }
 
 type artifactStorageStub struct {
-	uploads map[string][]byte
+	uploads     map[string][]byte
+	uploadCalls int
 }
 
 func newArtifactStorageStub() *artifactStorageStub {
@@ -407,10 +461,73 @@ func newArtifactStorageStub() *artifactStorageStub {
 }
 
 func (s *artifactStorageStub) upload(uri string, body []byte, _ string) (int64, error) {
+	s.uploadCalls++
 	s.uploads[uri] = append([]byte(nil), body...)
 	return int64(len(body)), nil
 }
 
 func (s *artifactStorageStub) presign(uri string, ttlSeconds int) (string, error) {
 	return "http://download.local/" + strings.TrimPrefix(uri, "s3://"), nil
+}
+
+func (s *artifactStorageStub) StoreBuild(_ context.Context, _ StoreRequest) (StoredArtifact, error) {
+	return StoredArtifact{}, nil
+}
+
+func (s *artifactStorageStub) OpenArchive(_ context.Context, _ string) (ReadSeekCloser, int64, error) {
+	body := []byte("archive")
+	return &readSeekCloser{Reader: bytes.NewReader(body)}, int64(len(body)), nil
+}
+
+type readSeekCloser struct {
+	*bytes.Reader
+}
+
+func (r *readSeekCloser) Close() error {
+	return nil
+}
+
+func TestCompleteArtifactIsIdempotentWhenAlreadyReady(t *testing.T) {
+	store := newArtifactStorageStub()
+	svc := NewServiceWithRepositoryAndStorage(NewInMemoryRepository(), store.upload, store.presign)
+	h := NewHandler(svc)
+	srv := server.NewHTTPServerWithModules(server.Modules{
+		Artifacts: server.ArtifactRoutes{
+			CreatePackage:    h.CreatePackage,
+			CompleteArtifact: h.CompleteArtifact,
+		},
+	})
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/artifacts/packages", strings.NewReader(`{"dataset_id":1,"snapshot_id":2,"format":"yolo","version":"v1"}`))
+	createRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("create package failed: %d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	body := `{
+		"entries":[
+			{
+				"path":"labels/0001.txt",
+				"body":"MCAwLjUgMC41IDAuMiAwLjIK",
+				"checksum":"fe1d19931e4f3092800a55299efc6f6e0b806bed3838aa14aebbc94ba55aa549"
+			}
+		]
+	}`
+	completeReq := httptest.NewRequest(http.MethodPost, "/internal/artifacts/1/complete", strings.NewReader(body))
+	completeRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(completeRec, completeReq)
+	if completeRec.Code != http.StatusOK {
+		t.Fatalf("first complete artifact failed: %d body=%s", completeRec.Code, completeRec.Body.String())
+	}
+
+	retryReq := httptest.NewRequest(http.MethodPost, "/internal/artifacts/1/complete", strings.NewReader(body))
+	retryRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(retryRec, retryReq)
+	if retryRec.Code != http.StatusOK {
+		t.Fatalf("expected idempotent complete callback, got %d body=%s", retryRec.Code, retryRec.Body.String())
+	}
+	if store.uploadCalls != 2 {
+		t.Fatalf("expected package and manifest uploads only once, got %d uploads", store.uploadCalls)
+	}
 }

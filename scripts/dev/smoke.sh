@@ -353,6 +353,19 @@ if [[ -n "$seed_snapshot_id" ]]; then
 fi
 
 artifact_version="v-smoke-${dataset_id}"
+unsupported_export_response="$(curl -sS -X POST "${api_base}/v1/snapshots/${snapshot_id}/export" \
+  -H 'Content-Type: application/json' \
+  -d "{\"dataset_id\":${dataset_id},\"format\":\"coco\",\"version\":\"${artifact_version}-invalid\"}" \
+  -w $'\n%{http_code}')" || fail "unsupported snapshot export request failed unexpectedly"
+unsupported_export_status="${unsupported_export_response##*$'\n'}"
+unsupported_export_body="${unsupported_export_response%$'\n'*}"
+if [[ "$unsupported_export_status" != "400" ]]; then
+  fail "expected unsupported export format to return 400, got ${unsupported_export_status}: ${unsupported_export_body}"
+fi
+if [[ "$unsupported_export_body" != *"unsupported format"* ]]; then
+  fail "unsupported export response missing error detail: ${unsupported_export_body}"
+fi
+
 export_response="$(curl -fsS -X POST "${api_base}/v1/snapshots/${snapshot_id}/export" \
   -H 'Content-Type: application/json' \
   -d "{\"dataset_id\":${dataset_id},\"format\":\"yolo\",\"version\":\"${artifact_version}\"}")" || fail "snapshot export request failed"
