@@ -213,7 +213,29 @@ def dispatch_once(queue_client, lane: str, runner: QueueRunner, handler, timeout
         if isinstance(handled, dict):
             result = {**result, **handled}
 
-    dispatched = runner.handle_once(payload, wrapped, lane=lane)
+    try:
+        dispatched = runner.handle_once(payload, wrapped, lane=lane)
+    except Exception as err:
+        if job_client is not None:
+            job_client.post_event(
+                payload["job_id"],
+                "worker_failed",
+                str(err),
+                {
+                    "error": str(err),
+                    "worker": runner.worker_descriptor(),
+                },
+                level="error",
+            )
+            job_client.post_terminal(
+                payload["job_id"],
+                runner.worker_id,
+                "failed",
+                0,
+                0,
+                0,
+            )
+        return True
     if dispatched and job_client is not None:
         for event in result.get("events", []):
             job_client.post_event(

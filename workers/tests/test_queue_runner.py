@@ -189,6 +189,44 @@ class QueueRunnerContractTest(unittest.TestCase):
             job_client.calls,
         )
 
+    def test_dispatch_once_converts_handler_exception_into_failed_terminal(self):
+        queue_client = _FakeQueueClient({"job_id": 11, "job_type": "zero-shot", "payload": {"prompt": "person"}})
+        runner = QueueRunner(worker_id="zero-shot-a", accepted_job_types={"zero-shot"})
+        job_client = _FakeJobClient()
+
+        dispatched = dispatch_once(
+            queue_client,
+            "jobs:gpu",
+            runner,
+            lambda job: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
+            job_client=job_client,
+        )
+
+        self.assertTrue(dispatched)
+        self.assertEqual(
+            [
+                ("heartbeat", 11, "zero-shot-a", 30),
+                (
+                    "event",
+                    11,
+                    "worker_failed",
+                    "provider unavailable",
+                    {
+                        "error": "provider unavailable",
+                        "worker": {
+                            "worker_id": "zero-shot-a",
+                            "resource_lane": None,
+                            "capabilities": [],
+                            "job_types": ["zero-shot"],
+                        },
+                    },
+                    "error",
+                ),
+                ("terminal", 11, "zero-shot-a", "failed", 0, 0, 0, None),
+            ],
+            job_client.calls,
+        )
+
     def test_dispatch_once_requeues_non_matching_job_with_dispatch_rejected_event(self):
         payload = {"job_id": 6, "job_type": "snapshot-import", "payload": {"format": "yolo"}}
         queue_client = _FakeQueueClient(payload)
