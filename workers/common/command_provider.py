@@ -35,7 +35,13 @@ def load_provider_result(payload: dict):
     if body == "":
         return {}
 
-    return json.loads(body)
+    try:
+        document = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("provider command returned invalid JSON") from exc
+    if not isinstance(document, dict):
+        raise ValueError("provider output must be a JSON object")
+    return document
 
 
 def provider_items(document: dict | None, result_key: str):

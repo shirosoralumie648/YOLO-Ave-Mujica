@@ -63,6 +63,44 @@ class CommandProviderContractTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "provider.timeout_seconds"):
                 load_provider_result(payload)
 
+    def test_load_provider_result_reports_invalid_json(self):
+        payload = {
+            "provider": {
+                "type": "command",
+                "argv": ["python3", "/opt/provider.py"],
+            }
+        }
+
+        completed = subprocess.CompletedProcess(
+            args=["python3", "/opt/provider.py"],
+            returncode=0,
+            stdout="not-json",
+            stderr="",
+        )
+
+        with mock.patch("workers.common.command_provider.subprocess.run", return_value=completed):
+            with self.assertRaisesRegex(RuntimeError, "invalid JSON"):
+                load_provider_result(payload)
+
+    def test_load_provider_result_rejects_non_object_document(self):
+        payload = {
+            "provider": {
+                "type": "command",
+                "argv": ["python3", "/opt/provider.py"],
+            }
+        }
+
+        completed = subprocess.CompletedProcess(
+            args=["python3", "/opt/provider.py"],
+            returncode=0,
+            stdout="[]",
+            stderr="",
+        )
+
+        with mock.patch("workers.common.command_provider.subprocess.run", return_value=completed):
+            with self.assertRaisesRegex(ValueError, "JSON object"):
+                load_provider_result(payload)
+
 
 if __name__ == "__main__":
     unittest.main()
