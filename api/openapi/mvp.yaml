@@ -130,8 +130,27 @@ paths:
           required: true
           schema:
             type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dataset_id, format, version]
+              properties:
+                dataset_id:
+                  type: integer
+                format:
+                  type: string
+                  enum: [yolo]
+                version:
+                  type: string
+                label_map_json:
+                  type: object
+                  additionalProperties:
+                    type: string
       responses:
-        "200":
+        "202":
           description: Export job accepted
   /v1/datasets/{id}/items:
     get:
@@ -640,6 +659,27 @@ paths:
   /v1/artifacts/packages:
     post:
       summary: Queue artifact package build (currently yolo only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dataset_id, snapshot_id, format, version]
+              properties:
+                dataset_id:
+                  type: integer
+                snapshot_id:
+                  type: integer
+                format:
+                  type: string
+                  enum: [yolo]
+                version:
+                  type: string
+                label_map_json:
+                  type: object
+                  additionalProperties:
+                    type: string
       responses:
         "202":
           description: Package job accepted

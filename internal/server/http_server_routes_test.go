@@ -205,17 +205,88 @@ paths:
 	}
 }
 
+func TestOpenAPISnapshotExportDocumentsYoloOnlyRequestFormat(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+	block, err := extractOpenAPIPathBlock(raw, "/v1/snapshots/{id}/export")
+	if err != nil {
+		t.Fatalf("extract export path block: %v", err)
+	}
+	if !strings.Contains(block, "requestBody:") {
+		t.Fatalf("expected export path to declare a requestBody, got:\n%s", block)
+	}
+	if !strings.Contains(block, "required: [dataset_id, format, version]") {
+		t.Fatalf("expected export path to require dataset_id/format/version, got:\n%s", block)
+	}
+	if !strings.Contains(block, "enum: [yolo]") {
+		t.Fatalf("expected export path to document yolo-only format, got:\n%s", block)
+	}
+}
+
+func TestOpenAPIArtifactPackageDocumentsYoloOnlyRequestFormat(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+	block, err := extractOpenAPIPathBlock(raw, "/v1/artifacts/packages")
+	if err != nil {
+		t.Fatalf("extract artifact package path block: %v", err)
+	}
+	if !strings.Contains(block, "requestBody:") {
+		t.Fatalf("expected artifact package path to declare a requestBody, got:\n%s", block)
+	}
+	if !strings.Contains(block, "required: [dataset_id, snapshot_id, format, version]") {
+		t.Fatalf("expected artifact package path to require dataset_id/snapshot_id/format/version, got:\n%s", block)
+	}
+	if !strings.Contains(block, "enum: [yolo]") {
+		t.Fatalf("expected artifact package path to document yolo-only format, got:\n%s", block)
+	}
+}
+
 func readOpenAPIPublicRoutes() (map[string]struct{}, error) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		return nil, err
+	}
+	return parseOpenAPIPublicRoutes(raw)
+}
+
+func readOpenAPIDocument() (string, error) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
-		return nil, os.ErrNotExist
+		return "", os.ErrNotExist
 	}
 	openapiPath := filepath.Join(filepath.Dir(thisFile), "..", "..", "api", "openapi", "mvp.yaml")
 	raw, err := os.ReadFile(openapiPath)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	return parseOpenAPIPublicRoutes(string(raw))
+	return string(raw), nil
+}
+
+func extractOpenAPIPathBlock(raw string, path string) (string, error) {
+	lines := strings.Split(raw, "\n")
+	header := "  " + path + ":"
+	start := -1
+	for idx, line := range lines {
+		if line == header {
+			start = idx
+			break
+		}
+	}
+	if start < 0 {
+		return "", &openAPIParseError{kind: "missing path", value: path}
+	}
+	end := len(lines)
+	for idx := start + 1; idx < len(lines); idx++ {
+		if strings.HasPrefix(lines[idx], "  /") {
+			end = idx
+			break
+		}
+	}
+	return strings.Join(lines[start:end], "\n"), nil
 }
 
 func parseOpenAPIPublicRoutes(raw string) (map[string]struct{}, error) {
