@@ -1,17 +1,6 @@
 # YOLO-Ave-Mujica
 
-一个面向生产场景的 YOLO 平台基础仓库，当前重点是打通 Data Hub、任务驱动的标注协作、审核流、训练任务与产物交付。
-
-## 当前仓库包含什么
-
-- Go 控制面入口：`api-server`、`platform-cli`
-- Vite + React + TypeScript Web 控制台：`Task Overview`、`Task Queue`、`Task Detail`
-- Data Hub 能力：数据集创建、扫描、快照、条目列表、对象预签名
-- 项目任务与任务总览接口
-- Jobs 能力：任务创建、幂等、分发、租约恢复、事件查询
-- Review 和 Versioning 基础接口
-- Artifacts 能力：导出包构建、状态查询、版本解析、下载与校验
-- Python worker 原语：心跳、部分成功统计、清洗规则判断
+一个面向生产场景的 YOLO 平台基础仓库，当前重点是打通 Data Hub、任务驱动的标注协作、审核流和产物交付。
 
 ## 文档导航
 
@@ -19,6 +8,28 @@
 - 英文本地开发：`docs/development/local-quickstart.md`
 - 中文本地开发：`docs/development/local-quickstart.zh-CN.md`
 - 中文架构说明：`docs/development/architecture.zh-CN.md`
+- 技术审计快照：`docs/development/technical-audit-2026-04-04.md`
+
+`docs/superpowers/` 下保留了更细的设计和实施计划，用于追踪历史方案与后续路线。
+
+## 当前实现状态
+
+已实现：
+
+- Go 控制面入口：`api-server`、`platform-cli`、`migrate`、`s3-bootstrap`
+- Vite + React + TypeScript Web 控制台：overview、task、review、publish、data、annotation workspace 页面
+- Data Hub：数据集创建、扫描、条目浏览、快照、快照详情、对象预签名
+- 任务总览、任务列表/详情、标注 workspace draft/submit、publish review 流程
+- Jobs：幂等创建、资源 lane 分发、租约恢复、worker 回调、事件查询
+- Python worker：importer、packager、cleaning、zero-shot、video 契约型执行入口
+- Artifact：打包、状态查询、版本解析、下载、presign、CLI pull 校验
+- 本地 smoke、OpenAPI 路由守卫、迁移链路守卫
+
+尚未完成：
+
+- `zero-shot` 和 `video` 当前是稳定契约输出，不是真实模型推理或媒体抽帧流水线
+- 快照导入支持 `yolo` 和 `coco`，但 artifact 导出与交付当前仅支持 `yolo`
+- 鉴权、RBAC、训练/评测域、插件运行时仍属于路线图项
 
 ## 目录结构
 
@@ -55,7 +66,7 @@ make api-dev
 make web-dev
 ```
 
-默认前端地址是 `http://127.0.0.1:5173`，会把 `/v1/*` 代理到 `http://127.0.0.1:8080`。默认首页是 `/`，侧边导航对应 `/tasks`、`/review`、`/publish/candidates` 和 `/data`。
+默认前端地址是 `http://127.0.0.1:5173`，会把 `/v1/*` 代理到 `http://127.0.0.1:8080`。前端 Web Shell 当前使用根路径导航，例如 `/`、`/tasks`、`/review`、`/publish/candidates`、`/data`；控制面 API 在需要项目上下文的地方仍保持 `/v1/projects/{id}/...` 风格。
 
 常用验证命令：
 

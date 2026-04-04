@@ -1,6 +1,6 @@
 # YOLO-Ave-Mujica
 
-A production-oriented YOLO platform foundation for Data Hub, task-first annotation operations, review flow, training jobs, and artifact delivery.
+A production-oriented YOLO platform foundation for Data Hub, task-first annotation operations, review flow, and artifact delivery.
 
 ## Documentation
 
@@ -8,25 +8,28 @@ A production-oriented YOLO platform foundation for Data Hub, task-first annotati
 - 简体中文总览: `README.zh-CN.md`
 - 简体中文本地开发: `docs/development/local-quickstart.zh-CN.md`
 - 简体中文架构说明: `docs/development/architecture.zh-CN.md`
-
-- Vite + React + TypeScript web console with `Task Overview`, `Task Queue`, and `Task Detail`
-- Go control plane skeleton (`api-server`, `platform-cli`)
-- Data Hub basics (dataset/scan/items/snapshot APIs + object presign)
-- Task Overview and project task APIs
-- Job primitives (state machine, idempotent create model, lane dispatch, lease sweeper)
-- Review, diff, and artifact HTTP modules
-- Artifact packager helpers (`label_map`, `manifest`, `data.yaml`)
-- Worker-side partial-success, heartbeat, import, and cleaning primitives
-- Local smoke and quickstart docs
-
-- Go control plane entry points: `api-server`, `platform-cli`
-- Data Hub APIs for dataset creation, scans, snapshots, item listing, and object presign
-- Job primitives for idempotent create, lane dispatch, lease recovery, and event listing
-- Review, diff, and artifact HTTP modules
-- Artifact packaging, resolve, archive download, and CLI pull verification
-- Python worker-side primitives for heartbeats, partial success accounting, and cleaning rules
+- Technical audit snapshot: `docs/development/technical-audit-2026-04-04.md`
 
 Detailed planning docs remain available under `docs/superpowers/` for implementation history and design context.
+
+## Current Status
+
+Implemented today:
+
+- Go control plane entry points: `api-server`, `platform-cli`, `migrate`, `s3-bootstrap`
+- Vite + React + TypeScript web console with overview, task, review, publish, data, and annotation workspace pages
+- Data Hub APIs for dataset creation, scans, item listing, snapshots, snapshot detail, and object presign
+- Task overview, task list/detail, annotation workspace draft/submit, and publish review flows
+- Job primitives for idempotent create, lane dispatch, lease recovery, worker callbacks, and event listing
+- Worker-side importer, packager, cleaning, zero-shot, and video contract runners
+- Artifact packaging, resolve, archive download, presign, and CLI pull verification
+- Local smoke checks, OpenAPI route guards, and migration guard tests
+
+Not complete yet:
+
+- `zero-shot` and `video` workers currently provide durable contract outputs, not real model-backed inference or media extraction pipelines
+- Snapshot import supports `yolo` and `coco`; artifact export and package delivery are currently `yolo` only
+- Authentication, RBAC, training/evaluation domains, and plugin runtime are still roadmap items
 
 ## Repository Layout
 
@@ -63,7 +66,7 @@ In another terminal:
 make web-dev
 ```
 
-The web console opens on `http://127.0.0.1:5173` and proxies `/v1/*` to `http://127.0.0.1:8080` by default. The default entry route is `/`, with shell navigation mounted at `/tasks`, `/review`, `/publish/candidates`, and `/data`.
+The web console opens on `http://127.0.0.1:5173` and proxies `/v1/*` to `http://127.0.0.1:8080` by default. The web shell uses root-scoped routes such as `/`, `/tasks`, `/review`, `/publish/candidates`, and `/data`, while the control-plane API stays project-scoped where appropriate under `/v1/projects/{id}/...`.
 
 Run verification with:
 
