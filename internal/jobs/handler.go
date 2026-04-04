@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -382,10 +383,18 @@ func normalizeProvider(raw map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	provider := map[string]any{
 		"type": "command",
 		"argv": argv,
-	}, nil
+	}
+	timeoutSeconds, ok, err := normalizeProviderTimeout(raw["timeout_seconds"])
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		provider["timeout_seconds"] = timeoutSeconds
+	}
+	return provider, nil
 }
 
 func normalizeProviderArgv(raw any) ([]string, error) {
@@ -411,6 +420,53 @@ func normalizeProviderArgv(raw any) ([]string, error) {
 	default:
 		return nil, errors.New("provider.argv must be an array of command arguments")
 	}
+}
+
+func normalizeProviderTimeout(raw any) (float64, bool, error) {
+	if raw == nil {
+		return 0, false, nil
+	}
+
+	var timeout float64
+	switch value := raw.(type) {
+	case float64:
+		timeout = value
+	case float32:
+		timeout = float64(value)
+	case int:
+		timeout = float64(value)
+	case int8:
+		timeout = float64(value)
+	case int16:
+		timeout = float64(value)
+	case int32:
+		timeout = float64(value)
+	case int64:
+		timeout = float64(value)
+	case uint:
+		timeout = float64(value)
+	case uint8:
+		timeout = float64(value)
+	case uint16:
+		timeout = float64(value)
+	case uint32:
+		timeout = float64(value)
+	case uint64:
+		timeout = float64(value)
+	case json.Number:
+		parsed, err := value.Float64()
+		if err != nil {
+			return 0, false, errors.New("provider.timeout_seconds must be a positive number")
+		}
+		timeout = parsed
+	default:
+		return 0, false, errors.New("provider.timeout_seconds must be a positive number")
+	}
+
+	if math.IsNaN(timeout) || math.IsInf(timeout, 0) || timeout <= 0 {
+		return 0, false, errors.New("provider.timeout_seconds must be a positive number")
+	}
+	return timeout, true, nil
 }
 
 func requireIdempotencyKey(key string) error {

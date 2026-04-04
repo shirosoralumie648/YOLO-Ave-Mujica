@@ -334,6 +334,9 @@ paths:
                       minItems: 1
                       items:
                         type: string
+                    timeout_seconds:
+                      type: number
+                      exclusiveMinimum: 0
       responses:
         "200":
           description: Job accepted
@@ -375,6 +378,9 @@ paths:
                       minItems: 1
                       items:
                         type: string
+                    timeout_seconds:
+                      type: number
+                      exclusiveMinimum: 0
       responses:
         "200":
           description: Job accepted

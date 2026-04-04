@@ -11,13 +11,23 @@ def load_provider_result(payload: dict):
     if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) and arg for arg in argv):
         raise ValueError("provider.argv is required for command providers")
 
-    completed = subprocess.run(
-        argv,
-        check=False,
-        capture_output=True,
-        text=True,
-        input=json.dumps(payload),
-    )
+    timeout_seconds = provider.get("timeout_seconds")
+    if timeout_seconds is not None:
+        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
+            raise ValueError("provider.timeout_seconds must be a positive number")
+
+    try:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            input=json.dumps(payload),
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"provider command timed out after {exc.timeout} seconds") from exc
+
     if completed.returncode != 0:
         raise RuntimeError(completed.stderr.strip() or f"provider command failed with exit code {completed.returncode}")
 
