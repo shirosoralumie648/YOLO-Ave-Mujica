@@ -14,7 +14,7 @@
 | 项目 | 结果 |
 | --- | --- |
 | Go 全量测试 | `go test ./...` 通过 |
-| Python worker 单测 | 27/27 通过 |
+| Python worker 单测 | 41/41 通过 |
 | Web 单测 | 9 个测试文件、28 个用例全部通过 |
 | Web 构建 | `npm run build` 通过 |
 | Smoke | 当前执行环境缺少 `make`，无法拉起依赖并完成 `scripts/dev/smoke.sh` |
@@ -24,7 +24,7 @@
 - 模块级稳定性：高
 - 前端基线稳定性：高
 - 链路级稳定性：中高，仍需在可用依赖环境中补跑 smoke 与迁移冷启动
-- 主要产品缺口：真实零样本执行、真实视频抽帧、COCO export、鉴权审计、可观测性
+- 主要产品缺口：真实零样本执行、真实视频抽帧、鉴权审计、可观测性
 
 ## 2. 架构与模块现状
 
@@ -63,7 +63,7 @@ flowchart LR
 
 | 模块 | 当前状态 | 质量判断 | 说明 |
 | --- | --- | --- | --- |
-| `datahub` | 数据集创建、浏览、扫描、快照、对象预签名、导入回调已完成 | B+ | 当前支持 YOLO import 与 COCO import，COCO export 未完成 |
+| `datahub` | 数据集创建、浏览、扫描、快照、对象预签名、导入回调已完成 | B+ | 当前支持 YOLO / COCO import，并已补齐 YOLO / COCO export |
 | `jobs` | 任务创建、幂等、lane dispatch、worker callback、lease recovery 已完成 | B+ | 当前已按 `job_type + resource_lane + required_capabilities` 参与执行决策 |
 | `tasks` / `overview` | 列表、详情、状态流转、聚合视图已完成 | B | 面向生产的角色约束与报表能力仍缺失 |
 | `annotations` | workspace、draft、revision 检查、submit 已完成 | B+ | 当前 worktree 进一步补齐了 `404/409/422` 错误边界 |
@@ -81,7 +81,13 @@ flowchart LR
 4. `internal/server/http_server_routes_test.go` 新增 OpenAPI 与实际公开路由的一致性守卫
 5. `api/openapi/mvp.yaml` 补齐了已存在但此前未登记的 `GET /v1/datasets`、`GET /v1/datasets/{id}`、`GET /v1/snapshots/{id}`
 6. `internal/versioning/service.go` 对 exact bbox match 增加索引优化，并补充 benchmark 基线
-7. `docs/development/*` 补充了公开 `/v1/*` 与内部 `/internal/*` 的合同治理说明
+7. `internal/server/http_server_routes_test.go` 进一步补齐了 datahub、tasks/workspace、jobs、review、publish、artifact、snapshot diff/export 的失败响应面守卫
+8. `scripts/dev/smoke_test.go` 现在会显式守护 duplicate workspace submit，并覆盖 `coco` 与 `yolo` 两条 export 主路径
+9. `internal/jobs/service.go` 现在会在 `GetJob` 的 `result_ref` 中保留 materialized 结果明细，避免 terminal event 覆盖 `candidate_ids` 或 `frames`
+10. `workers/zero_shot/main.py` 与 `workers/video/main.py` 新增本地结果校验，坏的候选框或帧元数据会在 worker 侧直接失败，不再先构造伪成功结果
+11. `docs/development/*` 补充了公开 `/v1/*` 与内部 `/internal/*` 的合同治理说明，并同步更新 smoke 覆盖说明
+12. `workers/zero_shot/main.py` 现在同时声明通用能力 `zero_shot_inference` 与 provider 别名能力 `grounding_dino`，避免 smoke 与真实 GPU worker 出现能力名错配
+13. `internal/review/handler_test.go` 新增从 `jobs` materialize 候选结果到 `/v1/review/candidates` 的公开回归守卫，确保 source 元数据对外可见
 
 ## 5. 关键差异与旧结论修正
 
@@ -89,7 +95,8 @@ flowchart LR
 
 1. “主干 Go 构建失败，Web 构建失败”已经过时，当前 worktree 测试与构建全部通过
 2. “能力感知调度只持久化未生效”已经过时，当前 [queue_runner.py](/home/shirosora/code_storage/YOLO-Ave-Mujica/.worktrees/codex-phase1-foundation/workers/common/queue_runner.py) 已检查 `job_type`、`resource_lane`、`required_capabilities`
-3. “COCO 不支持”表述过于笼统，当前已支持 COCO import，未完成的是 COCO export
+3. “COCO 不支持”已经过时，当前已支持 COCO import 与 COCO export
+4. “zero-shot smoke 任务会因为 `grounding_dino` / `zero_shot_inference` 能力名不一致而悬挂”这一类风险，在当前 worktree 已通过 worker 能力别名兼容修复
 
 仍然成立的缺口有：
 
@@ -110,7 +117,7 @@ flowchart LR
 
 1. artifact builder 的内存读取路径在大 bundle 下可能成为热点
 2. CLI 串行拉取和校验会限制大数据集交付效率
-3. COCO export 的产品边界尚未冻结，可能导致合同继续漂移
+3. COCO export 刚完成收口，仍需在真实依赖环境下补跑 smoke 复核链路级稳定性
 
 ### 6.3 低到中风险
 
@@ -123,7 +130,7 @@ flowchart LR
 
 1. 合并当前 worktree 已验证的 contract hardening 与 route governance 改动
 2. 完成真实 zero-shot / video 执行路径
-3. 冻结 COCO export 策略并收口 artifact / CLI 交付语义
+3. 收口 artifact / CLI 交付语义并复核真实依赖环境 smoke
 4. 补齐 auth / audit / observability 基线
 5. 最后再推进 training / evaluation / extensibility
 

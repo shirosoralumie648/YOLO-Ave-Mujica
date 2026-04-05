@@ -28,7 +28,7 @@
 尚未完成：
 
 - `zero-shot` 和 `video` 当前是稳定契约输出，不是真实模型推理或媒体抽帧流水线
-- 快照导入支持 `yolo` 和 `coco`，但 artifact 导出与交付当前仅支持 `yolo`
+- 快照导入与 artifact 导出都支持 `yolo` 和 `coco`；其中 YOLO 导出会额外生成 `data.yaml`
 - 鉴权、RBAC、训练/评测域、插件运行时仍属于路线图项
 
 ## 目录结构
@@ -60,6 +60,8 @@ make web-install
 make api-dev
 ```
 
+`make up-dev` 现在是失败即停的行为：如果 Docker 虽然已安装但当前环境不可用，依赖启动会立刻中止，不会再静默继续。在 WSL 2 里，这通常意味着 Docker Desktop 已安装，但没有给当前发行版开启 WSL integration。
+
 再开一个终端：
 
 ```bash
@@ -73,6 +75,7 @@ make web-dev
 ```bash
 make test
 make web-build
+GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go test ./internal/server -count=1
 bash scripts/dev/smoke.sh
 ```
 

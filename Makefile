@@ -2,7 +2,7 @@
 
 up-dev:
 	@if command -v docker >/dev/null 2>&1; then \
-		docker compose -f deploy/docker/docker-compose.dev.yml up -d; \
+		docker compose -f deploy/docker/docker-compose.dev.yml up -d && \
 		S3_ENDPOINT=$${S3_ENDPOINT:-localhost:9000} \
 		S3_ACCESS_KEY=$${S3_ACCESS_KEY:-minioadmin} \
 		S3_SECRET_KEY=$${S3_SECRET_KEY:-minioadmin} \

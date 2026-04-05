@@ -30,12 +30,36 @@ def build_terminal_event(job_id: int, total: int, ok: int, failed: int):
 
 def _coerce_bbox(candidate: dict) -> dict:
     bbox = candidate.get("bbox", {})
-    return {
-        "x": float(bbox.get("x", 0)),
-        "y": float(bbox.get("y", 0)),
-        "w": float(bbox.get("w", 0)),
-        "h": float(bbox.get("h", 0)),
-    }
+    x = float(bbox.get("x", 0))
+    y = float(bbox.get("y", 0))
+    w = float(bbox.get("w", 0))
+    h = float(bbox.get("h", 0))
+    if w <= 0 or h <= 0:
+        raise ValueError("bbox.w and bbox.h must be > 0")
+    if x < 0 or y < 0:
+        raise ValueError("bbox.x and bbox.y must be >= 0")
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
+def _positive_int(value, field_name: str) -> int:
+    coerced = int(value)
+    if coerced <= 0:
+        raise ValueError(f"{field_name} must be > 0")
+    return coerced
+
+
+def _required_text(value, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    return text
+
+
+def _coerce_confidence(value) -> float:
+    confidence = float(value)
+    if confidence < 0 or confidence > 1:
+        raise ValueError("confidence must be between 0 and 1")
+    return confidence
 
 
 def _build_candidates(job: dict, provider_result: dict | None = None) -> list[dict]:
@@ -46,15 +70,23 @@ def _build_candidates(job: dict, provider_result: dict | None = None) -> list[di
         raw_candidates = payload.get("candidates", [])
     candidates = []
     for raw in raw_candidates:
+        dataset_id = _positive_int(raw.get("dataset_id", payload.get("dataset_id", 0)), "dataset_id")
+        snapshot_id = _positive_int(raw.get("snapshot_id", payload.get("snapshot_id", 0)), "snapshot_id")
+        item_id = _positive_int(raw.get("item_id", 0), "item_id")
+        object_key = _required_text(raw.get("object_key", ""), "object_key")
+        category_id = int(raw.get("category_id", 0))
+        category_name = str(raw.get("category_name", payload.get("prompt", ""))).strip()
+        if category_id <= 0 and not category_name:
+            raise ValueError("category_id or category_name is required")
         candidates.append(
             {
-                "dataset_id": int(raw.get("dataset_id", payload.get("dataset_id", 0))),
-                "snapshot_id": int(raw.get("snapshot_id", payload.get("snapshot_id", 0))),
-                "item_id": int(raw.get("item_id", 0)),
-                "object_key": raw.get("object_key", ""),
-                "category_id": int(raw.get("category_id", 0)),
-                "category_name": raw.get("category_name", payload.get("prompt", "")),
-                "confidence": float(raw.get("confidence", 0)),
+                "dataset_id": dataset_id,
+                "snapshot_id": snapshot_id,
+                "item_id": item_id,
+                "object_key": object_key,
+                "category_id": category_id,
+                "category_name": category_name,
+                "confidence": _coerce_confidence(raw.get("confidence", 0)),
                 "model_name": raw.get("model_name", model_name),
                 "is_pseudo": True,
                 "bbox": _coerce_bbox(raw),
@@ -100,7 +132,7 @@ def build_zero_shot_runner(worker_id: str | None = None):
         worker_id=worker_id or os.getenv("WORKER_ID", "zero-shot-local"),
         accepted_job_types={"zero-shot"},
         resource_lane="jobs:gpu",
-        capabilities={"zero_shot_inference"},
+        capabilities={"zero_shot_inference", "grounding_dino"},
     )
 
 

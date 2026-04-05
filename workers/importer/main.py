@@ -166,7 +166,7 @@ def build_importer_runner(worker_id: str | None = None):
         worker_id=worker_id or os.getenv("WORKER_ID", "importer-local"),
         accepted_job_types={"snapshot-import"},
         resource_lane="jobs:cpu",
-        capabilities={"snapshot_import"},
+        capabilities={"snapshot_import", "importer", "yolo", "coco"},
     )
 
 

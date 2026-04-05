@@ -41,6 +41,31 @@ exit 98
 	}
 }
 
+func TestMakeUpDevStopsWhenDockerComposeFails(t *testing.T) {
+	fakeBin := t.TempDir()
+	dockerLog := filepath.Join(t.TempDir(), "docker.log")
+	goLog := filepath.Join(t.TempDir(), "go.log")
+
+	writeExecutable(t, filepath.Join(fakeBin, "docker"), "#!/usr/bin/env bash\nprintf 'docker %s\\n' \"$*\" >> \"$DOCKER_LOG\"\nexit 42\n")
+	writeExecutable(t, filepath.Join(fakeBin, "go"), "#!/usr/bin/env bash\nprintf 'go %s\\n' \"$*\" >> \"$GO_LOG\"\nexit 0\n")
+
+	cmd := exec.Command("make", "up-dev")
+	cmd.Dir = repoRoot(t)
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"DOCKER_LOG="+dockerLog,
+		"GO_LOG="+goLog,
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected make up-dev to fail when docker compose fails, output=%s", out)
+	}
+
+	if goCalls, readErr := os.ReadFile(goLog); readErr == nil && len(strings.TrimSpace(string(goCalls))) > 0 {
+		t.Fatalf("expected s3-bootstrap to be skipped when docker compose fails, got go calls:\n%s", string(goCalls))
+	}
+}
+
 func TestSmokeExercisesImportExportResolveAndPull(t *testing.T) {
 	fakeBin := t.TempDir()
 	writeExecutable(t, filepath.Join(fakeBin, "docker"), "#!/usr/bin/env bash\nexit 0\n")
@@ -78,6 +103,7 @@ exit 0
 		"/v1/tasks/1/workspace/draft",
 		"/v1/tasks/1/workspace/submit",
 		"/v1/datasets/1/snapshots",
+		"go run ./cmd/dev-seed-artifact-smoke --dataset-id 1 --category-only",
 		"/v1/snapshots/1/import",
 		"/v1/jobs/3",
 		"/v1/publish/candidates?project_id=1",
@@ -99,6 +125,15 @@ exit 0
 	}
 	if got := strings.Count(callText, "/v1/tasks/1/workspace/submit"); got < 2 {
 		t.Fatalf("expected smoke script to exercise duplicate workspace submit path, got %d submit calls in log:\n%s", got, callText)
+	}
+	if got := strings.Count(callText, "/v1/snapshots/1/export"); got < 2 {
+		t.Fatalf("expected smoke script to exercise both coco and yolo export requests, got %d export calls in log:\n%s", got, callText)
+	}
+	if !strings.Contains(callText, `"format":"coco"`) {
+		t.Fatalf("expected smoke script to exercise coco export path, got log:\n%s", callText)
+	}
+	if !strings.Contains(callText, `"format":"yolo"`) {
+		t.Fatalf("expected smoke script to retain yolo export path, got log:\n%s", callText)
 	}
 }
 
@@ -135,6 +170,10 @@ if [[ "$1" == "run" && "$2" == "./cmd/migrate" ]]; then
   exit 95
 fi
 if [[ "$1" == "run" && "$2" == "./cmd/dev-seed-artifact-smoke" ]]; then
+  if [[ "$3" == "--dataset-id" && "$5" == "--category-only" ]]; then
+    printf '{"dataset_id":1,"category_seeded":true}\n'
+    exit 0
+  fi
   printf '{"dataset_id":1,"snapshot_id":1,"version":"v1"}\n'
   exit 0
 fi
@@ -219,7 +258,11 @@ for arg in "$@"; do
   prev="$arg"
 done
 if [[ -n "$CALL_LOG" && -n "$url" ]]; then
-  printf '%s\n' "$url" >> "$CALL_LOG"
+  if [[ -n "$data" ]]; then
+    printf '%s DATA=%s\n' "$url" "$data" >> "$CALL_LOG"
+  else
+    printf '%s\n' "$url" >> "$CALL_LOG"
+  fi
 fi
 status="200"
 body=""
@@ -283,11 +326,13 @@ case "$url" in
     ;;
   */v1/snapshots/1/export)
     if [[ "$data" == *'"format":"coco"'* ]]; then
-      body='{"error":"unsupported format"}'
-      status="400"
+      body='{"job_id":4,"artifact_id":4,"status":"pending"}'
     else
       body='{"job_id":5,"artifact_id":5,"status":"pending"}'
     fi
+    ;;
+  */v1/artifacts/4)
+    body='{"id":4,"format":"coco","version":"v-smoke-1-coco","status":"ready"}'
     ;;
   */v1/artifacts/5)
     body='{"id":5,"format":"yolo","version":"v-smoke-1","status":"ready"}'
@@ -325,6 +370,10 @@ if [[ "$1" == "run" && "$2" == "./cmd/s3-bootstrap" ]]; then
   exit 0
 fi
 if [[ "$1" == "run" && "$2" == "./cmd/dev-seed-artifact-smoke" ]]; then
+  if [[ "$3" == "--dataset-id" && "$5" == "--category-only" ]]; then
+    printf '{"dataset_id":1,"category_seeded":true}\n'
+    exit 0
+  fi
   printf '{"dataset_id":1,"snapshot_id":1,"version":"v1"}\n'
   exit 0
 fi

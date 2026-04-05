@@ -439,28 +439,44 @@ func normalizeResultRef(resultRef map[string]any) map[string]any {
 }
 
 func extractResultRef(events []Event) map[string]any {
+	var out map[string]any
+	var resultType string
 	for idx := len(events) - 1; idx >= 0; idx-- {
 		detail := events[idx].Detail
 		if len(detail) == 0 {
 			continue
 		}
-		if stringValue(detail["result_type"]) == "" {
+		currentType := stringValue(detail["result_type"])
+		if currentType == "" {
 			continue
 		}
-		out := map[string]any{
-			"result_type": detail["result_type"],
+		if out == nil {
+			resultType = currentType
+			out = map[string]any{
+				"result_type": currentType,
+			}
 		}
-		if count := int64Value(detail["result_count"]); count > 0 {
-			out["result_count"] = count
+		if currentType != resultType {
+			continue
+		}
+		if _, ok := out["result_count"]; !ok {
+			if count := int64Value(detail["result_count"]); count > 0 {
+				out["result_count"] = count
+			}
 		}
 		for _, key := range []string{"candidate_ids", "frames"} {
+			if _, ok := out[key]; ok {
+				continue
+			}
 			if value, ok := detail[key]; ok {
 				out[key] = value
 			}
 		}
-		return out
 	}
-	return nil
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func stringValue(value any) string {

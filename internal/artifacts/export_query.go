@@ -2,6 +2,7 @@ package artifacts
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path"
@@ -19,8 +20,10 @@ type ExportBundle struct {
 	ProjectID   int64
 	DatasetID   int64
 	SnapshotID  int64
+	Format      string
 	Version     string
 	Categories  []string
+	CategoryIDs []int64
 	CategoryMap map[int64]int
 	Items       []ExportItem
 	TotalBoxes  int
@@ -31,10 +34,17 @@ type ExportItem struct {
 	ObjectKey     string
 	OutputName    string
 	LabelFileName string
+	Width         int
+	Height        int
 	Boxes         []YOLOBox
 }
 
 type YOLOBox struct {
+	CategoryID int64
+	BBoxX      float64
+	BBoxY      float64
+	BBoxW      float64
+	BBoxH      float64
 	ClassIndex int
 	XCenter    float64
 	YCenter    float64
@@ -105,6 +115,7 @@ func (q *ExportQuery) loadCategories(ctx context.Context, bundle *ExportBundle) 
 	defer rows.Close()
 
 	bundle.Categories = make([]string, 0)
+	bundle.CategoryIDs = make([]int64, 0)
 	bundle.CategoryMap = make(map[int64]int)
 	for rows.Next() {
 		var categoryID int64
@@ -113,6 +124,7 @@ func (q *ExportQuery) loadCategories(ctx context.Context, bundle *ExportBundle) 
 			return err
 		}
 		bundle.CategoryMap[categoryID] = len(bundle.Categories)
+		bundle.CategoryIDs = append(bundle.CategoryIDs, categoryID)
 		bundle.Categories = append(bundle.Categories, categoryName)
 	}
 	return rows.Err()
@@ -120,7 +132,7 @@ func (q *ExportQuery) loadCategories(ctx context.Context, bundle *ExportBundle) 
 
 func (q *ExportQuery) loadItems(ctx context.Context, bundle *ExportBundle) error {
 	rows, err := q.pool.Query(ctx, `
-		select id, object_key
+		select id, object_key, width, height
 		from dataset_items
 		where dataset_id = $1
 		order by id asc
@@ -133,9 +145,19 @@ func (q *ExportQuery) loadItems(ctx context.Context, bundle *ExportBundle) error
 	usedNames := make(map[string]struct{})
 	bundle.Items = make([]ExportItem, 0)
 	for rows.Next() {
-		var item ExportItem
-		if err := rows.Scan(&item.ItemID, &item.ObjectKey); err != nil {
+		var (
+			item      ExportItem
+			width     sql.NullInt64
+			height    sql.NullInt64
+		)
+		if err := rows.Scan(&item.ItemID, &item.ObjectKey, &width, &height); err != nil {
 			return err
+		}
+		if width.Valid {
+			item.Width = int(width.Int64)
+		}
+		if height.Valid {
+			item.Height = int(height.Int64)
 		}
 		item.OutputName = buildOutputName(item.ItemID, item.ObjectKey, usedNames)
 		item.LabelFileName = buildLabelFileName(item.OutputName)
@@ -186,6 +208,11 @@ func (q *ExportQuery) loadAnnotations(ctx context.Context, bundle *ExportBundle)
 		}
 
 		bundle.Items[idx].Boxes = append(bundle.Items[idx].Boxes, YOLOBox{
+			CategoryID: categoryID,
+			BBoxX:      bboxX,
+			BBoxY:      bboxY,
+			BBoxW:      bboxW,
+			BBoxH:      bboxH,
 			ClassIndex: classIndex,
 			XCenter:    bboxX + (bboxW / 2),
 			YCenter:    bboxY + (bboxH / 2),

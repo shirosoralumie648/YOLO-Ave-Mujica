@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"yolo-ave-mujica/internal/jobs"
 	"yolo-ave-mujica/internal/server"
 )
 
@@ -72,6 +73,42 @@ func (r *fakeRepository) PersistCandidates(_ int64, items []PersistCandidateInpu
 	return out, nil
 }
 
+type jobsReviewSinkAdapter struct {
+	svc *Service
+}
+
+func (a jobsReviewSinkAdapter) PersistCandidates(jobID int64, items []jobs.ReviewCandidateInput) ([]jobs.PersistedReviewCandidate, error) {
+	inputs := make([]PersistCandidateInput, 0, len(items))
+	for _, item := range items {
+		inputs = append(inputs, PersistCandidateInput{
+			DatasetID:    item.DatasetID,
+			SnapshotID:   item.SnapshotID,
+			ItemID:       item.ItemID,
+			ObjectKey:    item.ObjectKey,
+			CategoryID:   item.CategoryID,
+			CategoryName: item.CategoryName,
+			BBox: CandidateBBox{
+				X: item.BBox.X,
+				Y: item.BBox.Y,
+				W: item.BBox.W,
+				H: item.BBox.H,
+			},
+			Confidence: item.Confidence,
+			ModelName:  item.ModelName,
+			IsPseudo:   item.IsPseudo,
+		})
+	}
+	persisted, err := a.svc.PersistCandidates(jobID, inputs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]jobs.PersistedReviewCandidate, 0, len(persisted))
+	for _, candidate := range persisted {
+		out = append(out, jobs.PersistedReviewCandidate{ID: candidate.ID})
+	}
+	return out, nil
+}
+
 func TestServiceUsesRepositoryPendingCandidates(t *testing.T) {
 	repo := &fakeRepository{
 		pending: []Candidate{{
@@ -107,6 +144,82 @@ func TestServiceUsesRepositoryPendingCandidates(t *testing.T) {
 	}
 	if items[0].Source.ModelName != "detector-a" || !items[0].Source.IsPseudo {
 		t.Fatalf("expected source model metadata, got %+v", items[0].Source)
+	}
+}
+
+func TestListCandidatesIncludesMaterializedJobSourceMetadata(t *testing.T) {
+	reviewSvc := NewService()
+	jobSvc := jobs.NewServiceWithReviewSink(jobs.NewInMemoryRepository(), nil, jobsReviewSinkAdapter{svc: reviewSvc})
+
+	job, err := jobSvc.CreateJob(jobs.CreateJobInput{
+		ProjectID:            1,
+		DatasetID:            1,
+		SnapshotID:           2,
+		JobType:              "zero-shot",
+		RequiredResourceType: "gpu",
+		IdempotencyKey:       "idem-review-api-results",
+		Payload:              map[string]any{"prompt": "person"},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	if err := jobSvc.ReportEvent(job.ID, nil, "info", "review_candidates_materialized", "persisted review candidates", map[string]any{
+		"result_type":  "annotation_candidates",
+		"result_count": 1,
+		"candidates": []any{
+			map[string]any{
+				"dataset_id":    float64(1),
+				"snapshot_id":   float64(2),
+				"item_id":       float64(9),
+				"object_key":    "images/9.jpg",
+				"category_id":   float64(3),
+				"category_name": "person",
+				"confidence":    0.91,
+				"model_name":    "grounding-dino-mvp",
+				"is_pseudo":     true,
+				"bbox": map[string]any{
+					"x": 10.0,
+					"y": 11.0,
+					"w": 12.0,
+					"h": 13.0,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("report event: %v", err)
+	}
+
+	handler := NewHandler(reviewSvc)
+	srv := server.NewHTTPServerWithModules(server.Modules{
+		Review: server.ReviewRoutes{
+			ListCandidates:  handler.ListCandidates,
+			AcceptCandidate: handler.AcceptCandidate,
+			RejectCandidate: handler.RejectCandidate,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/review/candidates", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"job_id":1`) {
+		t.Fatalf("expected job source metadata, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"model_name":"grounding-dino-mvp"`) {
+		t.Fatalf("expected model_name in source metadata, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"confidence":0.91`) {
+		t.Fatalf("expected confidence in source metadata, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"is_pseudo":true`) {
+		t.Fatalf("expected pseudo source metadata, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"queued_for_review"`) {
+		t.Fatalf("expected queued review status, got %s", rec.Body.String())
 	}
 }
 

@@ -28,7 +28,7 @@ Implemented today:
 Not complete yet:
 
 - `zero-shot` and `video` workers currently provide durable contract outputs, not real model-backed inference or media extraction pipelines
-- Snapshot import supports `yolo` and `coco`; artifact export and package delivery are currently `yolo` only
+- Snapshot import and artifact export support both `yolo` and `coco`; YOLO exports additionally include `data.yaml`
 - Authentication, RBAC, training/evaluation domains, and plugin runtime are still roadmap items
 
 ## Repository Layout
@@ -60,6 +60,8 @@ make web-install
 make api-dev
 ```
 
+`make up-dev` is fail-fast: if Docker is installed but unusable, dependency startup stops immediately instead of silently continuing. In WSL 2, that usually means Docker Desktop exists but WSL integration is not enabled for the current distro.
+
 In another terminal:
 
 ```bash
@@ -73,6 +75,7 @@ Run verification with:
 ```bash
 make test
 make web-build
+GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go test ./internal/server -count=1
 bash scripts/dev/smoke.sh
 ```
 

@@ -23,7 +23,7 @@ export ARTIFACT_BUILD_CONCURRENCY=2
 make migrate-up
 ```
 
-`make up-dev` starts the Docker-backed dependency stack and also bootstraps the default MinIO bucket (`platform-dev`). If Docker is unavailable, you need PostgreSQL, Redis, and a MinIO-compatible endpoint running locally before the API server or smoke script can succeed.
+`make up-dev` starts the Docker-backed dependency stack and also bootstraps the default MinIO bucket (`platform-dev`). The command is fail-fast: if Docker is installed but unusable, startup stops immediately instead of continuing into the S3 bootstrap step. In WSL 2, the most common cause is Docker Desktop being installed without WSL integration enabled for the current distro. If you are not using Docker at all, you need PostgreSQL, Redis, and a MinIO-compatible endpoint running locally before the API server or smoke script can succeed.
 
 ## Run The API Server
 
@@ -65,10 +65,10 @@ make web-build
 If you change public HTTP routes or `api/openapi/mvp.yaml`, rerun the route contract guard as well:
 
 ```bash
-GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go test ./internal/server -run TestOpenAPIPublicRoutesMatchRegisteredRoutes -count=1
+GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go test ./internal/server -count=1
 ```
 
-The public contract lives under `/v1/*` plus `/healthz` and `/readyz`. Worker/internal callbacks such as snapshot import completion and job progress reporting live under `/internal/*` and are verified by module-specific tests rather than OpenAPI.
+The public contract lives under `/v1/*` plus `/healthz` and `/readyz`. `internal/server/http_server_routes_test.go` now guards route registration drift, duplicate OpenAPI path/method entries, and the documented failure surface for datahub, tasks/workspace, jobs, review, publish, artifact, and snapshot diff/export APIs. Worker/internal callbacks such as snapshot import completion and job progress reporting live under `/internal/*` and are verified by module-specific tests rather than OpenAPI.
 
 ## Run Smoke Checks
 
@@ -87,9 +87,11 @@ The smoke flow verifies:
 - dataset scan
 - dataset item listing
 - snapshot creation
+- duplicate annotation workspace submit remains idempotent
 - object presign response shape
 - zero-shot job creation response shape with the created snapshot id
 - snapshot import response shape with resolved dataset/snapshot linkage
+- both `coco` and `yolo` snapshot export requests are accepted and their build states can be polled
 - snapshot export/build response shape
 - dataset-aware artifact resolve response shape
 - `platform-cli pull --dataset smoke-dataset --format yolo --version v-smoke-<dataset_id>` archive download, extraction, and verification

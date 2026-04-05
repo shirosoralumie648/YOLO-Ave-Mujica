@@ -2,6 +2,7 @@ import unittest
 from unittest import mock
 
 from workers.common.queue_runner import QueueRunner, RedisQueueClient, dispatch_once
+from workers.zero_shot.main import build_zero_shot_runner
 
 
 class _FakeQueueClient:
@@ -296,6 +297,21 @@ class QueueRunnerContractTest(unittest.TestCase):
                     "job_type": "zero-shot",
                     "resource_lane": "jobs:gpu",
                     "required_capabilities": ["zero_shot_inference"],
+                },
+                lane="jobs:gpu",
+            )
+        )
+
+    def test_zero_shot_runner_accepts_provider_specific_capability_alias(self):
+        runner = build_zero_shot_runner(worker_id="zero-shot-a")
+
+        self.assertTrue(
+            runner.can_handle(
+                {
+                    "job_id": 12,
+                    "job_type": "zero-shot",
+                    "resource_lane": "jobs:gpu",
+                    "required_capabilities": ["grounding_dino"],
                 },
                 lane="jobs:gpu",
             )

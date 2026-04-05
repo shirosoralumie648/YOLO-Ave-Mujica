@@ -111,7 +111,7 @@ func (s *Service) CreateArtifact(in PackageRequest, status string) (Artifact, er
 	if in.Format == "" {
 		return Artifact{}, errors.New("format is required")
 	}
-	if in.Format != "yolo" {
+	if in.Format != "yolo" && in.Format != "coco" {
 		return Artifact{}, fmt.Errorf("unsupported format: %s", in.Format)
 	}
 	if in.Version == "" {
@@ -363,6 +363,7 @@ func (s *Service) buildArtifact(ctx context.Context, artifactID int64) error {
 	if err != nil {
 		return s.failBuild(ctx, artifactID, err)
 	}
+	bundle.Format = artifact.Format
 	if len(artifact.LabelMapJSON) > 0 {
 		bundle.Categories = ApplyLabelMap(bundle.Categories, artifact.LabelMapJSON)
 	}

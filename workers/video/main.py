@@ -15,14 +15,22 @@ def _build_frames(payload: dict, provider_result: dict | None = None) -> list[di
     if frames is None:
         frames = payload.get("frames")
     if frames:
-        return [
-            {
-                "frame_index": int(frame.get("frame_index", 0)),
-                "timestamp_ms": int(frame.get("timestamp_ms", 0)),
-                "object_key": frame.get("object_key", ""),
-            }
-            for frame in frames
-        ]
+        out = []
+        for frame in frames:
+            frame_index = int(frame.get("frame_index", 0))
+            timestamp_ms = int(frame.get("timestamp_ms", 0))
+            if frame_index < 0:
+                raise ValueError("frame_index must be >= 0")
+            if timestamp_ms < 0:
+                raise ValueError("timestamp_ms must be >= 0")
+            out.append(
+                {
+                    "frame_index": frame_index,
+                    "timestamp_ms": timestamp_ms,
+                    "object_key": frame.get("object_key", ""),
+                }
+            )
+        return out
 
     total_frames = int(payload.get("total_frames", 0))
     fps = max(int(payload.get("fps", 1)), 1)

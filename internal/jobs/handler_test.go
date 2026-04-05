@@ -492,6 +492,115 @@ func TestGetJobIncludesDispatchDiagnostics(t *testing.T) {
 	}
 }
 
+func TestGetJobIncludesCandidateIDsInResultRef(t *testing.T) {
+	repo := NewInMemoryRepository()
+	reviewSvc := review.NewService()
+	svc := NewServiceWithReviewSink(repo, nil, reviewSinkAdapter{svc: reviewSvc})
+	h := NewHandler(svc)
+
+	job, err := svc.CreateJob(CreateJobInput{
+		ProjectID:            1,
+		DatasetID:            1,
+		SnapshotID:           2,
+		JobType:              "zero-shot",
+		RequiredResourceType: "gpu",
+		IdempotencyKey:       "idem-http-job-candidates",
+		Payload:              map[string]any{"prompt": "person"},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	callServiceErrorMethod(t, svc, "ReportEvent", job.ID, (*int64)(nil), "info", "review_candidates_materialized", "persisted review candidates", map[string]any{
+		"result_type":  "annotation_candidates",
+		"result_count": 1,
+		"candidates": []any{
+			map[string]any{
+				"dataset_id":    float64(1),
+				"snapshot_id":   float64(2),
+				"item_id":       float64(9),
+				"object_key":    "images/9.jpg",
+				"category_id":   float64(3),
+				"category_name": "person",
+				"confidence":    0.91,
+				"bbox": map[string]any{
+					"x": 10.0,
+					"y": 11.0,
+					"w": 12.0,
+					"h": 13.0,
+				},
+			},
+		},
+	})
+	callServiceErrorMethod(t, svc, "ReportTerminal", job.ID, "worker-a", StatusSucceeded, 1, 1, 0, map[string]any{
+		"result_type":  "annotation_candidates",
+		"result_count": 1,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/"+strconv.FormatInt(job.ID, 10), nil)
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("job_id", strconv.FormatInt(job.ID, 10))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
+	rec := httptest.NewRecorder()
+
+	h.GetJob(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"candidate_ids":[1]`) {
+		t.Fatalf("expected candidate_ids in result_ref, got %s", rec.Body.String())
+	}
+}
+
+func TestGetJobIncludesFramesInResultRef(t *testing.T) {
+	svc := NewService(NewInMemoryRepository())
+	h := NewHandler(svc)
+
+	job, err := svc.CreateJob(CreateJobInput{
+		ProjectID:            1,
+		DatasetID:            1,
+		JobType:              "video-extract",
+		RequiredResourceType: "cpu",
+		IdempotencyKey:       "idem-http-job-frames",
+		Payload:              map[string]any{"fps": 2},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	callServiceErrorMethod(t, svc, "ReportEvent", job.ID, (*int64)(nil), "info", "video_frames_materialized", "persisted frame results", map[string]any{
+		"result_type":  "video_frames",
+		"result_count": 2,
+		"frames": []any{
+			map[string]any{"frame_index": 0, "timestamp_ms": 0, "object_key": "clips/a/frame-0000.jpg"},
+			map[string]any{"frame_index": 6, "timestamp_ms": 3000, "object_key": "clips/a/frame-0006.jpg"},
+		},
+	})
+	callServiceErrorMethod(t, svc, "ReportTerminal", job.ID, "worker-video", StatusSucceeded, 2, 2, 0, map[string]any{
+		"result_type":  "video_frames",
+		"result_count": 2,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/"+strconv.FormatInt(job.ID, 10), nil)
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("job_id", strconv.FormatInt(job.ID, 10))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
+	rec := httptest.NewRecorder()
+
+	h.GetJob(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"frames":[`) {
+		t.Fatalf("expected frames in result_ref, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"object_key":"clips/a/frame-0006.jpg"`) {
+		t.Fatalf("expected frame object key in result_ref, got %s", rec.Body.String())
+	}
+}
+
 func TestRepositoryClaimSetsWorkerIDAndLease(t *testing.T) {
 	repo := NewInMemoryRepository()
 	job, _, err := repo.CreateOrGet(CreateJobInput{
@@ -901,6 +1010,73 @@ func TestServiceReportEventPersistsReviewCandidatesAndGetJobExposesResultMetadat
 	}
 	if got.ResultType != "annotation_candidates" || got.ResultCount != 1 {
 		t.Fatalf("expected terminal result metadata, got %+v", got)
+	}
+	if len(got.ResultRef) == 0 {
+		t.Fatalf("expected result_ref to be present, got %+v", got)
+	}
+	candidateIDs, ok := got.ResultRef["candidate_ids"].([]int64)
+	if !ok {
+		t.Fatalf("expected candidate_ids in result_ref, got %+v", got.ResultRef)
+	}
+	if len(candidateIDs) != 1 || candidateIDs[0] != candidates[0].ID {
+		t.Fatalf("expected persisted candidate id in result_ref, got %+v want %d", candidateIDs, candidates[0].ID)
+	}
+}
+
+func TestServiceGetJobRetainsVideoFrameResultDetailsAfterTerminalEvent(t *testing.T) {
+	svc := NewService(NewInMemoryRepository())
+
+	job, err := svc.CreateJob(CreateJobInput{
+		ProjectID:            1,
+		DatasetID:            1,
+		JobType:              "video-extract",
+		RequiredResourceType: "cpu",
+		IdempotencyKey:       "idem-video-results",
+		Payload:              map[string]any{"fps": 2},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	frameDetail := map[string]any{
+		"result_type":  "video_frames",
+		"result_count": 2,
+		"frames": []any{
+			map[string]any{
+				"frame_index":  0,
+				"timestamp_ms": 0,
+				"object_key":   "clips/a/frame-0000.jpg",
+			},
+			map[string]any{
+				"frame_index":  6,
+				"timestamp_ms": 3000,
+				"object_key":   "clips/a/frame-0006.jpg",
+			},
+		},
+	}
+
+	callServiceErrorMethod(t, svc, "ReportEvent", job.ID, (*int64)(nil), "info", "video_frames_materialized", "persisted frame results", frameDetail)
+	callServiceErrorMethod(t, svc, "ReportTerminal", job.ID, "worker-video", StatusSucceeded, 2, 2, 0, map[string]any{
+		"result_type":  "video_frames",
+		"result_count": 2,
+	})
+
+	got, ok := svc.GetJob(job.ID)
+	if !ok {
+		t.Fatalf("job %d not found", job.ID)
+	}
+	if got.ResultType != "video_frames" || got.ResultCount != 2 {
+		t.Fatalf("expected video result metadata, got %+v", got)
+	}
+	if len(got.ResultRef) == 0 {
+		t.Fatalf("expected result_ref to be present, got %+v", got)
+	}
+	frames, ok := got.ResultRef["frames"].([]any)
+	if !ok {
+		t.Fatalf("expected frames in result_ref, got %+v", got.ResultRef)
+	}
+	if len(frames) != 2 {
+		t.Fatalf("expected 2 frames in result_ref, got %+v", frames)
 	}
 }
 

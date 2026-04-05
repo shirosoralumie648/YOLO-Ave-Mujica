@@ -275,7 +275,7 @@ func TestExportSnapshotQueuesPackageJob(t *testing.T) {
 	}
 }
 
-func TestExportSnapshotRejectsUnsupportedFormat(t *testing.T) {
+func TestExportSnapshotAcceptsCOCOFormat(t *testing.T) {
 	svc := NewService()
 	h := NewHandler(svc)
 	srv := server.NewHTTPServerWithModules(server.Modules{
@@ -285,6 +285,27 @@ func TestExportSnapshotRejectsUnsupportedFormat(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/snapshots/2/export", strings.NewReader(`{"dataset_id":1,"format":"coco","version":"v2"}`))
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"artifact_id"`) {
+		t.Fatalf("expected artifact id for coco export, got %s", rec.Body.String())
+	}
+}
+
+func TestExportSnapshotRejectsUnsupportedFormat(t *testing.T) {
+	svc := NewService()
+	h := NewHandler(svc)
+	srv := server.NewHTTPServerWithModules(server.Modules{
+		Artifacts: server.ArtifactRoutes{
+			ExportSnapshot: h.ExportSnapshot,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/snapshots/2/export", strings.NewReader(`{"dataset_id":1,"format":"pascal_voc","version":"v2"}`))
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)
 

@@ -5,6 +5,34 @@ from workers.video.main import run_video_job
 
 
 class VideoWorkerContractTest(unittest.TestCase):
+    def test_run_video_job_rejects_negative_frame_index(self):
+        with self.assertRaisesRegex(ValueError, "frame_index must be >= 0"):
+            run_video_job(
+                {
+                    "job_id": 10,
+                    "payload": {
+                        "dataset_id": 1,
+                        "frames": [
+                            {"frame_index": -1, "timestamp_ms": 0, "object_key": "clips/a/frame-0000.jpg"},
+                        ],
+                    },
+                }
+            )
+
+    def test_run_video_job_rejects_negative_timestamp(self):
+        with self.assertRaisesRegex(ValueError, "timestamp_ms must be >= 0"):
+            run_video_job(
+                {
+                    "job_id": 11,
+                    "payload": {
+                        "dataset_id": 1,
+                        "frames": [
+                            {"frame_index": 0, "timestamp_ms": -10, "object_key": "clips/a/frame-0000.jpg"},
+                        ],
+                    },
+                }
+            )
+
     def test_run_video_job_uses_provider_summary_counters(self):
         result = run_video_job(
             {

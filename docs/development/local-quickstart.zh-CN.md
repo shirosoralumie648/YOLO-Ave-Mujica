@@ -23,7 +23,7 @@ export ARTIFACT_BUILD_CONCURRENCY=2
 make migrate-up
 ```
 
-`make up-dev` 会启动 Docker 依赖栈，并自动创建默认的 MinIO bucket `platform-dev`。如果本机没有 Docker，这一步会被跳过，此时需要你自行准备 PostgreSQL、Redis 和兼容 S3 的对象存储服务，否则 API 和 smoke 脚本都无法通过。
+`make up-dev` 会启动 Docker 依赖栈，并自动创建默认的 MinIO bucket `platform-dev`。该命令现在是失败即停：如果 Docker 虽然已安装但当前环境不可用，它会在依赖启动阶段立刻退出，不会继续执行 S3 bootstrap。对 WSL 2 来说，最常见原因是 Docker Desktop 已安装，但没有给当前发行版开启 WSL integration。如果你完全不使用 Docker，则需要自行准备 PostgreSQL、Redis 和兼容 S3 的对象存储服务，否则 API 和 smoke 脚本都无法通过。
 
 ## 启动 API 服务
 
@@ -66,10 +66,10 @@ make web-build
 如果你修改了公开 HTTP 路由或 `api/openapi/mvp.yaml`，还应该额外执行一次路由合同守卫：
 
 ```bash
-GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go test ./internal/server -run TestOpenAPIPublicRoutesMatchRegisteredRoutes -count=1
+GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go test ./internal/server -count=1
 ```
 
-公开合同统一位于 `/v1/*`，再加上 `/healthz` 和 `/readyz`。面向 worker 的内部回调，例如 snapshot import complete、job progress、artifact complete，则位于 `/internal/*`，它们通过各模块自己的测试守护，而不是写进对外 OpenAPI。
+公开合同统一位于 `/v1/*`，再加上 `/healthz` 和 `/readyz`。`internal/server/http_server_routes_test.go` 现在会同时守护公开路由注册漂移、OpenAPI 重复 path / method，以及 datahub、tasks/workspace、jobs、review、publish、artifact、snapshot diff/export 这些接口的失败响应面。面向 worker 的内部回调，例如 snapshot import complete、job progress、artifact complete，则位于 `/internal/*`，它们通过各模块自己的测试守护，而不是写进对外 OpenAPI。
 
 ## 运行 Smoke 检查
 
@@ -87,8 +87,10 @@ Smoke 脚本会验证以下链路：
 - 创建数据集
 - 扫描数据集对象
 - 查询数据集条目
+- 重复 annotation workspace submit 仍保持幂等
 - 校验对象预签名返回结构
 - 校验 zero-shot 任务创建返回结构
+- 验证 `coco` 与 `yolo` 两种 snapshot export 请求都会被接受，并轮询构建状态
 - 轮询 artifact 导出包构建状态
 - 执行 `platform-cli pull` 下载、解压和校验导出包
 

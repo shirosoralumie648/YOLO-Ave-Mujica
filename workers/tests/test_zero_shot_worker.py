@@ -1,10 +1,59 @@
 import unittest
 import sys
 
-from workers.zero_shot.main import run_zero_shot_job
+from workers.zero_shot.main import build_zero_shot_runner, run_zero_shot_job
 
 
 class ZeroShotWorkerContractTest(unittest.TestCase):
+    def test_build_zero_shot_runner_advertises_generic_and_provider_capabilities(self):
+        runner = build_zero_shot_runner(worker_id="zero-shot-a")
+
+        self.assertEqual("zero-shot-a", runner.worker_id)
+        self.assertEqual({"zero_shot_inference", "grounding_dino"}, runner.capabilities)
+
+    def test_run_zero_shot_job_rejects_invalid_candidate_geometry(self):
+        with self.assertRaisesRegex(ValueError, "bbox.w and bbox.h must be > 0"):
+            run_zero_shot_job(
+                {
+                    "job_id": 45,
+                    "payload": {
+                        "dataset_id": 1,
+                        "snapshot_id": 2,
+                        "prompt": "person",
+                        "candidates": [
+                            {
+                                "item_id": 100,
+                                "object_key": "images/100.jpg",
+                                "category_name": "person",
+                                "confidence": 0.91,
+                                "bbox": {"x": 1, "y": 2, "w": 0, "h": 4},
+                            }
+                        ],
+                    },
+                }
+            )
+
+    def test_run_zero_shot_job_rejects_candidate_without_item_id(self):
+        with self.assertRaisesRegex(ValueError, "item_id must be > 0"):
+            run_zero_shot_job(
+                {
+                    "job_id": 46,
+                    "payload": {
+                        "dataset_id": 1,
+                        "snapshot_id": 2,
+                        "prompt": "person",
+                        "candidates": [
+                            {
+                                "object_key": "images/100.jpg",
+                                "category_name": "person",
+                                "confidence": 0.91,
+                                "bbox": {"x": 1, "y": 2, "w": 3, "h": 4},
+                            }
+                        ],
+                    },
+                }
+            )
+
     def test_run_zero_shot_job_uses_provider_summary_counters(self):
         result = run_zero_shot_job(
             {

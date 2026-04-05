@@ -20,14 +20,16 @@ import (
 )
 
 type seedResult struct {
-	DatasetID  int64  `json:"dataset_id"`
-	SnapshotID int64  `json:"snapshot_id"`
-	Version    string `json:"version"`
+	DatasetID      int64  `json:"dataset_id"`
+	SnapshotID     int64  `json:"snapshot_id,omitempty"`
+	Version        string `json:"version,omitempty"`
+	CategorySeeded bool   `json:"category_seeded,omitempty"`
 }
 
 func main() {
 	datasetID := flag.Int64("dataset-id", 0, "existing dataset id to seed")
 	projectID := flag.Int64("project-id", 1, "project id")
+	categoryOnly := flag.Bool("category-only", false, "only ensure the smoke category exists for the dataset project")
 	flag.Parse()
 
 	cfg, err := config.Load()
@@ -50,7 +52,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	result, err := seedArtifactSmokeData(ctx, pool, s3Client, cfg.S3Bucket, *datasetID, *projectID)
+	result, err := seedArtifactSmokeData(ctx, pool, s3Client, cfg.S3Bucket, *datasetID, *projectID, *categoryOnly)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -59,7 +61,7 @@ func main() {
 	}
 }
 
-func seedArtifactSmokeData(ctx context.Context, pool *pgxpool.Pool, s3Client *minio.Client, bucket string, datasetID, projectID int64) (seedResult, error) {
+func seedArtifactSmokeData(ctx context.Context, pool *pgxpool.Pool, s3Client *minio.Client, bucket string, datasetID, projectID int64, categoryOnly bool) (seedResult, error) {
 	if datasetID == 0 {
 		createdID, createdProjectID, err := ensureDataset(ctx, pool, projectID)
 		if err != nil {
@@ -86,6 +88,12 @@ func seedArtifactSmokeData(ctx context.Context, pool *pgxpool.Pool, s3Client *mi
 	categoryID, err := ensureCategory(ctx, pool, projectID, "person")
 	if err != nil {
 		return seedResult{}, err
+	}
+	if categoryOnly {
+		return seedResult{
+			DatasetID:      datasetID,
+			CategorySeeded: categoryID > 0,
+		}, nil
 	}
 	if err := ensureAnnotation(ctx, pool, datasetID, itemIDs["train/a.jpg"], categoryID, snapshotID); err != nil {
 		return seedResult{}, err

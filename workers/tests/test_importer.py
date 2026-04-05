@@ -118,6 +118,22 @@ class ImporterContractTest(unittest.TestCase):
         self.assertTrue(dispatched)
         self.assertEqual([8], handled)
 
+    def test_build_importer_runner_accepts_smoke_capability_aliases(self):
+        runner = build_importer_runner(worker_id="importer-a")
+
+        self.assertTrue(
+            runner.can_handle(
+                {
+                    "job_id": 9,
+                    "job_type": "snapshot-import",
+                    "required_resource_type": "cpu",
+                    "required_capabilities": ["importer", "yolo"],
+                    "payload": {"format": "yolo"},
+                },
+                lane="jobs:cpu",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

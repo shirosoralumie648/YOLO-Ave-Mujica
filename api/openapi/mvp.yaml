@@ -35,6 +35,8 @@ paths:
       responses:
         "200":
           description: Dataset created
+        "400":
+          description: Invalid dataset create request
   /v1/datasets/{id}:
     get:
       summary: Get dataset detail with aggregate counts and latest snapshot info
@@ -47,6 +49,8 @@ paths:
       responses:
         "200":
           description: Dataset detail payload
+        "400":
+          description: Invalid dataset id
         "404":
           description: Dataset not found
   /v1/datasets/{id}/scan:
@@ -61,6 +65,8 @@ paths:
       responses:
         "200":
           description: Scan accepted
+        "400":
+          description: Invalid dataset scan request
   /v1/datasets/{id}/snapshots:
     post:
       summary: Create snapshot
@@ -73,6 +79,8 @@ paths:
       responses:
         "200":
           description: Snapshot created
+        "400":
+          description: Invalid snapshot create request
     get:
       summary: List snapshots
       parameters:
@@ -84,6 +92,8 @@ paths:
       responses:
         "200":
           description: Snapshot list
+        "400":
+          description: Invalid dataset id
   /v1/snapshots/{id}/import:
     post:
       summary: Queue snapshot import job
@@ -123,11 +133,13 @@ paths:
       responses:
         "200":
           description: Snapshot detail payload
+        "400":
+          description: Invalid snapshot id
         "404":
           description: Snapshot not found
   /v1/snapshots/{id}/export:
     post:
-      summary: Queue snapshot export package build (currently yolo only)
+      summary: Queue snapshot export package build
       parameters:
         - in: path
           name: id
@@ -146,7 +158,7 @@ paths:
                   type: integer
                 format:
                   type: string
-                  enum: [yolo]
+                  enum: [yolo, coco]
                 version:
                   type: string
                 label_map_json:
@@ -156,6 +168,8 @@ paths:
       responses:
         "202":
           description: Export job accepted
+        "400":
+          description: Invalid export request
   /v1/datasets/{id}/items:
     get:
       summary: List indexed dataset items
@@ -168,12 +182,16 @@ paths:
       responses:
         "200":
           description: Item list
+        "400":
+          description: Invalid dataset id or item listing request
   /v1/objects/presign:
     post:
       summary: Create object read presign URL
       responses:
         "200":
           description: Signed URL
+        "400":
+          description: Invalid object presign request
   /v1/projects/{id}/overview:
     get:
       summary: Get project task overview
@@ -186,6 +204,8 @@ paths:
       responses:
         "200":
           description: Project overview payload
+        "400":
+          description: Invalid project id or overview request
   /v1/projects/{id}/tasks:
     get:
       summary: List project tasks
@@ -218,6 +238,8 @@ paths:
       responses:
         "200":
           description: Project task list
+        "400":
+          description: Invalid project id or task list filter
     post:
       summary: Create project task
       parameters:
@@ -236,6 +258,8 @@ paths:
       responses:
         "201":
           description: Task created
+        "400":
+          description: Invalid project id or task create request
   /v1/tasks/{id}:
     get:
       summary: Get task detail
@@ -248,6 +272,10 @@ paths:
       responses:
         "200":
           description: Task detail payload
+        "400":
+          description: Invalid task id
+        "404":
+          description: Task not found
   /v1/tasks/{id}/transition:
     post:
       summary: Transition task status
@@ -267,6 +295,8 @@ paths:
       responses:
         "200":
           description: Updated task payload
+        "400":
+          description: Invalid task id or transition request
   /v1/tasks/{id}/workspace:
     get:
       summary: Get annotation workspace payload
@@ -279,6 +309,8 @@ paths:
       responses:
         "200":
           description: Annotation workspace payload
+        "400":
+          description: Invalid task id or workspace request
         "404":
           description: Task or workspace context not found
         "422":
@@ -302,6 +334,8 @@ paths:
       responses:
         "200":
           description: Updated workspace payload
+        "400":
+          description: Invalid task id or workspace draft request
         "404":
           description: Task or workspace context not found
         "409":
@@ -327,6 +361,8 @@ paths:
       responses:
         "200":
           description: Submitted workspace payload
+        "400":
+          description: Invalid task id or workspace submit request
         "404":
           description: Task or workspace context not found
         "409":
@@ -379,6 +415,8 @@ paths:
       responses:
         "200":
           description: Job accepted
+        "400":
+          description: Invalid zero-shot job request
   /v1/jobs/video-extract:
     post:
       summary: Queue video extraction job
@@ -423,12 +461,16 @@ paths:
       responses:
         "200":
           description: Job accepted
+        "400":
+          description: Invalid video extraction job request
   /v1/jobs/cleaning:
     post:
       summary: Queue cleaning job
       responses:
         "200":
           description: Job accepted
+        "400":
+          description: Invalid cleaning job request
   /v1/jobs/{job_id}:
     get:
       summary: Get job status
@@ -441,6 +483,10 @@ paths:
       responses:
         "200":
           description: Job details
+        "400":
+          description: Invalid job id
+        "404":
+          description: Job not found
   /v1/jobs/{job_id}/events:
     get:
       summary: Get job event timeline
@@ -453,12 +499,16 @@ paths:
       responses:
         "200":
           description: Job event list
+        "400":
+          description: Invalid job id
   /v1/snapshots/diff:
     post:
       summary: Diff snapshots
       responses:
         "200":
           description: Diff result
+        "400":
+          description: Invalid diff request
   /v1/review/candidates:
     get:
       summary: List queued review candidates with source metadata
@@ -477,6 +527,8 @@ paths:
       responses:
         "200":
           description: Candidate accepted
+        "400":
+          description: Invalid candidate id or review accept request
   /v1/review/candidates/{id}/reject:
     post:
       summary: Reject candidate with required reason code
@@ -502,6 +554,8 @@ paths:
       responses:
         "200":
           description: Candidate rejected
+        "400":
+          description: Invalid candidate id or review reject request
   /v1/publish/candidates:
     get:
       summary: List publish candidate groups
@@ -514,6 +568,8 @@ paths:
       responses:
         "200":
           description: Publish candidate groups
+        "400":
+          description: Invalid or missing project id
   /v1/publish/batches:
     post:
       summary: Create publish batch
@@ -527,6 +583,8 @@ paths:
       responses:
         "201":
           description: Publish batch created
+        "400":
+          description: Invalid publish batch request
   /v1/publish/batches/{id}:
     get:
       summary: Get publish batch detail
@@ -539,6 +597,10 @@ paths:
       responses:
         "200":
           description: Publish batch detail
+        "400":
+          description: Invalid batch id
+        "404":
+          description: Publish batch not found
   /v1/publish/batches/{id}/items:
     post:
       summary: Replace publish batch items
@@ -551,6 +613,8 @@ paths:
       responses:
         "200":
           description: Publish batch items replaced
+        "400":
+          description: Invalid batch id or batch items request
   /v1/publish/batches/{id}/review-approve:
     post:
       summary: Approve publish batch as reviewer
@@ -563,6 +627,8 @@ paths:
       responses:
         "200":
           description: Reviewer approval recorded
+        "400":
+          description: Invalid batch id or reviewer approval request
   /v1/publish/batches/{id}/review-reject:
     post:
       summary: Reject publish batch as reviewer
@@ -575,6 +641,8 @@ paths:
       responses:
         "200":
           description: Reviewer rejection recorded
+        "400":
+          description: Invalid batch id or reviewer rejection request
   /v1/publish/batches/{id}/review-rework:
     post:
       summary: Request publish batch rework as reviewer
@@ -587,6 +655,8 @@ paths:
       responses:
         "200":
           description: Reviewer rework recorded
+        "400":
+          description: Invalid batch id or reviewer rework request
   /v1/publish/batches/{id}/owner-approve:
     post:
       summary: Approve publish batch as owner
@@ -599,6 +669,8 @@ paths:
       responses:
         "200":
           description: Owner approval recorded
+        "400":
+          description: Invalid batch id or owner approval request
   /v1/publish/batches/{id}/owner-reject:
     post:
       summary: Reject publish batch as owner
@@ -611,6 +683,8 @@ paths:
       responses:
         "200":
           description: Owner rejection recorded
+        "400":
+          description: Invalid batch id or owner rejection request
   /v1/publish/batches/{id}/owner-rework:
     post:
       summary: Request publish batch rework as owner
@@ -623,6 +697,8 @@ paths:
       responses:
         "200":
           description: Owner rework recorded
+        "400":
+          description: Invalid batch id or owner rework request
   /v1/publish/batches/{id}/feedback:
     post:
       summary: Add batch-level publish feedback
@@ -635,6 +711,8 @@ paths:
       responses:
         "201":
           description: Publish batch feedback created
+        "400":
+          description: Invalid batch id or batch feedback request
   /v1/publish/batches/{id}/items/{itemId}/feedback:
     post:
       summary: Add item-level publish feedback
@@ -652,6 +730,8 @@ paths:
       responses:
         "201":
           description: Publish item feedback created
+        "400":
+          description: Invalid batch id, item id, or item feedback request
   /v1/publish/batches/{id}/workspace:
     get:
       summary: Get aggregated review workspace payload
@@ -664,6 +744,10 @@ paths:
       responses:
         "200":
           description: Review workspace payload
+        "400":
+          description: Invalid batch id
+        "404":
+          description: Publish batch workspace not found
   /v1/publish/records/{id}:
     get:
       summary: Get publish record
@@ -676,9 +760,13 @@ paths:
       responses:
         "200":
           description: Publish record detail
+        "400":
+          description: Invalid record id
+        "404":
+          description: Publish record not found
   /v1/artifacts/packages:
     post:
-      summary: Queue artifact package build (currently yolo only)
+      summary: Queue artifact package build
       requestBody:
         required: true
         content:
@@ -693,7 +781,7 @@ paths:
                   type: integer
                 format:
                   type: string
-                  enum: [yolo]
+                  enum: [yolo, coco]
                 version:
                   type: string
                 label_map_json:
@@ -743,6 +831,8 @@ paths:
       responses:
         "200":
           description: Artifact details
+        "400":
+          description: Invalid artifact id
         "404":
           description: Artifact not found
   /v1/artifacts/{id}/download:
@@ -757,6 +847,8 @@ paths:
       responses:
         "200":
           description: Artifact archive stream
+        "400":
+          description: Invalid artifact id
         "404":
           description: Artifact not found
         "409":
@@ -773,6 +865,8 @@ paths:
       responses:
         "200":
           description: Signed artifact URL
+        "400":
+          description: Invalid artifact id or presign request
         "404":
           description: Artifact not found
         "409":

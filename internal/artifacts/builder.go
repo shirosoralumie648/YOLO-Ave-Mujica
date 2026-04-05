@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -46,58 +47,16 @@ func (b *Builder) Build(ctx context.Context, workdir string, bundle ExportBundle
 	if b == nil || b.source == nil {
 		return BuildOutput{}, fmt.Errorf("artifact builder source is not configured")
 	}
+	format := bundle.Format
+	if format == "" {
+		format = "yolo"
+	}
 
 	rootDir := filepath.Join(workdir, "package")
-	imagesDir := filepath.Join(rootDir, "train", "images")
-	labelsDir := filepath.Join(rootDir, "train", "labels")
-	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
+	entries, totalAnnotations, err := b.writePackageContents(ctx, rootDir, bundle, format)
+	if err != nil {
 		return BuildOutput{}, err
 	}
-	if err := os.MkdirAll(labelsDir, 0o755); err != nil {
-		return BuildOutput{}, err
-	}
-
-	entries := make([]ManifestEntry, 0, (len(bundle.Items)*2)+1)
-	totalAnnotations := 0
-	for _, item := range bundle.Items {
-		if err := ctx.Err(); err != nil {
-			return BuildOutput{}, err
-		}
-
-		imageBody, err := b.source.ReadObject(ctx, item.ObjectKey)
-		if err != nil {
-			return BuildOutput{}, fmt.Errorf("read object %s: %w", item.ObjectKey, err)
-		}
-		imageDiskPath := filepath.Join(imagesDir, item.OutputName)
-		if err := os.WriteFile(imageDiskPath, imageBody, 0o644); err != nil {
-			return BuildOutput{}, err
-		}
-		entries = append(entries, ManifestEntry{
-			Path:     path.Join("train", "images", item.OutputName),
-			Checksum: checksumForBytes(imageBody),
-		})
-
-		labelBody := []byte(renderYOLOLabelFile(item.Boxes))
-		totalAnnotations += len(item.Boxes)
-		labelDiskPath := filepath.Join(labelsDir, item.LabelFileName)
-		if err := os.WriteFile(labelDiskPath, labelBody, 0o644); err != nil {
-			return BuildOutput{}, err
-		}
-		entries = append(entries, ManifestEntry{
-			Path:     path.Join("train", "labels", item.LabelFileName),
-			Checksum: checksumForBytes(labelBody),
-		})
-	}
-
-	dataYAMLBody := []byte(BuildDataYAML("./train/images", "./train/images", bundle.Categories))
-	dataYAMLPath := filepath.Join(rootDir, "data.yaml")
-	if err := os.WriteFile(dataYAMLPath, dataYAMLBody, 0o644); err != nil {
-		return BuildOutput{}, err
-	}
-	entries = append(entries, ManifestEntry{
-		Path:     "data.yaml",
-		Checksum: checksumForBytes(dataYAMLBody),
-	})
 
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].Path < entries[j].Path
@@ -116,7 +75,7 @@ func (b *Builder) Build(ctx context.Context, workdir string, bundle ExportBundle
 		return BuildOutput{}, err
 	}
 
-	archivePath := filepath.Join(workdir, "package.yolo.tar.gz")
+	archivePath := filepath.Join(workdir, fmt.Sprintf("package.%s.tar.gz", format))
 	if err := tarGzDir(rootDir, archivePath); err != nil {
 		return BuildOutput{}, err
 	}
@@ -137,6 +96,191 @@ func (b *Builder) Build(ctx context.Context, workdir string, bundle ExportBundle
 		ArchiveSHA256: archiveChecksum,
 		ArchiveSize:   info.Size(),
 	}, nil
+}
+
+func (b *Builder) writePackageContents(ctx context.Context, rootDir string, bundle ExportBundle, format string) ([]ManifestEntry, int, error) {
+	switch format {
+	case "coco":
+		return b.writeCOCOPackage(ctx, rootDir, bundle)
+	case "yolo":
+		return b.writeYOLOPackage(ctx, rootDir, bundle)
+	default:
+		return nil, 0, fmt.Errorf("unsupported format: %s", format)
+	}
+}
+
+func (b *Builder) writeYOLOPackage(ctx context.Context, rootDir string, bundle ExportBundle) ([]ManifestEntry, int, error) {
+	imagesDir := filepath.Join(rootDir, "train", "images")
+	labelsDir := filepath.Join(rootDir, "train", "labels")
+	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
+		return nil, 0, err
+	}
+	if err := os.MkdirAll(labelsDir, 0o755); err != nil {
+		return nil, 0, err
+	}
+
+	entries := make([]ManifestEntry, 0, (len(bundle.Items)*2)+1)
+	totalAnnotations := 0
+	for _, item := range bundle.Items {
+		imageBody, err := b.readObject(ctx, item.ObjectKey)
+		if err != nil {
+			return nil, 0, err
+		}
+		imageDiskPath := filepath.Join(imagesDir, item.OutputName)
+		if err := os.WriteFile(imageDiskPath, imageBody, 0o644); err != nil {
+			return nil, 0, err
+		}
+		entries = append(entries, ManifestEntry{
+			Path:     path.Join("train", "images", item.OutputName),
+			Checksum: checksumForBytes(imageBody),
+		})
+
+		labelBody := []byte(renderYOLOLabelFile(item.Boxes))
+		totalAnnotations += len(item.Boxes)
+		labelDiskPath := filepath.Join(labelsDir, item.LabelFileName)
+		if err := os.WriteFile(labelDiskPath, labelBody, 0o644); err != nil {
+			return nil, 0, err
+		}
+		entries = append(entries, ManifestEntry{
+			Path:     path.Join("train", "labels", item.LabelFileName),
+			Checksum: checksumForBytes(labelBody),
+		})
+	}
+
+	dataYAMLBody := []byte(BuildDataYAML("./train/images", "./train/images", bundle.Categories))
+	dataYAMLPath := filepath.Join(rootDir, "data.yaml")
+	if err := os.WriteFile(dataYAMLPath, dataYAMLBody, 0o644); err != nil {
+		return nil, 0, err
+	}
+	entries = append(entries, ManifestEntry{
+		Path:     "data.yaml",
+		Checksum: checksumForBytes(dataYAMLBody),
+	})
+	return entries, totalAnnotations, nil
+}
+
+func (b *Builder) writeCOCOPackage(ctx context.Context, rootDir string, bundle ExportBundle) ([]ManifestEntry, int, error) {
+	imagesDir := filepath.Join(rootDir, "images")
+	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
+		return nil, 0, err
+	}
+
+	entries := make([]ManifestEntry, 0, len(bundle.Items)+1)
+	document := cocoDocument{
+		Images:      make([]cocoImage, 0, len(bundle.Items)),
+		Annotations: make([]cocoAnnotation, 0, bundle.TotalBoxes),
+		Categories:  make([]cocoCategory, 0, len(bundle.Categories)),
+	}
+	for idx, name := range bundle.Categories {
+		document.Categories = append(document.Categories, cocoCategory{
+			ID:   categoryIDAt(bundle, idx),
+			Name: name,
+		})
+	}
+
+	totalAnnotations := 0
+	nextAnnotationID := int64(1)
+	for _, item := range bundle.Items {
+		imageBody, err := b.readObject(ctx, item.ObjectKey)
+		if err != nil {
+			return nil, 0, err
+		}
+		imageDiskPath := filepath.Join(imagesDir, item.OutputName)
+		if err := os.WriteFile(imageDiskPath, imageBody, 0o644); err != nil {
+			return nil, 0, err
+		}
+		entries = append(entries, ManifestEntry{
+			Path:     path.Join("images", item.OutputName),
+			Checksum: checksumForBytes(imageBody),
+		})
+		document.Images = append(document.Images, cocoImage{
+			ID:       item.ItemID,
+			FileName: path.Join("images", item.OutputName),
+			Width:    item.Width,
+			Height:   item.Height,
+		})
+		for _, box := range item.Boxes {
+			document.Annotations = append(document.Annotations, cocoAnnotation{
+				ID:         nextAnnotationID,
+				ImageID:    item.ItemID,
+				CategoryID: cocoCategoryID(bundle, box),
+				BBox:       []float64{box.BBoxX, box.BBoxY, box.BBoxW, box.BBoxH},
+				Area:       box.BBoxW * box.BBoxH,
+				IsCrowd:    0,
+			})
+			nextAnnotationID++
+			totalAnnotations++
+		}
+	}
+
+	annotationsBody, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return nil, 0, err
+	}
+	annotationsPath := filepath.Join(rootDir, "annotations.json")
+	if err := os.WriteFile(annotationsPath, annotationsBody, 0o644); err != nil {
+		return nil, 0, err
+	}
+	entries = append(entries, ManifestEntry{
+		Path:     "annotations.json",
+		Checksum: checksumForBytes(annotationsBody),
+	})
+	return entries, totalAnnotations, nil
+}
+
+func (b *Builder) readObject(ctx context.Context, objectKey string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	imageBody, err := b.source.ReadObject(ctx, objectKey)
+	if err != nil {
+		return nil, fmt.Errorf("read object %s: %w", objectKey, err)
+	}
+	return imageBody, nil
+}
+
+type cocoDocument struct {
+	Images      []cocoImage      `json:"images"`
+	Annotations []cocoAnnotation `json:"annotations"`
+	Categories  []cocoCategory   `json:"categories"`
+}
+
+type cocoImage struct {
+	ID       int64  `json:"id"`
+	FileName string `json:"file_name"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+}
+
+type cocoAnnotation struct {
+	ID         int64     `json:"id"`
+	ImageID    int64     `json:"image_id"`
+	CategoryID int64     `json:"category_id"`
+	BBox       []float64 `json:"bbox"`
+	Area       float64   `json:"area"`
+	IsCrowd    int       `json:"iscrowd"`
+}
+
+type cocoCategory struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+func categoryIDAt(bundle ExportBundle, index int) int64 {
+	if index >= 0 && index < len(bundle.CategoryIDs) && bundle.CategoryIDs[index] > 0 {
+		return bundle.CategoryIDs[index]
+	}
+	return int64(index + 1)
+}
+
+func cocoCategoryID(bundle ExportBundle, box YOLOBox) int64 {
+	if box.CategoryID > 0 {
+		return box.CategoryID
+	}
+	if box.ClassIndex >= 0 && box.ClassIndex < len(bundle.CategoryIDs) {
+		return categoryIDAt(bundle, box.ClassIndex)
+	}
+	return int64(box.ClassIndex + 1)
 }
 
 func buildManifestCategoryMap(categories []string) map[string]string {

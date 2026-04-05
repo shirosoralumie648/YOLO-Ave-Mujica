@@ -205,7 +205,7 @@ paths:
 	}
 }
 
-func TestOpenAPISnapshotExportDocumentsYoloOnlyRequestFormat(t *testing.T) {
+func TestOpenAPISnapshotExportDocumentsSupportedRequestFormats(t *testing.T) {
 	raw, err := readOpenAPIDocument()
 	if err != nil {
 		t.Fatalf("read openapi document: %v", err)
@@ -220,12 +220,12 @@ func TestOpenAPISnapshotExportDocumentsYoloOnlyRequestFormat(t *testing.T) {
 	if !strings.Contains(block, "required: [dataset_id, format, version]") {
 		t.Fatalf("expected export path to require dataset_id/format/version, got:\n%s", block)
 	}
-	if !strings.Contains(block, "enum: [yolo]") {
-		t.Fatalf("expected export path to document yolo-only format, got:\n%s", block)
+	if !strings.Contains(block, "enum: [yolo, coco]") {
+		t.Fatalf("expected export path to document yolo and coco formats, got:\n%s", block)
 	}
 }
 
-func TestOpenAPIArtifactPackageDocumentsYoloOnlyRequestFormat(t *testing.T) {
+func TestOpenAPIArtifactPackageDocumentsSupportedRequestFormats(t *testing.T) {
 	raw, err := readOpenAPIDocument()
 	if err != nil {
 		t.Fatalf("read openapi document: %v", err)
@@ -240,8 +240,8 @@ func TestOpenAPIArtifactPackageDocumentsYoloOnlyRequestFormat(t *testing.T) {
 	if !strings.Contains(block, "required: [dataset_id, snapshot_id, format, version]") {
 		t.Fatalf("expected artifact package path to require dataset_id/snapshot_id/format/version, got:\n%s", block)
 	}
-	if !strings.Contains(block, "enum: [yolo]") {
-		t.Fatalf("expected artifact package path to document yolo-only format, got:\n%s", block)
+	if !strings.Contains(block, "enum: [yolo, coco]") {
+		t.Fatalf("expected artifact package path to document yolo and coco formats, got:\n%s", block)
 	}
 }
 
@@ -255,7 +255,7 @@ func TestOpenAPIWorkspaceRoutesDocumentFailureResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract workspace path block: %v", err)
 	}
-	for _, code := range []string{`"404":`, `"422":`} {
+	for _, code := range []string{`"400":`, `"404":`, `"422":`} {
 		if !strings.Contains(workspaceBlock, code) {
 			t.Fatalf("expected workspace path to document %s, got:\n%s", code, workspaceBlock)
 		}
@@ -265,7 +265,7 @@ func TestOpenAPIWorkspaceRoutesDocumentFailureResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract workspace draft path block: %v", err)
 	}
-	for _, code := range []string{`"404":`, `"409":`, `"422":`} {
+	for _, code := range []string{`"400":`, `"404":`, `"409":`, `"422":`} {
 		if !strings.Contains(draftBlock, code) {
 			t.Fatalf("expected workspace draft path to document %s, got:\n%s", code, draftBlock)
 		}
@@ -275,9 +275,95 @@ func TestOpenAPIWorkspaceRoutesDocumentFailureResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract workspace submit path block: %v", err)
 	}
-	for _, code := range []string{`"404":`, `"409":`, `"422":`} {
+	for _, code := range []string{`"400":`, `"404":`, `"409":`, `"422":`} {
 		if !strings.Contains(submitBlock, code) {
 			t.Fatalf("expected workspace submit path to document %s, got:\n%s", code, submitBlock)
+		}
+	}
+}
+
+func TestOpenAPIOverviewAndTaskRoutesDocumentFailureResponses(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+
+	overviewBlock, err := extractOpenAPIPathBlock(raw, "/v1/projects/{id}/overview")
+	if err != nil {
+		t.Fatalf("extract overview path block: %v", err)
+	}
+	if !strings.Contains(overviewBlock, `"400":`) {
+		t.Fatalf("expected overview path to document 400 failures, got:\n%s", overviewBlock)
+	}
+
+	tasksBlock, err := extractOpenAPIPathBlock(raw, "/v1/projects/{id}/tasks")
+	if err != nil {
+		t.Fatalf("extract tasks path block: %v", err)
+	}
+	if !strings.Contains(tasksBlock, `"400":`) {
+		t.Fatalf("expected project tasks path to document 400 failures, got:\n%s", tasksBlock)
+	}
+
+	taskDetailBlock, err := extractOpenAPIPathBlock(raw, "/v1/tasks/{id}")
+	if err != nil {
+		t.Fatalf("extract task detail path block: %v", err)
+	}
+	for _, code := range []string{`"400":`, `"404":`} {
+		if !strings.Contains(taskDetailBlock, code) {
+			t.Fatalf("expected task detail path to document %s failures, got:\n%s", code, taskDetailBlock)
+		}
+	}
+
+	transitionBlock, err := extractOpenAPIPathBlock(raw, "/v1/tasks/{id}/transition")
+	if err != nil {
+		t.Fatalf("extract task transition path block: %v", err)
+	}
+	if !strings.Contains(transitionBlock, `"400":`) {
+		t.Fatalf("expected task transition path to document 400 failures, got:\n%s", transitionBlock)
+	}
+}
+
+func TestOpenAPIDataHubRoutesDocumentFailureResponses(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+
+	createDatasetBlock, err := extractOpenAPIPathBlock(raw, "/v1/datasets")
+	if err != nil {
+		t.Fatalf("extract datasets path block: %v", err)
+	}
+	if !strings.Contains(createDatasetBlock, `"400":`) {
+		t.Fatalf("expected datasets path to document 400 failures for create, got:\n%s", createDatasetBlock)
+	}
+
+	datasetDetailBlock, err := extractOpenAPIPathBlock(raw, "/v1/datasets/{id}")
+	if err != nil {
+		t.Fatalf("extract dataset detail path block: %v", err)
+	}
+	for _, code := range []string{`"400":`, `"404":`} {
+		if !strings.Contains(datasetDetailBlock, code) {
+			t.Fatalf("expected dataset detail path to document %s failures, got:\n%s", code, datasetDetailBlock)
+		}
+	}
+
+	for _, path := range []string{"/v1/datasets/{id}/scan", "/v1/datasets/{id}/snapshots", "/v1/datasets/{id}/items", "/v1/objects/presign"} {
+		block, err := extractOpenAPIPathBlock(raw, path)
+		if err != nil {
+			t.Fatalf("extract datahub path block %s: %v", path, err)
+		}
+		if !strings.Contains(block, `"400":`) {
+			t.Fatalf("expected %s to document 400 failures, got:\n%s", path, block)
+		}
+	}
+
+	snapshotDetailBlock, err := extractOpenAPIPathBlock(raw, "/v1/snapshots/{id}")
+	if err != nil {
+		t.Fatalf("extract snapshot detail path block: %v", err)
+	}
+	for _, code := range []string{`"400":`, `"404":`} {
+		if !strings.Contains(snapshotDetailBlock, code) {
+			t.Fatalf("expected snapshot detail path to document %s failures, got:\n%s", code, snapshotDetailBlock)
 		}
 	}
 }
@@ -294,6 +380,185 @@ func TestOpenAPISnapshotImportDocumentsFailureResponses(t *testing.T) {
 	for _, code := range []string{`"400":`, `"404":`} {
 		if !strings.Contains(block, code) {
 			t.Fatalf("expected snapshot import path to document %s, got:\n%s", code, block)
+		}
+	}
+}
+
+func TestOpenAPISnapshotExportDocumentsFailureResponses(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+	block, err := extractOpenAPIPathBlock(raw, "/v1/snapshots/{id}/export")
+	if err != nil {
+		t.Fatalf("extract snapshot export path block: %v", err)
+	}
+	if !strings.Contains(block, `"400":`) {
+		t.Fatalf("expected snapshot export path to document 400 failures, got:\n%s", block)
+	}
+}
+
+func TestOpenAPIJobRoutesDocumentFailureResponses(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+
+	for _, path := range []string{"/v1/jobs/zero-shot", "/v1/jobs/video-extract", "/v1/jobs/cleaning"} {
+		block, err := extractOpenAPIPathBlock(raw, path)
+		if err != nil {
+			t.Fatalf("extract job create path block %s: %v", path, err)
+		}
+		if !strings.Contains(block, `"400":`) {
+			t.Fatalf("expected %s to document 400 failures, got:\n%s", path, block)
+		}
+	}
+
+	for _, path := range []string{"/v1/jobs/{job_id}", "/v1/jobs/{job_id}/events"} {
+		block, err := extractOpenAPIPathBlock(raw, path)
+		if err != nil {
+			t.Fatalf("extract job read path block %s: %v", path, err)
+		}
+		if !strings.Contains(block, `"400":`) {
+			t.Fatalf("expected %s to document 400 failures, got:\n%s", path, block)
+		}
+	}
+
+	jobBlock, err := extractOpenAPIPathBlock(raw, "/v1/jobs/{job_id}")
+	if err != nil {
+		t.Fatalf("extract job detail path block: %v", err)
+	}
+	if !strings.Contains(jobBlock, `"404":`) {
+		t.Fatalf("expected /v1/jobs/{job_id} to document 404 failures, got:\n%s", jobBlock)
+	}
+}
+
+func TestOpenAPIPublishRoutesDocumentFailureResponses(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+
+	candidatesBlock, err := extractOpenAPIPathBlock(raw, "/v1/publish/candidates")
+	if err != nil {
+		t.Fatalf("extract publish candidates path block: %v", err)
+	}
+	if !strings.Contains(candidatesBlock, `"400":`) {
+		t.Fatalf("expected publish candidates path to document 400 failures, got:\n%s", candidatesBlock)
+	}
+
+	createBlock, err := extractOpenAPIPathBlock(raw, "/v1/publish/batches")
+	if err != nil {
+		t.Fatalf("extract publish batches path block: %v", err)
+	}
+	if !strings.Contains(createBlock, `"400":`) {
+		t.Fatalf("expected publish batches path to document 400 failures, got:\n%s", createBlock)
+	}
+
+	for _, path := range []string{"/v1/publish/batches/{id}", "/v1/publish/batches/{id}/workspace", "/v1/publish/records/{id}"} {
+		block, err := extractOpenAPIPathBlock(raw, path)
+		if err != nil {
+			t.Fatalf("extract publish read path block %s: %v", path, err)
+		}
+		for _, code := range []string{`"400":`, `"404":`} {
+			if !strings.Contains(block, code) {
+				t.Fatalf("expected %s to document %s failures, got:\n%s", path, code, block)
+			}
+		}
+	}
+}
+
+func TestOpenAPIPublishMutationRoutesDocumentFailureResponses(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+
+	for _, path := range []string{
+		"/v1/publish/batches/{id}/items",
+		"/v1/publish/batches/{id}/review-approve",
+		"/v1/publish/batches/{id}/review-reject",
+		"/v1/publish/batches/{id}/review-rework",
+		"/v1/publish/batches/{id}/owner-approve",
+		"/v1/publish/batches/{id}/owner-reject",
+		"/v1/publish/batches/{id}/owner-rework",
+		"/v1/publish/batches/{id}/feedback",
+		"/v1/publish/batches/{id}/items/{itemId}/feedback",
+	} {
+		block, err := extractOpenAPIPathBlock(raw, path)
+		if err != nil {
+			t.Fatalf("extract publish mutation path block %s: %v", path, err)
+		}
+		if !strings.Contains(block, `"400":`) {
+			t.Fatalf("expected %s to document 400 failures, got:\n%s", path, block)
+		}
+	}
+}
+
+func TestOpenAPISnapshotDiffDocumentsFailureResponses(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+	block, err := extractOpenAPIPathBlock(raw, "/v1/snapshots/diff")
+	if err != nil {
+		t.Fatalf("extract snapshot diff path block: %v", err)
+	}
+	if !strings.Contains(block, `"400":`) {
+		t.Fatalf("expected snapshot diff path to document 400 failures, got:\n%s", block)
+	}
+}
+
+func TestOpenAPIReviewRoutesDocumentFailureResponses(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+
+	for _, path := range []string{"/v1/review/candidates/{id}/accept", "/v1/review/candidates/{id}/reject"} {
+		block, err := extractOpenAPIPathBlock(raw, path)
+		if err != nil {
+			t.Fatalf("extract review path block %s: %v", path, err)
+		}
+		if !strings.Contains(block, `"400":`) {
+			t.Fatalf("expected %s to document 400 failures, got:\n%s", path, block)
+		}
+	}
+}
+
+func TestOpenAPIArtifactRoutesDocumentFailureResponses(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+
+	getBlock, err := extractOpenAPIPathBlock(raw, "/v1/artifacts/{id}")
+	if err != nil {
+		t.Fatalf("extract artifact detail path block: %v", err)
+	}
+	for _, code := range []string{`"400":`, `"404":`} {
+		if !strings.Contains(getBlock, code) {
+			t.Fatalf("expected artifact detail path to document %s failures, got:\n%s", code, getBlock)
+		}
+	}
+
+	downloadBlock, err := extractOpenAPIPathBlock(raw, "/v1/artifacts/{id}/download")
+	if err != nil {
+		t.Fatalf("extract artifact download path block: %v", err)
+	}
+	for _, code := range []string{`"400":`, `"404":`, `"409":`} {
+		if !strings.Contains(downloadBlock, code) {
+			t.Fatalf("expected artifact download path to document %s failures, got:\n%s", code, downloadBlock)
+		}
+	}
+
+	presignBlock, err := extractOpenAPIPathBlock(raw, "/v1/artifacts/{id}/presign")
+	if err != nil {
+		t.Fatalf("extract artifact presign path block: %v", err)
+	}
+	for _, code := range []string{`"400":`, `"404":`, `"409":`} {
+		if !strings.Contains(presignBlock, code) {
+			t.Fatalf("expected artifact presign path to document %s failures, got:\n%s", code, presignBlock)
 		}
 	}
 }

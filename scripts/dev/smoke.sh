@@ -120,6 +120,23 @@ if isinstance(value, int):
 PY
 }
 
+wait_for_artifact_ready() {
+  local artifact_id="$1"
+  local artifact_detail=""
+  for _ in $(seq 1 60); do
+    artifact_detail="$(curl -fsS "${api_base}/v1/artifacts/${artifact_id}")" || fail "artifact detail request failed"
+    if [[ "$artifact_detail" == *"\"status\":\"ready\""* ]]; then
+      printf '%s' "$artifact_detail"
+      return 0
+    fi
+    if [[ "$artifact_detail" == *"\"status\":\"failed\""* ]]; then
+      fail "artifact ${artifact_id} build failed: ${artifact_detail}"
+    fi
+    sleep 0.5
+  done
+  fail "artifact ${artifact_id} did not become ready: ${artifact_detail}"
+}
+
 require_endpoint() {
   local name="$1"
   local url="$2"
@@ -272,6 +289,8 @@ if [[ "$job_response" != *"job_id"* ]]; then
   fail "job create response missing job_id: $job_response"
 fi
 
+GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod go run ./cmd/dev-seed-artifact-smoke --dataset-id "${dataset_id}" --category-only >/dev/null || fail "category smoke seed failed"
+
 import_response="$(curl -fsS -X POST "${api_base}/v1/snapshots/${snapshot_id}/import" \
   -H 'Content-Type: application/json' \
   -d "{\"format\":\"yolo\",\"idempotency_key\":\"${import_idempotency_key}\",\"required_resource_type\":\"cpu\",\"required_capabilities\":[\"importer\",\"yolo\"],\"labels\":{\"train/a.txt\":\"0 0.5 0.5 0.2 0.2\\n\"},\"names\":[\"person\"],\"images\":{\"train/a.txt\":\"train/a.jpg\"}}")" || fail "snapshot import request failed"
@@ -360,18 +379,18 @@ if [[ -n "$seed_snapshot_id" ]]; then
 fi
 
 artifact_version="v-smoke-${dataset_id}"
-unsupported_export_response="$(curl -sS -X POST "${api_base}/v1/snapshots/${snapshot_id}/export" \
+coco_artifact_version="${artifact_version}-coco"
+coco_export_response="$(curl -fsS -X POST "${api_base}/v1/snapshots/${snapshot_id}/export" \
   -H 'Content-Type: application/json' \
-  -d "{\"dataset_id\":${dataset_id},\"format\":\"coco\",\"version\":\"${artifact_version}-invalid\"}" \
-  -w $'\n%{http_code}')" || fail "unsupported snapshot export request failed unexpectedly"
-unsupported_export_status="${unsupported_export_response##*$'\n'}"
-unsupported_export_body="${unsupported_export_response%$'\n'*}"
-if [[ "$unsupported_export_status" != "400" ]]; then
-  fail "expected unsupported export format to return 400, got ${unsupported_export_status}: ${unsupported_export_body}"
+  -d "{\"dataset_id\":${dataset_id},\"format\":\"coco\",\"version\":\"${coco_artifact_version}\"}")" || fail "snapshot coco export request failed"
+
+coco_artifact_id="$(json_int_field "$coco_export_response" "artifact_id")"
+coco_package_job_id="$(json_int_field "$coco_export_response" "job_id")"
+if [[ -z "$coco_artifact_id" || -z "$coco_package_job_id" ]]; then
+  fail "snapshot coco export response missing job_id or artifact_id: $coco_export_response"
 fi
-if [[ "$unsupported_export_body" != *"unsupported format"* ]]; then
-  fail "unsupported export response missing error detail: ${unsupported_export_body}"
-fi
+
+wait_for_artifact_ready "$coco_artifact_id" >/dev/null
 
 export_response="$(curl -fsS -X POST "${api_base}/v1/snapshots/${snapshot_id}/export" \
   -H 'Content-Type: application/json' \
@@ -383,20 +402,7 @@ if [[ -z "$artifact_id" || -z "$package_job_id" ]]; then
   fail "snapshot export response missing job_id or artifact_id: $export_response"
 fi
 
-artifact_detail=""
-for _ in $(seq 1 60); do
-  artifact_detail="$(curl -fsS "${api_base}/v1/artifacts/${artifact_id}")" || fail "artifact detail request failed"
-  if [[ "$artifact_detail" == *"\"status\":\"ready\""* ]]; then
-    break
-  fi
-  if [[ "$artifact_detail" == *"\"status\":\"failed\""* ]]; then
-    fail "artifact ${artifact_id} build failed: ${artifact_detail}"
-  fi
-  sleep 0.5
-done
-if [[ "$artifact_detail" != *"\"status\":\"ready\""* ]]; then
-  fail "artifact ${artifact_id} did not become ready: ${artifact_detail}"
-fi
+artifact_detail="$(wait_for_artifact_ready "$artifact_id")"
 
 resolve_response="$(curl -fsS "${api_base}/v1/artifacts/resolve?dataset=smoke-dataset&format=yolo&version=${artifact_version}")" || fail "artifact resolve request failed"
 resolved_artifact_id="$(json_int_field "$resolve_response" "id")"
