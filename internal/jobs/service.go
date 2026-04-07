@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+
+	"yolo-ave-mujica/internal/observability"
 )
 
 type Event struct {
@@ -24,6 +27,7 @@ type Service struct {
 	repo       Repository
 	dispatcher Publisher
 	reviewSink reviewCandidateSink
+	metrics    *observability.Metrics
 }
 
 type CandidateBBox struct {
@@ -71,22 +75,26 @@ var allowedResourceTypesByJobType = map[string]map[string]bool{
 }
 
 func NewService(repo Repository) *Service {
-	return NewServiceWithDependencies(repo, nil, nil)
+	return NewServiceWithDependenciesAndMetrics(repo, nil, nil, nil)
 }
 
 func NewServiceWithPublisher(repo Repository, dispatcher Publisher) *Service {
-	return NewServiceWithDependencies(repo, dispatcher, nil)
+	return NewServiceWithDependenciesAndMetrics(repo, dispatcher, nil, nil)
 }
 
 func NewServiceWithReviewSink(repo Repository, dispatcher Publisher, reviewSink reviewCandidateSink) *Service {
-	return NewServiceWithDependencies(repo, dispatcher, reviewSink)
+	return NewServiceWithDependenciesAndMetrics(repo, dispatcher, reviewSink, nil)
 }
 
 func NewServiceWithDependencies(repo Repository, dispatcher Publisher, reviewSink reviewCandidateSink) *Service {
+	return NewServiceWithDependenciesAndMetrics(repo, dispatcher, reviewSink, nil)
+}
+
+func NewServiceWithDependenciesAndMetrics(repo Repository, dispatcher Publisher, reviewSink reviewCandidateSink, metrics *observability.Metrics) *Service {
 	if repo == nil {
 		repo = NewInMemoryRepository()
 	}
-	return &Service{repo: repo, dispatcher: dispatcher, reviewSink: reviewSink}
+	return &Service{repo: repo, dispatcher: dispatcher, reviewSink: reviewSink, metrics: metrics}
 }
 
 func (s *Service) CreateJob(in CreateJobInput) (*Job, error) {
@@ -120,6 +128,9 @@ func (s *Service) CreateJob(in CreateJobInput) (*Job, error) {
 		return nil, err
 	}
 	if created {
+		if s.metrics != nil {
+			s.metrics.IncJobCreated(job.JobType)
+		}
 		if _, err := s.repo.AppendEvent(job.ID, nil, "info", "dispatch_requested", "job queued for dispatch", map[string]any{
 			"job_type":               job.JobType,
 			"required_resource_type": job.RequiredResourceType,
@@ -194,6 +205,11 @@ func (s *Service) GetJob(id int64) (*Job, bool) {
 	if !ok {
 		return nil, false
 	}
+	if len(job.ResultRef) > 0 {
+		job.ResultType = stringValue(job.ResultRef["result_type"])
+		job.ResultCount = int(int64Value(job.ResultRef["result_count"]))
+		return job, true
+	}
 	events, err := s.repo.ListEvents(id)
 	if err != nil || len(events) == 0 {
 		return job, true
@@ -206,6 +222,37 @@ func (s *Service) GetJob(id int64) (*Job, bool) {
 	return job, true
 }
 
+func (s *Service) RegisterWorker(in RegisterWorkerInput) (*Worker, error) {
+	workerID := strings.TrimSpace(in.WorkerID)
+	if workerID == "" {
+		return nil, errors.New("worker_id is required")
+	}
+
+	resourceLane := strings.TrimSpace(strings.ToLower(in.ResourceLane))
+	switch resourceLane {
+	case "jobs:cpu", "jobs:gpu", "jobs:mixed":
+	default:
+		return nil, fmt.Errorf("resource_lane must be one of jobs:cpu, jobs:gpu, jobs:mixed")
+	}
+
+	jobTypes := normalizeWorkerStrings(in.JobTypes)
+	if len(jobTypes) == 0 {
+		return nil, errors.New("job_types must not be empty")
+	}
+	capabilities := normalizeWorkerStrings(in.Capabilities)
+
+	return s.repo.UpsertWorker(RegisterWorkerInput{
+		WorkerID:     workerID,
+		ResourceLane: resourceLane,
+		Capabilities: capabilities,
+		JobTypes:     jobTypes,
+	})
+}
+
+func (s *Service) ListWorkers() ([]Worker, error) {
+	return s.repo.ListWorkers()
+}
+
 func (s *Service) AppendEvent(jobID int64, itemID *int64, level, typ, message string, detail map[string]any) Event {
 	ev, _ := s.repo.AppendEvent(jobID, itemID, level, typ, message, detail)
 	return ev
@@ -213,6 +260,24 @@ func (s *Service) AppendEvent(jobID int64, itemID *int64, level, typ, message st
 
 func (s *Service) ListEvents(jobID int64) []Event {
 	out, _ := s.repo.ListEvents(jobID)
+	return out
+}
+
+func normalizeWorkerStrings(raw []string) []string {
+	seen := make(map[string]struct{}, len(raw))
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		item = strings.TrimSpace(strings.ToLower(item))
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -290,8 +355,13 @@ func (s *Service) ReportEvent(jobID int64, itemID *int64, level, typ, message st
 	if err != nil {
 		return err
 	}
-	_, err = s.repo.AppendEvent(jobID, itemID, level, typ, message, detail)
-	return err
+	if _, err := s.repo.AppendEvent(jobID, itemID, level, typ, message, detail); err != nil {
+		return err
+	}
+	if stringValue(detail["result_type"]) != "" {
+		return s.repo.StoreResultRef(jobID, normalizeResultRef(detail))
+	}
+	return nil
 }
 
 func (s *Service) ReportTerminal(jobID int64, workerID, status string, total, succeeded, failed int, resultRef map[string]any) error {
@@ -306,6 +376,10 @@ func (s *Service) ReportTerminal(jobID int64, workerID, status string, total, su
 	if total < 0 || succeeded < 0 || failed < 0 {
 		return newValidationError("terminal counters must be >= 0")
 	}
+	job, ok := s.repo.Get(jobID)
+	if !ok {
+		return newNotFoundError("job %d not found", jobID)
+	}
 	if err := s.repo.Complete(jobID, workerID, status, total, succeeded, failed); err != nil {
 		return err
 	}
@@ -319,8 +393,16 @@ func (s *Service) ReportTerminal(jobID int64, workerID, status string, total, su
 	for key, value := range normalizeResultRef(resultRef) {
 		detail[key] = value
 	}
-	_, err := s.repo.AppendEvent(jobID, nil, "info", "terminal", "job completed", detail)
-	return err
+	if _, err := s.repo.AppendEvent(jobID, nil, "info", "terminal", "job completed", detail); err != nil {
+		return err
+	}
+	if err := s.repo.StoreResultRef(jobID, normalizeResultRef(resultRef)); err != nil {
+		return err
+	}
+	if s.metrics != nil {
+		s.metrics.ObserveJobCompleted(job.JobType, status, time.Since(job.CreatedAt))
+	}
+	return nil
 }
 
 func (s *Service) normalizeEventDetail(jobID int64, typ string, detail map[string]any) (map[string]any, error) {
@@ -332,6 +414,8 @@ func (s *Service) normalizeEventDetail(jobID int64, typ string, detail map[strin
 		return s.persistReviewCandidates(jobID, detail)
 	case "video_frames_materialized":
 		return normalizeResultDetail(detail, "video_frames", "frames"), nil
+	case "cleaning_report_materialized":
+		return normalizeResultDetail(detail, "cleaning_report", "removal_candidates"), nil
 	default:
 		return detail, nil
 	}
@@ -464,19 +548,29 @@ func extractResultRef(events []Event) map[string]any {
 				out["result_count"] = count
 			}
 		}
-		for _, key := range []string{"candidate_ids", "frames"} {
+		for key, value := range detail {
+			if key == "result_type" || key == "result_count" || shouldSkipResultRefKey(key) {
+				continue
+			}
 			if _, ok := out[key]; ok {
 				continue
 			}
-			if value, ok := detail[key]; ok {
-				out[key] = value
-			}
+			out[key] = value
 		}
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+func shouldSkipResultRefKey(key string) bool {
+	switch key {
+	case "worker_id", "status", "total_items", "succeeded_items", "failed_items", "lease_seconds":
+		return true
+	default:
+		return false
+	}
 }
 
 func stringValue(value any) string {

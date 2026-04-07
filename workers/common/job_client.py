@@ -61,9 +61,13 @@ def emit_terminal(job_id: int, worker_id: str, status: str, total: int, ok: int,
 
 
 class JobClient:
-    def __init__(self, base_url: str, opener=None):
+    def __init__(self, base_url: str, opener=None, trace_id: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.opener = opener or request.urlopen
+        self.trace_id = trace_id
+
+    def set_trace_id(self, trace_id: str | None):
+        self.trace_id = trace_id
 
     def build_heartbeat(self, job_id: int, worker_id: str, lease_seconds: int):
         payload = emit_heartbeat(job_id=job_id, worker_id=worker_id, lease_seconds=lease_seconds)
@@ -150,12 +154,25 @@ class JobClient:
         body = self.build_terminal(job_id=job_id, worker_id=worker_id, status=status, total=total, ok=ok, failed=failed, result_ref=result_ref)
         return self._post_json(f"/internal/jobs/{job_id}/complete", body)
 
+    def register_worker(self, descriptor: dict):
+        body = {
+            "worker_id": descriptor.get("worker_id", ""),
+            "resource_lane": descriptor.get("resource_lane", ""),
+            "capabilities": descriptor.get("capabilities", []),
+            "job_types": descriptor.get("job_types", []),
+        }
+        return self._post_json("/internal/jobs/workers/register", body)
+
     def _post_json(self, path: str, body: dict):
         encoded = json.dumps(body).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self.trace_id:
+            headers["X-Request-Id"] = self.trace_id
+            headers["X-Correlation-Id"] = self.trace_id
         req = request.Request(
             url=self.base_url + path,
             data=encoded,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         with self.opener(req) as response:

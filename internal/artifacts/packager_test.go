@@ -14,12 +14,15 @@ func TestApplyLabelMap(t *testing.T) {
 }
 
 func TestBuildManifestIncludesChecksums(t *testing.T) {
-	entries := []ManifestEntry{{Path: "labels/0001.txt", Checksum: "abc123"}}
+	entries := []ManifestEntry{{Path: "labels/0001.txt", Size: 12, Checksum: "abc123"}}
 	b, err := BuildManifest("v1.2", entries)
 	if err != nil {
 		t.Fatalf("build manifest: %v", err)
 	}
 	if !bytes.Contains(b, []byte(`"checksum": "sha256:abc123"`)) {
 		t.Fatalf("manifest missing labeled checksum: %s", b)
+	}
+	if !bytes.Contains(b, []byte(`"size": 12`)) {
+		t.Fatalf("manifest missing file size: %s", b)
 	}
 }

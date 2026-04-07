@@ -3,6 +3,8 @@ package artifacts
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -46,6 +48,9 @@ func TestBuilderWritesTrainLayoutAndManifestStats(t *testing.T) {
 	if !bytes.Contains(manifestBody, []byte(`"category_map"`)) || !bytes.Contains(manifestBody, []byte(`"sha256:`)) {
 		t.Fatalf("manifest missing category_map or sha256 checksums: %s", manifestBody)
 	}
+	if !bytes.Contains(manifestBody, []byte(`"size": 12`)) {
+		t.Fatalf("manifest missing image size metadata: %s", manifestBody)
+	}
 	if !bytes.Contains(manifestBody, []byte(`"total_images": 1`)) || !bytes.Contains(manifestBody, []byte(`"total_annotations": 1`)) {
 		t.Fatalf("manifest missing image or annotation stats: %s", manifestBody)
 	}
@@ -58,9 +63,9 @@ func TestBuilderWritesCOCOLayoutAndAnnotationDocument(t *testing.T) {
 	})
 
 	bundle := ExportBundle{
-		Format:     "coco",
-		Version:    "v2",
-		Categories: []string{"person"},
+		Format:      "coco",
+		Version:     "v2",
+		Categories:  []string{"person"},
 		CategoryIDs: []int64{7},
 		Items: []ExportItem{
 			{
@@ -129,6 +134,49 @@ func TestBuilderWritesCOCOLayoutAndAnnotationDocument(t *testing.T) {
 	}
 }
 
+func TestBuilderPrefersStreamingObjectReadsWhenAvailable(t *testing.T) {
+	workdir := t.TempDir()
+	source := streamingPreferredObjectSource{
+		bodies: map[string][]byte{
+			"train/a.jpg": []byte("fake-image-a"),
+		},
+	}
+	builder := NewBuilder(&source)
+
+	bundle := ExportBundle{
+		Version:    "v1",
+		Categories: []string{"person"},
+		Items: []ExportItem{
+			{
+				ObjectKey:     "train/a.jpg",
+				OutputName:    "a.jpg",
+				LabelFileName: "a.txt",
+				Boxes: []YOLOBox{
+					{ClassIndex: 0, XCenter: 0.5, YCenter: 0.5, Width: 0.2, Height: 0.2},
+				},
+			},
+		},
+	}
+
+	out, err := builder.Build(context.Background(), workdir, bundle)
+	if err != nil {
+		t.Fatalf("build package: %v", err)
+	}
+	if source.readCalls != 0 {
+		t.Fatalf("expected builder to avoid ReadObject when OpenObject is available, got %d read calls", source.readCalls)
+	}
+	if source.openCalls != 1 {
+		t.Fatalf("expected builder to open the object once, got %d", source.openCalls)
+	}
+	imageBody, err := os.ReadFile(filepath.Join(out.RootDir, "train", "images", "a.jpg"))
+	if err != nil {
+		t.Fatalf("read streamed image: %v", err)
+	}
+	if string(imageBody) != "fake-image-a" {
+		t.Fatalf("expected streamed image contents, got %q", string(imageBody))
+	}
+}
+
 type fakeObjectSource map[string][]byte
 
 func (f fakeObjectSource) ReadObject(_ context.Context, objectKey string) ([]byte, error) {
@@ -137,4 +185,24 @@ func (f fakeObjectSource) ReadObject(_ context.Context, objectKey string) ([]byt
 		return nil, os.ErrNotExist
 	}
 	return body, nil
+}
+
+type streamingPreferredObjectSource struct {
+	bodies    map[string][]byte
+	openCalls int
+	readCalls int
+}
+
+func (s *streamingPreferredObjectSource) OpenObject(_ context.Context, objectKey string) (io.ReadCloser, error) {
+	body, ok := s.bodies[objectKey]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	s.openCalls++
+	return io.NopCloser(bytes.NewReader(body)), nil
+}
+
+func (s *streamingPreferredObjectSource) ReadObject(_ context.Context, objectKey string) ([]byte, error) {
+	s.readCalls++
+	return nil, fmt.Errorf("ReadObject should not be used for %s", objectKey)
 }

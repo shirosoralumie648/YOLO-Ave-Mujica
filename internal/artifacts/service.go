@@ -8,7 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
+
+	"yolo-ave-mujica/internal/observability"
 )
 
 // PackageRequest describes a dataset-export build request accepted by the API.
@@ -23,26 +28,30 @@ type PackageRequest struct {
 
 // Artifact tracks the lifecycle and downloadable metadata of an export package.
 type Artifact struct {
-	ID           int64             `json:"id"`
-	ProjectID    int64             `json:"project_id"`
-	DatasetID    int64             `json:"dataset_id"`
-	SnapshotID   int64             `json:"snapshot_id"`
-	ArtifactType string            `json:"artifact_type"`
-	Format       string            `json:"format"`
-	Version      string            `json:"version"`
-	URI          string            `json:"uri"`
-	ManifestURI  string            `json:"manifest_uri"`
-	Checksum     string            `json:"checksum"`
-	Size         int64             `json:"size"`
-	LabelMapJSON map[string]string `json:"label_map_json,omitempty"`
-	Entries      []BundleEntry     `json:"entries,omitempty"`
-	Status       string            `json:"status"`
-	ErrorMsg     string            `json:"error_msg,omitempty"`
-	CreatedAt    time.Time         `json:"created_at"`
+	ID             int64             `json:"id"`
+	ProjectID      int64             `json:"project_id"`
+	DatasetID      int64             `json:"dataset_id"`
+	SnapshotID     int64             `json:"snapshot_id"`
+	CreatedByJobID *int64            `json:"created_by_job_id,omitempty"`
+	ArtifactType   string            `json:"artifact_type"`
+	Format         string            `json:"format"`
+	Version        string            `json:"version"`
+	URI            string            `json:"uri"`
+	ManifestURI    string            `json:"manifest_uri"`
+	Checksum       string            `json:"checksum"`
+	Size           int64             `json:"size"`
+	LabelMapJSON   map[string]string `json:"label_map_json,omitempty"`
+	Entries        []BundleEntry     `json:"entries,omitempty"`
+	Status         string            `json:"status"`
+	ErrorMsg       string            `json:"error_msg,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
 }
 
 type UploadObjectFunc func(uri string, body []byte, contentType string) (int64, error)
 type PresignObjectFunc func(uri string, ttlSeconds int) (string, error)
+type ProjectScopeResolver interface {
+	ResolveProjectID(ctx context.Context, datasetID, snapshotID int64) (int64, error)
+}
 
 type Service struct {
 	repo    Repository
@@ -53,6 +62,8 @@ type Service struct {
 	bucket  string
 	upload  UploadObjectFunc
 	presign PresignObjectFunc
+	metrics *observability.Metrics
+	scope   ProjectScopeResolver
 }
 
 // NewService builds an artifact service backed by in-memory defaults.
@@ -70,13 +81,17 @@ func NewServiceWithDependencies(repo Repository, query *ExportQuery, builder *Bu
 	if repo == nil {
 		repo = NewInMemoryRepository()
 	}
-	return &Service{
+	svc := &Service{
 		repo:    repo,
 		query:   query,
 		builder: builder,
 		storage: storage,
 		bucket:  "artifacts",
 	}
+	if query != nil {
+		svc.scope = query
+	}
+	return svc
 }
 
 func NewServiceWithRepositoryAndStorage(repo Repository, upload UploadObjectFunc, presign PresignObjectFunc) *Service {
@@ -91,6 +106,32 @@ func NewServiceWithRepositoryAndStorageAndBucket(repo Repository, bucket string,
 	svc.upload = upload
 	svc.presign = presign
 	return svc
+}
+
+func (s *Service) WithMetrics(metrics *observability.Metrics) *Service {
+	if s == nil {
+		return nil
+	}
+	s.metrics = metrics
+	return s
+}
+
+func (s *Service) WithProjectScopeResolver(resolver ProjectScopeResolver) *Service {
+	if s == nil {
+		return nil
+	}
+	s.scope = resolver
+	return s
+}
+
+func (s *Service) resolveProjectID(ctx context.Context, datasetID, snapshotID, fallbackProjectID int64) (int64, error) {
+	if s != nil && s.scope != nil {
+		return s.scope.ResolveProjectID(ctx, datasetID, snapshotID)
+	}
+	if fallbackProjectID > 0 {
+		return fallbackProjectID, nil
+	}
+	return 1, nil
 }
 
 // StartBuildRunner enables asynchronous artifact builds inside the API process.
@@ -151,6 +192,13 @@ func (s *Service) CreatePackageJob(in PackageRequest) (Artifact, error) {
 		s.runner.Enqueue(artifact.ID)
 	}
 	return artifact, nil
+}
+
+func (s *Service) LinkArtifactJob(artifactID, jobID int64) (Artifact, error) {
+	if artifactID <= 0 || jobID <= 0 {
+		return Artifact{}, errors.New("artifact_id and job_id are required")
+	}
+	return s.repo.LinkJob(context.Background(), artifactID, jobID)
 }
 
 // GetArtifact loads a single artifact by identifier.
@@ -220,8 +268,11 @@ func (s *Service) CompleteArtifact(id int64, entries []BundleEntry) (Artifact, e
 	if len(entries) == 0 {
 		return Artifact{}, errors.New("entries are required")
 	}
+	if s.storage != nil {
+		return s.completeArtifactToStorage(artifact, entries)
+	}
 	if s.upload == nil {
-		return Artifact{}, errors.New("artifact storage upload is not configured")
+		return Artifact{}, errors.New("artifact storage is not configured")
 	}
 
 	checksum, packageBody, err := buildArtifactCompletionPackage(artifact.ID, artifact.Version, entries)
@@ -233,6 +284,7 @@ func (s *Service) CompleteArtifact(id int64, entries []BundleEntry) (Artifact, e
 	for _, entry := range entries {
 		manifestEntries = append(manifestEntries, ManifestEntry{
 			Path:     entry.Path,
+			Size:     int64(len(entry.Body)),
 			Checksum: entry.Checksum,
 		})
 	}
@@ -251,6 +303,45 @@ func (s *Service) CompleteArtifact(id int64, entries []BundleEntry) (Artifact, e
 
 	if err := s.MarkArtifactReady(artifact.ID, artifact.URI, artifact.ManifestURI, checksum, size); err != nil {
 		return Artifact{}, err
+	}
+	if s.metrics != nil {
+		s.metrics.IncArtifactBuildOutcome(StatusReady)
+	}
+	return s.GetArtifact(artifact.ID)
+}
+
+func (s *Service) completeArtifactToStorage(artifact Artifact, entries []BundleEntry) (Artifact, error) {
+	checksum, _, err := buildArtifactCompletionPackage(artifact.ID, artifact.Version, entries)
+	if err != nil {
+		return Artifact{}, err
+	}
+
+	workdir, err := os.MkdirTemp("", "artifact-complete-*")
+	if err != nil {
+		return Artifact{}, err
+	}
+	defer os.RemoveAll(workdir)
+
+	packageDir, manifestPath, archivePath, err := materializeCompletedArtifact(workdir, artifact.Format, artifact.Version, entries)
+	if err != nil {
+		return Artifact{}, err
+	}
+
+	stored, err := s.storage.StoreBuild(context.Background(), StoreRequest{
+		Version:      artifact.Version,
+		ArchivePath:  archivePath,
+		ManifestPath: manifestPath,
+		PackageDir:   packageDir,
+	})
+	if err != nil {
+		return Artifact{}, err
+	}
+
+	if err := s.MarkArtifactReady(artifact.ID, stored.ArchiveURI, stored.ManifestURI, checksum, stored.ArchiveSize); err != nil {
+		return Artifact{}, err
+	}
+	if s.metrics != nil {
+		s.metrics.IncArtifactBuildOutcome(StatusReady)
 	}
 	return s.GetArtifact(artifact.ID)
 }
@@ -271,6 +362,73 @@ func buildArtifactCompletionPackage(artifactID int64, version string, entries []
 	}
 	sum := sha256.Sum256(packageBody)
 	return NormalizeSHA256Checksum(hex.EncodeToString(sum[:])), packageBody, nil
+}
+
+func materializeCompletedArtifact(workdir, format, version string, entries []BundleEntry) (string, string, string, error) {
+	if format == "" {
+		format = "yolo"
+	}
+	packageDir := filepath.Join(workdir, "package")
+	if err := os.MkdirAll(packageDir, 0o755); err != nil {
+		return "", "", "", err
+	}
+
+	manifestEntries := make([]ManifestEntry, 0, len(entries))
+	for _, entry := range entries {
+		diskPath, err := writeBundleEntry(packageDir, entry)
+		if err != nil {
+			return "", "", "", err
+		}
+		manifestEntries = append(manifestEntries, ManifestEntry{
+			Path:     filepath.ToSlash(mustRelativePath(packageDir, diskPath)),
+			Size:     int64(len(entry.Body)),
+			Checksum: entry.Checksum,
+		})
+	}
+	sort.Slice(manifestEntries, func(i, j int) bool {
+		return manifestEntries[i].Path < manifestEntries[j].Path
+	})
+
+	manifestBody, err := BuildManifest(version, manifestEntries)
+	if err != nil {
+		return "", "", "", err
+	}
+	manifestPath := filepath.Join(packageDir, "manifest.json")
+	if err := os.WriteFile(manifestPath, manifestBody, 0o644); err != nil {
+		return "", "", "", err
+	}
+
+	archivePath := filepath.Join(workdir, fmt.Sprintf("package.%s.tar.gz", format))
+	if err := tarGzDir(packageDir, archivePath); err != nil {
+		return "", "", "", err
+	}
+	return packageDir, manifestPath, archivePath, nil
+}
+
+func writeBundleEntry(rootDir string, entry BundleEntry) (string, error) {
+	if entry.Path == "" {
+		return "", errors.New("bundle entry path is required")
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(entry.Path))
+	if cleaned == "." || cleaned == "" || filepath.IsAbs(cleaned) || strings.HasPrefix(cleaned, "..") {
+		return "", fmt.Errorf("invalid bundle entry path %q", entry.Path)
+	}
+	diskPath := filepath.Join(rootDir, cleaned)
+	if err := os.MkdirAll(filepath.Dir(diskPath), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(diskPath, entry.Body, 0o644); err != nil {
+		return "", err
+	}
+	return diskPath, nil
+}
+
+func mustRelativePath(rootDir, diskPath string) string {
+	relPath, err := filepath.Rel(rootDir, diskPath)
+	if err != nil {
+		return filepath.Base(diskPath)
+	}
+	return relPath
 }
 
 func (s *Service) MarkArtifactReady(id int64, uri, manifestURI, checksum string, size int64) error {
@@ -312,7 +470,10 @@ func (s *Service) PresignArtifact(id int64, ttlSeconds int) (string, error) {
 	if s.presign != nil {
 		return s.presign(a.URI, ttlSeconds)
 	}
-	return fmt.Sprintf("https://signed.local/artifacts/%d?ttl=%d&uri=%s", a.ID, ttlSeconds, a.URI), nil
+	if s.storage != nil && strings.HasPrefix(a.URI, artifactURIPrefix) {
+		return fmt.Sprintf("/v1/artifacts/%d/download", a.ID), nil
+	}
+	return "", errors.New("artifact presign is not configured")
 }
 
 // OpenArtifactArchive opens a ready artifact archive for HTTP download.
@@ -390,6 +551,9 @@ func (s *Service) buildArtifact(ctx context.Context, artifactID int64) error {
 		Checksum:    buildOut.ArchiveSHA256,
 		Size:        stored.ArchiveSize,
 	})
+	if err == nil && s.metrics != nil {
+		s.metrics.IncArtifactBuildOutcome(StatusReady)
+	}
 	return err
 }
 
@@ -402,6 +566,9 @@ func (s *Service) failBuild(ctx context.Context, artifactID int64, buildErr erro
 		ErrorMsg: buildErr.Error(),
 	}); err != nil {
 		return err
+	}
+	if s.metrics != nil {
+		s.metrics.IncArtifactBuildOutcome(StatusFailed)
 	}
 	return buildErr
 }

@@ -8,16 +8,27 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
+	"yolo-ave-mujica/internal/audit"
+	"yolo-ave-mujica/internal/auth"
+	"yolo-ave-mujica/internal/observability"
 )
 
+const zeroShotPromptMaxChars = 4096
+
 type Handler struct {
-	svc *Service
+	svc   *Service
+	audit audit.Logger
 }
 
 func NewHandler(svc *Service) *Handler {
-	return &Handler{svc: svc}
+	return NewHandlerWithAudit(svc, nil)
+}
+
+func NewHandlerWithAudit(svc *Service, auditLogger audit.Logger) *Handler {
+	return &Handler{svc: svc, audit: auditLogger}
 }
 
 type zeroShotRequest struct {
@@ -25,16 +36,25 @@ type zeroShotRequest struct {
 	DatasetID            int64          `json:"dataset_id"`
 	SnapshotID           int64          `json:"snapshot_id"`
 	Prompt               string         `json:"prompt"`
+	Items                []zeroShotItem `json:"items"`
 	Provider             map[string]any `json:"provider"`
 	IdempotencyKey       string         `json:"idempotency_key"`
 	RequiredResourceType string         `json:"required_resource_type"`
 	RequiredCapabilities []string       `json:"required_capabilities"`
 }
 
+type zeroShotItem struct {
+	ItemID    int64  `json:"item_id"`
+	ObjectKey string `json:"object_key"`
+}
+
 type videoExtractRequest struct {
 	ProjectID            int64          `json:"project_id"`
 	DatasetID            int64          `json:"dataset_id"`
 	FPS                  int            `json:"fps"`
+	DurationMS           int            `json:"duration_ms"`
+	SourceObjectKey      string         `json:"source_object_key"`
+	FramePrefix          string         `json:"frame_prefix"`
 	Provider             map[string]any `json:"provider"`
 	IdempotencyKey       string         `json:"idempotency_key"`
 	RequiredResourceType string         `json:"required_resource_type"`
@@ -49,6 +69,13 @@ type cleaningRequest struct {
 	IdempotencyKey       string         `json:"idempotency_key"`
 	RequiredResourceType string         `json:"required_resource_type"`
 	RequiredCapabilities []string       `json:"required_capabilities"`
+}
+
+type workerRegisterRequest struct {
+	WorkerID     string   `json:"worker_id"`
+	ResourceLane string   `json:"resource_lane"`
+	Capabilities []string `json:"capabilities"`
+	JobTypes     []string `json:"job_types"`
 }
 
 type workerHeartbeatRequest struct {
@@ -95,11 +122,34 @@ func (h *Handler) CreateZeroShot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	items, err := normalizeZeroShotItems(in.Items)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if providerType(provider) == "builtin" && len(items) == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("items are required for builtin zero-shot providers"))
+		return
+	}
+	if err := auth.RequireProjectAccess(r.Context(), in.ProjectID); err != nil {
+		writeError(w, http.StatusForbidden, err)
+		return
+	}
+	if utf8.RuneCountInString(in.Prompt) > zeroShotPromptMaxChars {
+		writeError(w, http.StatusUnprocessableEntity, newValidationError("prompt must be <= %d characters", zeroShotPromptMaxChars))
+		return
+	}
 
 	payload := map[string]any{
 		"dataset_id":  in.DatasetID,
 		"snapshot_id": in.SnapshotID,
 		"prompt":      in.Prompt,
+	}
+	if traceID := observability.TraceIDFromRequest(r); traceID != "" {
+		payload["trace_id"] = traceID
+	}
+	if len(items) > 0 {
+		payload["items"] = items
 	}
 	if provider != nil {
 		payload["provider"] = provider
@@ -116,6 +166,19 @@ func (h *Handler) CreateZeroShot(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := h.recordAudit(r, audit.Event{
+		Action:       "job.create.zero-shot",
+		ResourceType: "job",
+		ResourceID:   strconv.FormatInt(job.ID, 10),
+		Detail: map[string]any{
+			"project_id":  in.ProjectID,
+			"dataset_id":  in.DatasetID,
+			"snapshot_id": in.SnapshotID,
+		},
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"job_id": job.ID, "status": job.Status})
@@ -136,10 +199,38 @@ func (h *Handler) CreateVideoExtract(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	sourceObjectKey := strings.TrimSpace(in.SourceObjectKey)
+	framePrefix := strings.TrimSpace(in.FramePrefix)
+	if providerType(provider) == "builtin" {
+		if sourceObjectKey == "" {
+			writeError(w, http.StatusBadRequest, errors.New("source_object_key is required for builtin video providers"))
+			return
+		}
+		if in.DurationMS <= 0 {
+			writeError(w, http.StatusBadRequest, errors.New("duration_ms must be > 0 for builtin video providers"))
+			return
+		}
+	}
+	if err := auth.RequireProjectAccess(r.Context(), in.ProjectID); err != nil {
+		writeError(w, http.StatusForbidden, err)
+		return
+	}
 
 	payload := map[string]any{
 		"dataset_id": in.DatasetID,
 		"fps":        in.FPS,
+	}
+	if traceID := observability.TraceIDFromRequest(r); traceID != "" {
+		payload["trace_id"] = traceID
+	}
+	if in.DurationMS > 0 {
+		payload["duration_ms"] = in.DurationMS
+	}
+	if sourceObjectKey != "" {
+		payload["source_object_key"] = sourceObjectKey
+	}
+	if framePrefix != "" {
+		payload["frame_prefix"] = framePrefix
 	}
 	if provider != nil {
 		payload["provider"] = provider
@@ -157,6 +248,19 @@ func (h *Handler) CreateVideoExtract(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := h.recordAudit(r, audit.Event{
+		Action:       "job.create.video-extract",
+		ResourceType: "job",
+		ResourceID:   strconv.FormatInt(job.ID, 10),
+		Detail: map[string]any{
+			"project_id":        in.ProjectID,
+			"dataset_id":        in.DatasetID,
+			"source_object_key": sourceObjectKey,
+		},
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"job_id": job.ID, "status": job.Status})
 }
 
@@ -170,11 +274,18 @@ func (h *Handler) CreateCleaning(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := auth.RequireProjectAccess(r.Context(), in.ProjectID); err != nil {
+		writeError(w, http.StatusForbidden, err)
+		return
+	}
 
 	payload := map[string]any{
 		"dataset_id":  in.DatasetID,
 		"snapshot_id": in.SnapshotID,
 		"rules":       in.Rules,
+	}
+	if traceID := observability.TraceIDFromRequest(r); traceID != "" {
+		payload["trace_id"] = traceID
 	}
 	job, err := h.svc.CreateJob(CreateJobInput{
 		ProjectID:            in.ProjectID,
@@ -190,6 +301,19 @@ func (h *Handler) CreateCleaning(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := h.recordAudit(r, audit.Event{
+		Action:       "job.create.cleaning",
+		ResourceType: "job",
+		ResourceID:   strconv.FormatInt(job.ID, 10),
+		Detail: map[string]any{
+			"project_id":  in.ProjectID,
+			"dataset_id":  in.DatasetID,
+			"snapshot_id": in.SnapshotID,
+		},
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"job_id": job.ID, "status": job.Status})
 }
 
@@ -202,6 +326,10 @@ func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 	job, ok := h.svc.GetJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, fmt.Errorf("job %d not found", id))
+		return
+	}
+	if err := auth.RequireProjectAccess(r.Context(), job.ProjectID); err != nil {
+		writeError(w, http.StatusNotFound, newNotFoundError("job %d not found", id))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -236,7 +364,48 @@ func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	job, ok := h.svc.GetJob(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, newNotFoundError("job %d not found", id))
+		return
+	}
+	if err := auth.RequireProjectAccess(r.Context(), job.ProjectID); err != nil {
+		writeError(w, http.StatusNotFound, newNotFoundError("job %d not found", id))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": h.svc.ListEvents(id)})
+}
+
+func (h *Handler) RegisterWorker(w http.ResponseWriter, r *http.Request) {
+	var in workerRegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	worker, err := h.svc.RegisterWorker(RegisterWorkerInput{
+		WorkerID:     in.WorkerID,
+		ResourceLane: in.ResourceLane,
+		Capabilities: in.Capabilities,
+		JobTypes:     in.JobTypes,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, workerResponse(worker))
+}
+
+func (h *Handler) ListWorkers(w http.ResponseWriter, _ *http.Request) {
+	workers, err := h.svc.ListWorkers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(workers))
+	for i := range workers {
+		items = append(items, workerResponse(&workers[i]))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (h *Handler) ReportHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -341,6 +510,17 @@ func writeJobStatus(w http.ResponseWriter, svc *Service, jobID int64) {
 	})
 }
 
+func workerResponse(worker *Worker) map[string]any {
+	return map[string]any{
+		"worker_id":     worker.WorkerID,
+		"resource_lane": worker.ResourceLane,
+		"capabilities":  worker.Capabilities,
+		"job_types":     worker.JobTypes,
+		"registered_at": worker.RegisteredAt,
+		"last_seen_at":  worker.LastSeenAt,
+	}
+}
+
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -351,6 +531,13 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{"error": err.Error()})
+}
+
+func (h *Handler) recordAudit(r *http.Request, event audit.Event) error {
+	if h == nil || h.audit == nil {
+		return nil
+	}
+	return h.audit.Record(r.Context(), event)
 }
 
 func writeCallbackError(w http.ResponseWriter, err error) {
@@ -374,6 +561,16 @@ func normalizeProvider(raw map[string]any) (map[string]any, error) {
 	providerType := strings.TrimSpace(strings.ToLower(fmt.Sprint(raw["type"])))
 	if providerType == "" {
 		return nil, errors.New("provider.type is required")
+	}
+	if providerType == "builtin" {
+		name := strings.TrimSpace(fmt.Sprint(raw["name"]))
+		if name == "" {
+			return nil, errors.New("provider.name is required")
+		}
+		return map[string]any{
+			"type": "builtin",
+			"name": name,
+		}, nil
 	}
 	if providerType != "command" {
 		return nil, fmt.Errorf("unsupported provider.type %q", providerType)
@@ -467,6 +664,34 @@ func normalizeProviderTimeout(raw any) (float64, bool, error) {
 		return 0, false, errors.New("provider.timeout_seconds must be a positive number")
 	}
 	return timeout, true, nil
+}
+
+func normalizeZeroShotItems(raw []zeroShotItem) ([]map[string]any, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	items := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		if item.ItemID <= 0 {
+			return nil, errors.New("items.item_id must be > 0")
+		}
+		objectKey := strings.TrimSpace(item.ObjectKey)
+		if objectKey == "" {
+			return nil, errors.New("items.object_key is required")
+		}
+		items = append(items, map[string]any{
+			"item_id":    item.ItemID,
+			"object_key": objectKey,
+		})
+	}
+	return items, nil
+}
+
+func providerType(provider map[string]any) string {
+	if len(provider) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(strings.ToLower(fmt.Sprint(provider["type"])))
 }
 
 func requireIdempotencyKey(key string) error {

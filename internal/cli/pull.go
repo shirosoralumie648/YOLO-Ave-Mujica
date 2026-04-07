@@ -3,11 +3,13 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 )
@@ -17,11 +19,14 @@ type RootCommand struct{}
 
 // PullOptions configures artifact resolution, download, and local verification.
 type PullOptions struct {
-	Dataset      string
-	Format       string
-	Version      string
-	AllowPartial bool
-	OutputDir    string
+	Dataset        string
+	Format         string
+	Version        string
+	AllowPartial   bool
+	OutputDir      string
+	ResolveTimeout time.Duration
+	PollInterval   time.Duration
+	VerifyWorkers  int
 }
 
 // PullClient resolves an artifact, downloads its archive, extracts it, and
@@ -61,6 +66,7 @@ type manifestDocument struct {
 // ManifestEntry describes a single file and checksum in the pulled artifact manifest.
 type ManifestEntry struct {
 	Path     string `json:"path"`
+	Size     int64  `json:"size"`
 	Checksum string `json:"checksum"`
 }
 
@@ -96,6 +102,9 @@ Flags for pull:
   --format
   --version
   --allow-partial
+  --wait-timeout
+  --poll-interval
+  --verify-workers
 `
 }
 
@@ -105,6 +114,9 @@ func runPull(args []string) error {
 	format := fs.String("format", "", "dataset format")
 	version := fs.String("version", "", "dataset snapshot version")
 	allowPartial := fs.Bool("allow-partial", false, "allow partial verification failures")
+	waitTimeout := fs.Duration("wait-timeout", defaultResolveTimeout(), "max time to wait for artifact readiness")
+	pollInterval := fs.Duration("poll-interval", defaultPollInterval(), "interval between artifact resolve retries")
+	verifyWorkers := fs.Int("verify-workers", defaultVerifyWorkers(), "number of concurrent verification workers")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -123,11 +135,14 @@ func runPull(args []string) error {
 	}
 	client := NewPullClientWithSource(wd, NewAPIArtifactSource(baseURL))
 	return client.Pull(PullOptions{
-		Dataset:      *dataset,
-		Format:       *format,
-		Version:      *version,
-		AllowPartial: *allowPartial,
-		OutputDir:    wd,
+		Dataset:        *dataset,
+		Format:         *format,
+		Version:        *version,
+		AllowPartial:   *allowPartial,
+		OutputDir:      wd,
+		ResolveTimeout: *waitTimeout,
+		PollInterval:   *pollInterval,
+		VerifyWorkers:  *verifyWorkers,
 	})
 }
 
@@ -138,6 +153,15 @@ func (c *PullClient) Pull(opts PullOptions) error {
 	}
 	if c.source == nil {
 		return fmt.Errorf("artifact source is not configured")
+	}
+	if opts.ResolveTimeout < 0 {
+		return fmt.Errorf("resolve timeout must be >= 0")
+	}
+	if opts.PollInterval < 0 {
+		return fmt.Errorf("poll interval must be >= 0")
+	}
+	if opts.VerifyWorkers < 0 {
+		return fmt.Errorf("verify workers must be >= 0")
 	}
 
 	outDir := opts.OutputDir
@@ -152,16 +176,13 @@ func (c *PullClient) Pull(opts PullOptions) error {
 		outDir = wd
 	}
 
-	resolved, err := c.source.ResolveArtifact(opts.Dataset, opts.Format, opts.Version)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	resolved, err := c.resolveArtifact(ctx, opts)
 	if err != nil {
 		return err
 	}
-	if resolved.Version == "" {
-		resolved.Version = opts.Version
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	tempArchivePath := filepath.Join(outDir, fmt.Sprintf("pull-%s.tar.gz.part", resolved.Version))
 	defer os.Remove(tempArchivePath)
@@ -181,27 +202,28 @@ func (c *PullClient) Pull(opts PullOptions) error {
 		return err
 	}
 
+	verificationWorkers := normalizeVerifyWorkers(opts.VerifyWorkers)
+	fileResults, verifyErr := verifyManifestEntries(ctx, artifactDir, manifest.Entries, verificationWorkers, nil)
 	failedFiles := 0
-	var verifyErr error
-	for _, entry := range manifest.Entries {
-		// Verify every manifest entry so local pulls can detect partial or corrupt
-		// artifact contents before consumers start using the extracted package.
-		targetPath := filepath.Join(artifactDir, filepath.FromSlash(entry.Path))
-		if err := VerifyFile(targetPath, entry.Checksum); err != nil {
+	verifiedFiles := 0
+	for _, result := range fileResults {
+		if result.Status == VerifyStatusFailed {
 			failedFiles++
-			if verifyErr == nil {
-				verifyErr = err
-			}
+			continue
 		}
+		verifiedFiles++
 	}
 
 	report := VerifyReport{
-		ArtifactID:         resolved.ArtifactID,
-		Snapshot:           resolved.Version,
-		TotalFiles:         len(manifest.Entries),
-		FailedFiles:        failedFiles,
-		VerifiedAt:         time.Now().UTC().Format(time.RFC3339),
-		EnvironmentContext: buildEnvironmentContext(c.source),
+		ArtifactID:          resolved.ArtifactID,
+		Snapshot:            resolved.Version,
+		TotalFiles:          len(manifest.Entries),
+		VerifiedFiles:       verifiedFiles,
+		FailedFiles:         failedFiles,
+		VerificationWorkers: verificationWorkers,
+		Files:               fileResults,
+		VerifiedAt:          time.Now().UTC().Format(time.RFC3339),
+		EnvironmentContext:  buildEnvironmentContext(c.source),
 	}
 	reportPath := filepath.Join(outDir, "verify-report.json")
 	if err := writeVerifyReport(reportPath, report); err != nil {
@@ -212,6 +234,80 @@ func (c *PullClient) Pull(opts PullOptions) error {
 		return verifyErr
 	}
 	return nil
+}
+
+func (c *PullClient) resolveArtifact(ctx context.Context, opts PullOptions) (ResolvedArtifact, error) {
+	waitCtx := ctx
+	timeout := normalizeResolveTimeout(opts.ResolveTimeout)
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	var lastErr error
+	for {
+		resolved, err := c.source.ResolveArtifact(opts.Dataset, opts.Format, opts.Version)
+		if err == nil {
+			if resolved.Version == "" {
+				resolved.Version = opts.Version
+			}
+			return resolved, nil
+		}
+		if !errors.Is(err, ErrArtifactUnavailable) {
+			return ResolvedArtifact{}, err
+		}
+		lastErr = err
+
+		select {
+		case <-waitCtx.Done():
+			if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+				return ResolvedArtifact{}, fmt.Errorf("artifact %s/%s@%s did not become available within %s: %w", opts.Dataset, opts.Format, opts.Version, timeout, lastErr)
+			}
+			return ResolvedArtifact{}, waitCtx.Err()
+		case <-time.After(normalizePollInterval(opts.PollInterval)):
+		}
+	}
+}
+
+func defaultResolveTimeout() time.Duration {
+	return 30 * time.Second
+}
+
+func normalizeResolveTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
+		return defaultResolveTimeout()
+	}
+	return timeout
+}
+
+func defaultPollInterval() time.Duration {
+	return 500 * time.Millisecond
+}
+
+func normalizePollInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return defaultPollInterval()
+	}
+	return interval
+}
+
+func defaultVerifyWorkers() int {
+	workers := runtime.NumCPU()
+	if workers < 1 {
+		return 1
+	}
+	if workers > 4 {
+		return 4
+	}
+	return workers
+}
+
+func normalizeVerifyWorkers(workers int) int {
+	if workers <= 0 {
+		return defaultVerifyWorkers()
+	}
+	return workers
 }
 
 // loadManifest reads the extracted manifest document from disk.

@@ -5,8 +5,8 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -21,10 +21,29 @@ type ObjectSource interface {
 	ReadObject(ctx context.Context, objectKey string) ([]byte, error)
 }
 
+type StreamingObjectSource interface {
+	OpenObject(ctx context.Context, objectKey string) (io.ReadCloser, error)
+}
+
 type ObjectSourceFunc func(context.Context, string) ([]byte, error)
 
 func (f ObjectSourceFunc) ReadObject(ctx context.Context, objectKey string) ([]byte, error) {
 	return f(ctx, objectKey)
+}
+
+type StreamingObjectSourceFunc func(context.Context, string) (io.ReadCloser, error)
+
+func (f StreamingObjectSourceFunc) OpenObject(ctx context.Context, objectKey string) (io.ReadCloser, error) {
+	return f(ctx, objectKey)
+}
+
+func (f StreamingObjectSourceFunc) ReadObject(ctx context.Context, objectKey string) ([]byte, error) {
+	reader, err := f.OpenObject(ctx, objectKey)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	return io.ReadAll(reader)
 }
 
 type BuildOutput struct {
@@ -122,17 +141,15 @@ func (b *Builder) writeYOLOPackage(ctx context.Context, rootDir string, bundle E
 	entries := make([]ManifestEntry, 0, (len(bundle.Items)*2)+1)
 	totalAnnotations := 0
 	for _, item := range bundle.Items {
-		imageBody, err := b.readObject(ctx, item.ObjectKey)
-		if err != nil {
-			return nil, 0, err
-		}
 		imageDiskPath := filepath.Join(imagesDir, item.OutputName)
-		if err := os.WriteFile(imageDiskPath, imageBody, 0o644); err != nil {
+		imageChecksum, imageSize, err := b.writeObjectFile(ctx, item.ObjectKey, imageDiskPath)
+		if err != nil {
 			return nil, 0, err
 		}
 		entries = append(entries, ManifestEntry{
 			Path:     path.Join("train", "images", item.OutputName),
-			Checksum: checksumForBytes(imageBody),
+			Size:     imageSize,
+			Checksum: imageChecksum,
 		})
 
 		labelBody := []byte(renderYOLOLabelFile(item.Boxes))
@@ -143,6 +160,7 @@ func (b *Builder) writeYOLOPackage(ctx context.Context, rootDir string, bundle E
 		}
 		entries = append(entries, ManifestEntry{
 			Path:     path.Join("train", "labels", item.LabelFileName),
+			Size:     int64(len(labelBody)),
 			Checksum: checksumForBytes(labelBody),
 		})
 	}
@@ -154,6 +172,7 @@ func (b *Builder) writeYOLOPackage(ctx context.Context, rootDir string, bundle E
 	}
 	entries = append(entries, ManifestEntry{
 		Path:     "data.yaml",
+		Size:     int64(len(dataYAMLBody)),
 		Checksum: checksumForBytes(dataYAMLBody),
 	})
 	return entries, totalAnnotations, nil
@@ -181,17 +200,15 @@ func (b *Builder) writeCOCOPackage(ctx context.Context, rootDir string, bundle E
 	totalAnnotations := 0
 	nextAnnotationID := int64(1)
 	for _, item := range bundle.Items {
-		imageBody, err := b.readObject(ctx, item.ObjectKey)
-		if err != nil {
-			return nil, 0, err
-		}
 		imageDiskPath := filepath.Join(imagesDir, item.OutputName)
-		if err := os.WriteFile(imageDiskPath, imageBody, 0o644); err != nil {
+		imageChecksum, imageSize, err := b.writeObjectFile(ctx, item.ObjectKey, imageDiskPath)
+		if err != nil {
 			return nil, 0, err
 		}
 		entries = append(entries, ManifestEntry{
 			Path:     path.Join("images", item.OutputName),
-			Checksum: checksumForBytes(imageBody),
+			Size:     imageSize,
+			Checksum: imageChecksum,
 		})
 		document.Images = append(document.Images, cocoImage{
 			ID:       item.ItemID,
@@ -223,9 +240,24 @@ func (b *Builder) writeCOCOPackage(ctx context.Context, rootDir string, bundle E
 	}
 	entries = append(entries, ManifestEntry{
 		Path:     "annotations.json",
+		Size:     int64(len(annotationsBody)),
 		Checksum: checksumForBytes(annotationsBody),
 	})
 	return entries, totalAnnotations, nil
+}
+
+func (b *Builder) writeObjectFile(ctx context.Context, objectKey, diskPath string) (string, int64, error) {
+	if streamSource, ok := b.source.(StreamingObjectSource); ok {
+		return b.streamObjectToFile(ctx, streamSource, objectKey, diskPath)
+	}
+	imageBody, err := b.readObject(ctx, objectKey)
+	if err != nil {
+		return "", 0, err
+	}
+	if err := os.WriteFile(diskPath, imageBody, 0o644); err != nil {
+		return "", 0, err
+	}
+	return checksumForBytes(imageBody), int64(len(imageBody)), nil
 }
 
 func (b *Builder) readObject(ctx context.Context, objectKey string) ([]byte, error) {
@@ -237,6 +269,35 @@ func (b *Builder) readObject(ctx context.Context, objectKey string) ([]byte, err
 		return nil, fmt.Errorf("read object %s: %w", objectKey, err)
 	}
 	return imageBody, nil
+}
+
+func (b *Builder) streamObjectToFile(ctx context.Context, source StreamingObjectSource, objectKey, diskPath string) (string, int64, error) {
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
+	}
+	reader, err := source.OpenObject(ctx, objectKey)
+	if err != nil {
+		return "", 0, fmt.Errorf("read object %s: %w", objectKey, err)
+	}
+	defer reader.Close()
+
+	file, err := os.OpenFile(diskPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return "", 0, err
+	}
+	size, err := io.Copy(file, reader)
+	if err != nil {
+		file.Close()
+		return "", 0, fmt.Errorf("read object %s: %w", objectKey, err)
+	}
+	if err := file.Close(); err != nil {
+		return "", 0, err
+	}
+	checksum, err := fileChecksum(diskPath)
+	if err != nil {
+		return "", 0, err
+	}
+	return checksum, size, nil
 }
 
 type cocoDocument struct {

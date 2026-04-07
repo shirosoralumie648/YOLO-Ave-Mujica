@@ -23,6 +23,13 @@ class _FakeOpener:
         return _FakeResponse()
 
 
+def _event_by_type(result: dict, event_type: str) -> dict:
+    for event in result["events"]:
+        if event["event_type"] == event_type:
+            return event
+    raise AssertionError(f"missing event_type={event_type!r} in {result['events']!r}")
+
+
 class ImporterContractTest(unittest.TestCase):
     def test_parse_yolo_payload_returns_boxes(self):
         payload = {
@@ -52,6 +59,10 @@ class ImporterContractTest(unittest.TestCase):
         self.assertEqual(1, result["total_items"])
         self.assertEqual(1, result["succeeded_items"])
         self.assertEqual(0, result["failed_items"])
+        progress = _event_by_type(result, "progress")
+        self.assertEqual(1, progress["detail_json"]["total_items"])
+        self.assertEqual(1, progress["detail_json"]["succeeded_items"])
+        self.assertEqual(0, progress["detail_json"]["failed_items"])
 
     def test_run_import_job_posts_internal_import_callback(self):
         opener = _FakeOpener()

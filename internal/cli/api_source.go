@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,18 @@ type ResolvedArtifact struct {
 type APIArtifactSource struct {
 	BaseURL    string
 	HTTPClient *http.Client
+}
+
+var ErrArtifactUnavailable = errors.New("artifact unavailable")
+
+type httpStatusError struct {
+	StatusCode int
+	URL        string
+	Body       string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("unexpected status %d for %s: %s", e.StatusCode, e.URL, e.Body)
 }
 
 func NewAPIArtifactSource(baseURL string) *APIArtifactSource {
@@ -42,6 +55,10 @@ func (s *APIArtifactSource) ResolveArtifact(dataset, format, version string) (Re
 		DownloadURL string `json:"download_url"`
 	}
 	if err := fetchJSON(client, resolveURL, &artifact); err != nil {
+		var statusErr *httpStatusError
+		if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusNotFound {
+			return ResolvedArtifact{}, fmt.Errorf("%w: %s", ErrArtifactUnavailable, err)
+		}
 		return ResolvedArtifact{}, err
 	}
 
@@ -90,7 +107,7 @@ func fetchJSON(client *http.Client, targetURL string, out any) error {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status %d for %s: %s", resp.StatusCode, targetURL, string(body))
+		return &httpStatusError{StatusCode: resp.StatusCode, URL: targetURL, Body: string(body)}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

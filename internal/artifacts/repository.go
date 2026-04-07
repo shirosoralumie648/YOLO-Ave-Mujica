@@ -12,6 +12,7 @@ type Repository interface {
 	Get(ctx context.Context, id int64) (Artifact, bool, error)
 	FindReadyByFormatVersion(ctx context.Context, format, version string) (Artifact, bool, error)
 	FindReadyByDatasetFormatVersion(ctx context.Context, dataset, format, version string) (Artifact, bool, error)
+	LinkJob(ctx context.Context, artifactID, jobID int64) (Artifact, error)
 	UpdateStatus(ctx context.Context, id int64, status string, errorMsg string) (Artifact, error)
 	UpdateBuildResult(ctx context.Context, id int64, result BuildResult) (Artifact, error)
 	MarkStaleBuildsFailed(ctx context.Context, reason string) (int64, error)
@@ -90,6 +91,19 @@ func (r *InMemoryRepository) FindReadyByDatasetFormatVersion(_ context.Context, 
 		return artifact, true, nil
 	}
 	return Artifact{}, false, nil
+}
+
+func (r *InMemoryRepository) LinkJob(_ context.Context, artifactID, jobID int64) (Artifact, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	artifact, ok := r.byID[artifactID]
+	if !ok {
+		return Artifact{}, fmt.Errorf("artifact %d not found", artifactID)
+	}
+	artifact.CreatedByJobID = &jobID
+	r.byID[artifactID] = artifact
+	return artifact, nil
 }
 
 func (r *InMemoryRepository) UpdateStatus(_ context.Context, id int64, status string, errorMsg string) (Artifact, error) {

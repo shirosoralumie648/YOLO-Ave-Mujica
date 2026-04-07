@@ -104,8 +104,15 @@ exit 0
 		"/v1/tasks/1/workspace/submit",
 		"/v1/datasets/1/snapshots",
 		"go run ./cmd/dev-seed-artifact-smoke --dataset-id 1 --category-only",
+		"/v1/jobs/1",
+		"/v1/jobs/1/events",
+		"/v1/review/candidates",
+		"/v1/jobs/video-extract",
+		"/v1/jobs/2",
+		"/v1/jobs/2/events",
 		"/v1/snapshots/1/import",
 		"/v1/jobs/3",
+		"/v1/jobs/3/events",
 		"/v1/publish/candidates?project_id=1",
 		"/v1/publish/batches",
 		"/v1/publish/batches/71",
@@ -117,6 +124,7 @@ exit 0
 		"go run ./cmd/dev-seed-artifact-smoke --dataset-id 1",
 		"/v1/snapshots/1/export",
 		"/v1/artifacts/resolve?dataset=smoke-dataset&format=yolo&version=v-smoke-1",
+		"/metrics",
 		"platform-cli pull --dataset smoke-dataset --format yolo --version v-smoke-1",
 	} {
 		if !strings.Contains(callText, fragment) {
@@ -270,6 +278,9 @@ case "$url" in
   */healthz|*/readyz)
     body=""
     ;;
+  */metrics)
+    body=$'# TYPE yolo_http_requests_total counter\nyolo_http_requests_total{method="GET",route="/healthz",status_class="2xx"} 1\n# TYPE yolo_job_creations_total counter\nyolo_job_creations_total{job_type="zero-shot"} 1\n# TYPE yolo_queue_depth gauge\nyolo_queue_depth{lane="jobs:cpu"} 0\n# TYPE yolo_review_backlog gauge\nyolo_review_backlog 1\n'
+    ;;
   */v1/datasets)
     body='{"dataset_id":1}'
     ;;
@@ -288,11 +299,29 @@ case "$url" in
   */v1/tasks/1/workspace)
     body='{"task":{"id":1,"status":"in_progress","kind":"annotation","asset_object_key":"train/a.jpg","media_kind":"image"},"asset":{"dataset_id":1,"dataset_name":"smoke-dataset","snapshot_id":1,"snapshot_version":"v1","object_key":"train/a.jpg"},"draft":{"task_id":1,"state":"draft","revision":0,"body":{}}}'
     ;;
+  */v1/review/candidates)
+    body='{"items":[{"id":301,"object_key":"train/a.jpg","status":"queued_for_review","source":{"job_id":1,"model_name":"grounding_dino_fake","is_pseudo":true}}]}'
+    ;;
   */v1/snapshots/1/import)
     body='{"job_id":3,"status":"queued","dataset_id":1,"snapshot_id":1}'
     ;;
+  */v1/jobs/1)
+    body='{"id":1,"status":"succeeded","dataset_id":1,"snapshot_id":1,"result_type":"annotation_candidates","result_count":2}'
+    ;;
+  */v1/jobs/1/events)
+    body='{"items":[{"event_type":"progress","detail_json":{"total_items":2,"succeeded_items":2,"failed_items":0}},{"event_type":"review_candidates_materialized","detail_json":{"result_type":"annotation_candidates","result_count":2}}]}'
+    ;;
+  */v1/jobs/2)
+    body='{"id":2,"status":"succeeded","dataset_id":1,"result_type":"video_frames","result_count":7,"result_ref":{"result_type":"video_frames","result_count":7,"frames":[{"frame_index":0,"timestamp_ms":0,"object_key":"clips/a/frame-0000.jpg"},{"frame_index":6,"timestamp_ms":3000,"object_key":"clips/a/frame-0006.jpg"}]}}'
+    ;;
+  */v1/jobs/2/events)
+    body='{"items":[{"event_type":"progress","detail_json":{"total_items":7,"succeeded_items":7,"failed_items":0}},{"event_type":"video_frames_materialized","detail_json":{"result_type":"video_frames","result_count":7}}]}'
+    ;;
   */v1/jobs/3)
     body='{"id":3,"status":"succeeded","dataset_id":1,"snapshot_id":1}'
+    ;;
+  */v1/jobs/3/events)
+    body='{"items":[{"event_type":"progress","detail_json":{"total_items":1,"succeeded_items":1,"failed_items":0}}]}'
     ;;
   */v1/publish/candidates*project_id=1)
     body='{"items":[]}'
@@ -322,7 +351,7 @@ case "$url" in
     body='{"added_items":2}'
     ;;
   */items)
-    body='{"items":[{"object_key":"train/a.jpg"}]}'
+    body='{"items":[{"id":11,"object_key":"train/a.jpg"},{"id":12,"object_key":"train/b.jpg"}]}'
     ;;
   */v1/snapshots/1/export)
     if [[ "$data" == *'"format":"coco"'* ]]; then
@@ -344,7 +373,10 @@ case "$url" in
     body='{"url":"http://signed.local/object"}'
     ;;
   */jobs/zero-shot)
-    body='{"job_id":1}'
+    body='{"job_id":1,"status":"queued"}'
+    ;;
+  */jobs/video-extract)
+    body='{"job_id":2,"status":"queued"}'
     ;;
   *)
     echo "unexpected curl url: $url" >&2

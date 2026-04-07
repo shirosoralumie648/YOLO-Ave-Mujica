@@ -9,6 +9,7 @@ from urllib import request
 from workers.common.coco import load_coco_document, parse_coco_document
 from workers.common.job_client import JobClient
 from workers.common.queue_runner import QueueRunner, poll_forever
+from workers.common.structured_logging import WorkerLogger
 
 
 def _derive_object_key(label_path: str) -> str:
@@ -158,6 +159,18 @@ def run_import_job(job_payload: dict, base_url: str | None = None, opener=None) 
         "succeeded_items": len(boxes),
         "failed_items": 0,
         "entries": boxes,
+        "events": [
+            {
+                "event_level": "info",
+                "event_type": "progress",
+                "message": "worker progress",
+                "detail_json": {
+                    "total_items": len(boxes),
+                    "succeeded_items": len(boxes),
+                    "failed_items": 0,
+                },
+            }
+        ],
     }
 
 
@@ -173,7 +186,8 @@ def build_importer_runner(worker_id: str | None = None):
 def main():
     runner = build_importer_runner()
     client = JobClient(base_url=os.getenv("API_BASE_URL", "http://127.0.0.1:8080"))
-    poll_forever(redis_addr=os.getenv("REDIS_ADDR", "localhost:6379"), lane="jobs:cpu", runner=runner, handler=run_import_job, job_client=client)
+    logger = WorkerLogger(component="importer_worker")
+    poll_forever(redis_addr=os.getenv("REDIS_ADDR", "localhost:6379"), lane="jobs:cpu", runner=runner, handler=run_import_job, job_client=client, logger=logger)
 
 
 if __name__ == "__main__":

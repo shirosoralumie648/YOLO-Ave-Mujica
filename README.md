@@ -23,13 +23,16 @@ Implemented today:
 - Job primitives for idempotent create, lane dispatch, lease recovery, worker callbacks, and event listing
 - Worker-side importer, packager, cleaning, zero-shot, and video contract runners
 - Artifact packaging, resolve, archive download, presign, and CLI pull verification
+- Static bearer auth baseline for public mutating `/v1/*` routes
+- Audit logging for dataset, snapshot, job, artifact, and publish mutations
+- Request-id propagation, JSON access logs, baseline Prometheus metrics, and worker-side structured JSON logs
 - Local smoke checks, OpenAPI route guards, and migration guard tests
 
 Not complete yet:
 
 - `zero-shot` and `video` workers currently provide durable contract outputs, not real model-backed inference or media extraction pipelines
 - Snapshot import and artifact export support both `yolo` and `coco`; YOLO exports additionally include `data.yaml`
-- Authentication, RBAC, training/evaluation domains, and plugin runtime are still roadmap items
+- RBAC, richer identity management, training/evaluation domains, and plugin runtime are still roadmap items
 
 ## Repository Layout
 
@@ -55,6 +58,9 @@ export S3_SECRET_KEY=minioadmin
 export S3_BUCKET=platform-dev
 export ARTIFACT_STORAGE_DIR=/tmp/platform-artifacts
 export ARTIFACT_BUILD_CONCURRENCY=2
+export AUTH_BEARER_TOKEN=
+export AUTH_DEFAULT_PROJECT_IDS=1
+export MUTATION_RATE_LIMIT_PER_MINUTE=60
 make migrate-up
 make web-install
 make api-dev
@@ -69,6 +75,17 @@ make web-dev
 ```
 
 The web console opens on `http://127.0.0.1:5173` and proxies `/v1/*` to `http://127.0.0.1:8080` by default. The web shell uses root-scoped routes such as `/`, `/tasks`, `/review`, `/publish/candidates`, and `/data`, while the control-plane API stays project-scoped where appropriate under `/v1/projects/{id}/...`.
+
+Operational baseline:
+
+- `AUTH_BEARER_TOKEN` gates public mutating `/v1/*` routes with `Authorization: Bearer <token>`
+- `AUTH_DEFAULT_PROJECT_IDS` defaults to `1` and seeds the caller's allowed project scope when no override header is present
+- `X-Project-Scopes: 1,2` can override the default project scope list for trusted local/dev callers and reverse-proxy deployments
+- `X-Actor` can carry the caller identity for audit/event visibility
+- `MUTATION_RATE_LIMIT_PER_MINUTE` defaults to `60` and throttles public mutating `/v1/*` routes per bearer token or client IP
+- Every HTTP response includes `X-Request-Id` and `X-Correlation-Id`
+- Sending `X-Request-Id` on job-creating writes propagates the same trace id into worker callbacks
+- `GET /metrics` exposes baseline HTTP, job lifecycle, queue depth, review backlog, and artifact build counters
 
 Run verification with:
 
@@ -112,11 +129,20 @@ See `docs/development/local-quickstart.md` for the full local runbook.
 - `GET /healthz`
 - `GET /readyz`
 
+If `AUTH_BEARER_TOKEN` is set, public mutating `/v1/*` routes require `Authorization: Bearer <token>`. Public `GET` routes stay open, and `/internal/*` worker callbacks remain ungated in this baseline. `AUTH_DEFAULT_PROJECT_IDS` defaults to `1`; `X-Project-Scopes` may override it on a request, and `X-Actor` is available for reverse-proxy identity injection. This is a minimal project-scoped authz layer, not full RBAC. `MUTATION_RATE_LIMIT_PER_MINUTE` defaults to `60`, applies only to public mutating `/v1/*` routes, and can be set to `0` to disable throttling for local-only workflows.
+
 ## CLI Artifact Delivery
 
-`platform-cli pull --format <format> --version <version>` resolves a ready artifact, downloads the package archive, extracts it locally, and verifies every file declared in `manifest.json`.
+Current artifact format matrix:
 
-The pull workflow writes `verify-report.json` with an `environment_context` block containing `os`, `arch`, `cli_version`, and `storage_driver`.
+- snapshot import: `yolo`, `coco`
+- snapshot export: `yolo`, `coco`
+- `platform-cli pull`: `yolo`, `coco`
+- exported package layout: `yolo` includes `data.yaml` plus `train/images` and `train/labels`; `coco` includes `images` plus `annotations.json`
+
+`platform-cli pull --dataset <dataset> --format <format> --version <version>` polls artifact resolve until a matching ready artifact appears, downloads the package archive, extracts it locally, and verifies every file declared in `manifest.json`. `--wait-timeout`, `--poll-interval`, and `--verify-workers` control readiness polling and concurrent local verification.
+
+The pull workflow writes `verify-report.json` with per-file `path`, `size`, `checksum`, `status`, optional failure `error`, and an `environment_context` block containing `os`, `arch`, `cli_version`, and `storage_driver`.
 
 ## Testing
 

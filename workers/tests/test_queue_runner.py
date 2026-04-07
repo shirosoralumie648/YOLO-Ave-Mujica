@@ -1,7 +1,9 @@
+import threading
+import time
 import unittest
 from unittest import mock
 
-from workers.common.queue_runner import QueueRunner, RedisQueueClient, dispatch_once
+from workers.common.queue_runner import QueueRunner, RedisQueueClient, dispatch_once, poll_forever
 from workers.zero_shot.main import build_zero_shot_runner
 
 
@@ -24,15 +26,43 @@ class _FakeQueueClient:
 class _FakeJobClient:
     def __init__(self):
         self.calls = []
+        self.trace_id = None
+        self.register_calls = []
+
+    def set_trace_id(self, trace_id: str | None):
+        self.trace_id = trace_id
+
+    def register_worker(self, descriptor: dict):
+        self.register_calls.append(descriptor)
 
     def post_heartbeat(self, job_id: int, worker_id: str, lease_seconds: int):
         self.calls.append(("heartbeat", job_id, worker_id, lease_seconds))
+
+    def post_progress(self, job_id: int, worker_id: str, total: int, ok: int, failed: int):
+        self.calls.append(("progress", job_id, worker_id, total, ok, failed))
+
+    def post_item_error(self, job_id: int, item_id: int, message: str, detail: dict):
+        self.calls.append(("item_error", job_id, item_id, message, detail))
 
     def post_terminal(self, job_id: int, worker_id: str, status: str, total: int, ok: int, failed: int, result_ref=None):
         self.calls.append(("terminal", job_id, worker_id, status, total, ok, failed, result_ref))
 
     def post_event(self, job_id: int, event_type: str, message: str, detail: dict, level: str = "warn", item_id=None):
         self.calls.append(("event", job_id, event_type, message, detail, level))
+
+
+class _FakeLogger:
+    def __init__(self):
+        self.calls = []
+
+    def info(self, message: str, **fields):
+        self.calls.append(("info", message, fields))
+
+    def warn(self, message: str, **fields):
+        self.calls.append(("warn", message, fields))
+
+    def error(self, message: str, **fields):
+        self.calls.append(("error", message, fields))
 
 
 class _FakeRedisFile:
@@ -102,9 +132,10 @@ class QueueRunnerContractTest(unittest.TestCase):
         self.assertEqual([3], handled)
 
     def test_dispatch_once_posts_worker_callbacks(self):
-        queue_client = _FakeQueueClient({"job_id": 4, "job_type": "artifact-package", "payload": {"format": "yolo"}})
+        queue_client = _FakeQueueClient({"job_id": 4, "job_type": "artifact-package", "payload": {"format": "yolo", "trace_id": "trace-artifact-4"}})
         runner = QueueRunner(worker_id="packager-a", accepted_job_types={"artifact-package"})
         job_client = _FakeJobClient()
+        logger = _FakeLogger()
 
         dispatched = dispatch_once(
             queue_client,
@@ -112,6 +143,7 @@ class QueueRunnerContractTest(unittest.TestCase):
             runner,
             lambda job: {"status": "succeeded", "total_items": 1, "succeeded_items": 1, "failed_items": 0},
             job_client=job_client,
+            logger=logger,
         )
 
         self.assertTrue(dispatched)
@@ -121,6 +153,38 @@ class QueueRunnerContractTest(unittest.TestCase):
                 ("terminal", 4, "packager-a", "succeeded", 1, 1, 0, None),
             ],
             job_client.calls,
+        )
+        self.assertEqual("trace-artifact-4", job_client.trace_id)
+        self.assertEqual(
+            [
+                (
+                    "info",
+                    "job_dequeued",
+                    {
+                        "job_id": 4,
+                        "job_type": "artifact-package",
+                        "queue_lane": "jobs:cpu",
+                        "worker_id": "packager-a",
+                        "trace_id": "trace-artifact-4",
+                    },
+                ),
+                (
+                    "info",
+                    "job_completed",
+                    {
+                        "job_id": 4,
+                        "job_type": "artifact-package",
+                        "queue_lane": "jobs:cpu",
+                        "worker_id": "packager-a",
+                        "trace_id": "trace-artifact-4",
+                        "status": "succeeded",
+                        "total_items": 1,
+                        "succeeded_items": 1,
+                        "failed_items": 0,
+                    },
+                ),
+            ],
+            logger.calls,
         )
 
     def test_dispatch_once_posts_result_events_before_terminal(self):
@@ -190,6 +254,121 @@ class QueueRunnerContractTest(unittest.TestCase):
             job_client.calls,
         )
 
+    def test_dispatch_once_routes_item_failed_events_to_dedicated_callback(self):
+        queue_client = _FakeQueueClient({"job_id": 13, "job_type": "zero-shot", "payload": {"prompt": "person"}})
+        runner = QueueRunner(worker_id="zero-shot-a", accepted_job_types={"zero-shot"})
+        job_client = _FakeJobClient()
+
+        dispatched = dispatch_once(
+            queue_client,
+            "jobs:gpu",
+            runner,
+            lambda job: {
+                "status": "succeeded_with_errors",
+                "total_items": 2,
+                "succeeded_items": 1,
+                "failed_items": 1,
+                "events": [
+                    {
+                        "event_type": "progress",
+                        "message": "worker progress",
+                        "detail_json": {
+                            "total_items": 2,
+                            "succeeded_items": 1,
+                            "failed_items": 1,
+                        },
+                        "event_level": "info",
+                    },
+                    {
+                        "event_type": "item_failed",
+                        "message": "provider rejected item",
+                        "detail_json": {
+                            "reason": "blurry",
+                            "object_key": "images/2.jpg",
+                        },
+                        "event_level": "error",
+                        "item_id": 2,
+                    },
+                ],
+            },
+            job_client=job_client,
+        )
+
+        self.assertTrue(dispatched)
+        self.assertEqual(
+            [
+                ("heartbeat", 13, "zero-shot-a", 30),
+                ("progress", 13, "zero-shot-a", 2, 1, 1),
+                ("item_error", 13, 2, "provider rejected item", {"reason": "blurry", "object_key": "images/2.jpg"}),
+                ("terminal", 13, "zero-shot-a", "succeeded_with_errors", 2, 1, 1, None),
+            ],
+            job_client.calls,
+        )
+
+    def test_dispatch_once_posts_periodic_heartbeats_while_handler_runs(self):
+        queue_client = _FakeQueueClient({"job_id": 14, "job_type": "artifact-package", "payload": {"format": "yolo"}})
+        runner = QueueRunner(worker_id="packager-a", accepted_job_types={"artifact-package"})
+        heartbeat_seen = threading.Event()
+
+        class _HeartbeatAwareJobClient(_FakeJobClient):
+            def post_heartbeat(self, job_id: int, worker_id: str, lease_seconds: int):
+                super().post_heartbeat(job_id, worker_id, lease_seconds)
+                heartbeat_calls = [call for call in self.calls if call[0] == "heartbeat"]
+                if len(heartbeat_calls) >= 3:
+                    heartbeat_seen.set()
+
+        job_client = _HeartbeatAwareJobClient()
+
+        def handler(job):
+            self.assertTrue(heartbeat_seen.wait(timeout=1.0))
+            return {"status": "succeeded", "total_items": 1, "succeeded_items": 1, "failed_items": 0}
+
+        dispatched = dispatch_once(
+            queue_client,
+            "jobs:cpu",
+            runner,
+            handler,
+            job_client=job_client,
+            lease_seconds=1,
+        )
+
+        self.assertTrue(dispatched)
+        heartbeat_calls = [call for call in job_client.calls if call[0] == "heartbeat"]
+        self.assertGreaterEqual(len(heartbeat_calls), 3)
+        self.assertEqual(("terminal", 14, "packager-a", "succeeded", 1, 1, 0, None), job_client.calls[-1])
+
+    def test_dispatch_once_stops_periodic_heartbeats_after_handler_returns(self):
+        queue_client = _FakeQueueClient({"job_id": 15, "job_type": "artifact-package", "payload": {"format": "yolo"}})
+        runner = QueueRunner(worker_id="packager-a", accepted_job_types={"artifact-package"})
+        heartbeat_seen = threading.Event()
+
+        class _HeartbeatAwareJobClient(_FakeJobClient):
+            def post_heartbeat(self, job_id: int, worker_id: str, lease_seconds: int):
+                super().post_heartbeat(job_id, worker_id, lease_seconds)
+                heartbeat_calls = [call for call in self.calls if call[0] == "heartbeat"]
+                if len(heartbeat_calls) >= 2:
+                    heartbeat_seen.set()
+
+        job_client = _HeartbeatAwareJobClient()
+
+        def handler(job):
+            self.assertTrue(heartbeat_seen.wait(timeout=1.0))
+            return {"status": "succeeded", "total_items": 1, "succeeded_items": 1, "failed_items": 0}
+
+        dispatched = dispatch_once(
+            queue_client,
+            "jobs:cpu",
+            runner,
+            handler,
+            job_client=job_client,
+            lease_seconds=1,
+        )
+
+        self.assertTrue(dispatched)
+        heartbeat_count = len([call for call in job_client.calls if call[0] == "heartbeat"])
+        time.sleep(0.5)
+        self.assertEqual(heartbeat_count, len([call for call in job_client.calls if call[0] == "heartbeat"]))
+
     def test_dispatch_once_converts_handler_exception_into_failed_terminal(self):
         queue_client = _FakeQueueClient({"job_id": 11, "job_type": "zero-shot", "payload": {"prompt": "person"}})
         runner = QueueRunner(worker_id="zero-shot-a", accepted_job_types={"zero-shot"})
@@ -233,6 +412,7 @@ class QueueRunnerContractTest(unittest.TestCase):
         queue_client = _FakeQueueClient(payload)
         runner = QueueRunner(worker_id="packager-a", accepted_job_types={"artifact-package"})
         job_client = _FakeJobClient()
+        logger = _FakeLogger()
 
         dispatched = dispatch_once(
             queue_client,
@@ -240,6 +420,7 @@ class QueueRunnerContractTest(unittest.TestCase):
             runner,
             lambda job: {"status": "succeeded", "total_items": 1, "succeeded_items": 1, "failed_items": 0},
             job_client=job_client,
+            logger=logger,
         )
 
         self.assertFalse(dispatched)
@@ -266,6 +447,35 @@ class QueueRunnerContractTest(unittest.TestCase):
                 )
             ],
             job_client.calls,
+        )
+        self.assertEqual(
+            [
+                (
+                    "info",
+                    "job_dequeued",
+                    {
+                        "job_id": 6,
+                        "job_type": "snapshot-import",
+                        "queue_lane": "jobs:cpu",
+                        "worker_id": "packager-a",
+                        "trace_id": None,
+                    },
+                ),
+                (
+                    "warn",
+                    "job_requeued",
+                    {
+                        "job_id": 6,
+                        "job_type": "snapshot-import",
+                        "queue_lane": "jobs:cpu",
+                        "target_lane": "jobs:cpu",
+                        "worker_id": "packager-a",
+                        "trace_id": None,
+                        "reason": "job_type_mismatch",
+                    },
+                ),
+            ],
+            logger.calls,
         )
 
     def test_redis_queue_client_falls_back_to_socket_when_redis_cli_is_missing(self):
@@ -384,6 +594,39 @@ class QueueRunnerContractTest(unittest.TestCase):
         self.assertFalse(dispatched)
         self.assertEqual([("jobs:gpu", payload)], queue_client.requeued)
         self.assertEqual("dispatch_requeued", job_client.calls[0][2])
+
+    def test_poll_forever_registers_worker_metadata_before_dispatch_loop(self):
+        runner = QueueRunner(
+            worker_id="zero-shot-a",
+            accepted_job_types={"zero-shot"},
+            resource_lane="jobs:gpu",
+            capabilities={"zero_shot_inference", "grounding_dino"},
+        )
+        job_client = _FakeJobClient()
+
+        with self.assertRaisesRegex(RuntimeError, "stop loop"), \
+             mock.patch("workers.common.queue_runner.RedisQueueClient"), \
+             mock.patch("workers.common.queue_runner.dispatch_once", side_effect=RuntimeError("stop loop")):
+            poll_forever(
+                redis_addr="redis.local:6379",
+                lane="jobs:gpu",
+                runner=runner,
+                handler=lambda job: {"status": "succeeded"},
+                job_client=job_client,
+                logger=_FakeLogger(),
+            )
+
+        self.assertEqual(
+            [
+                {
+                    "worker_id": "zero-shot-a",
+                    "resource_lane": "jobs:gpu",
+                    "capabilities": ["grounding_dino", "zero_shot_inference"],
+                    "job_types": ["zero-shot"],
+                }
+            ],
+            job_client.register_calls,
+        )
 
 
 if __name__ == "__main__":

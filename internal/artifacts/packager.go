@@ -12,6 +12,7 @@ import (
 
 type ManifestEntry struct {
 	Path     string `json:"path"`
+	Size     int64  `json:"size"`
 	Checksum string `json:"checksum"`
 }
 

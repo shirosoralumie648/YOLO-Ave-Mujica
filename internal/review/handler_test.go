@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"yolo-ave-mujica/internal/auth"
 	"yolo-ave-mujica/internal/jobs"
 	"yolo-ave-mujica/internal/server"
 )
@@ -38,6 +39,15 @@ func (r *fakeRepository) Accept(candidateID int64, _ string) error {
 func (r *fakeRepository) Reject(candidateID int64, _ string, _ string) error {
 	r.rejected = append(r.rejected, candidateID)
 	return nil
+}
+
+func (r *fakeRepository) GetCandidate(id int64) (Candidate, bool) {
+	for _, candidate := range r.pending {
+		if candidate.ID == id {
+			return candidate, true
+		}
+	}
+	return Candidate{}, false
 }
 
 func (r *fakeRepository) ListPublishableCandidates(projectID int64) ([]PublishableCandidate, error) {
@@ -223,6 +233,47 @@ func TestListCandidatesIncludesMaterializedJobSourceMetadata(t *testing.T) {
 	}
 }
 
+func TestListCandidatesFiltersByCallerProjectScope(t *testing.T) {
+	svc := NewService()
+	svc.SeedCandidate(Candidate{
+		ID:           31,
+		ProjectID:    1,
+		DatasetID:    1,
+		SnapshotID:   1,
+		ItemID:       1,
+		CategoryID:   1,
+		ReviewStatus: CandidateStatusQueuedForReview,
+		Status:       CandidateStatusQueuedForReview,
+	})
+	svc.SeedCandidate(Candidate{
+		ID:           32,
+		ProjectID:    2,
+		DatasetID:    2,
+		SnapshotID:   2,
+		ItemID:       2,
+		CategoryID:   2,
+		ReviewStatus: CandidateStatusQueuedForReview,
+		Status:       CandidateStatusQueuedForReview,
+	})
+
+	handler := NewHandler(svc)
+	req := httptest.NewRequest(http.MethodGet, "/v1/review/candidates", nil)
+	req = req.WithContext(auth.WithIdentity(req.Context(), auth.NewIdentity("reviewer-1", []int64{2})))
+	rec := httptest.NewRecorder()
+
+	handler.ListCandidates(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"id":31`) {
+		t.Fatalf("expected project 1 candidate to be filtered out, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"id":32`) {
+		t.Fatalf("expected project 2 candidate to remain visible, got %s", rec.Body.String())
+	}
+}
+
 func TestAcceptPromotesCandidateToAnnotation(t *testing.T) {
 	svc := NewService()
 	svc.SeedCandidate(Candidate{
@@ -262,6 +313,38 @@ func TestAcceptPromotesCandidateToAnnotation(t *testing.T) {
 	}
 }
 
+func TestAcceptCandidateRejectsProjectOutsideCallerScope(t *testing.T) {
+	svc := NewService()
+	svc.SeedCandidate(Candidate{
+		ID:           21,
+		ProjectID:    1,
+		DatasetID:    1,
+		SnapshotID:   1,
+		ItemID:       1,
+		CategoryID:   1,
+		ReviewStatus: "pending",
+	})
+
+	handler := NewHandler(svc)
+	srv := server.NewHTTPServerWithModules(server.Modules{
+		MutationMiddleware: auth.IdentityMiddleware([]int64{2}),
+		Review: server.ReviewRoutes{
+			AcceptCandidate: handler.AcceptCandidate,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/review/candidates/21/accept", strings.NewReader(`{"reviewer_id":"reviewer-1"}`))
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for accept candidate, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(strings.ToLower(rec.Body.String()), "project") {
+		t.Fatalf("expected project scope error, got %s", rec.Body.String())
+	}
+}
+
 func TestRejectCandidatePreservesReviewMetadata(t *testing.T) {
 	svc := NewService()
 	svc.SeedCandidate(Candidate{ID: 11, DatasetID: 1, SnapshotID: 1, ItemID: 1, CategoryID: 1, ReviewStatus: "pending"})
@@ -278,6 +361,35 @@ func TestRejectCandidatePreservesReviewMetadata(t *testing.T) {
 	}
 	if c.ReviewedAt.IsZero() {
 		t.Fatalf("expected reviewed timestamp, got zero")
+	}
+}
+
+func TestRejectCandidateRejectsProjectOutsideCallerScope(t *testing.T) {
+	svc := NewService()
+	svc.SeedCandidate(Candidate{
+		ID:           22,
+		ProjectID:    1,
+		DatasetID:    1,
+		SnapshotID:   1,
+		ItemID:       1,
+		CategoryID:   1,
+		ReviewStatus: "pending",
+	})
+
+	handler := NewHandler(svc)
+	srv := server.NewHTTPServerWithModules(server.Modules{
+		MutationMiddleware: auth.IdentityMiddleware([]int64{2}),
+		Review: server.ReviewRoutes{
+			RejectCandidate: handler.RejectCandidate,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/review/candidates/22/reject", strings.NewReader(`{"reviewer_id":"reviewer-1","reason_code":"out-of-scope"}`))
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for reject candidate, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

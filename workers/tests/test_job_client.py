@@ -93,6 +93,37 @@ class JobClientContractTest(unittest.TestCase):
         self.assertEqual("POST", request.get_method())
         self.assertIn(b'"event_type": "dispatch_rejected"', request.data)
 
+    def test_job_client_propagates_trace_headers(self):
+        opener = _FakeOpener()
+        client = JobClient(base_url="http://api.local", opener=opener, trace_id="trace-worker-123")
+
+        client.post_terminal(job_id=5, worker_id="worker-a", status="succeeded", total=3, ok=3, failed=0)
+
+        request = opener.requests[0]
+        self.assertEqual("trace-worker-123", request.get_header("X-request-id"))
+        self.assertEqual("trace-worker-123", request.get_header("X-correlation-id"))
+
+    def test_job_client_registers_worker_metadata(self):
+        opener = _FakeOpener()
+        client = JobClient(base_url="http://api.local", opener=opener)
+
+        client.register_worker(
+            {
+                "worker_id": "zero-shot-a",
+                "resource_lane": "jobs:gpu",
+                "job_types": ["zero-shot"],
+                "capabilities": ["zero_shot_inference", "grounding_dino"],
+            }
+        )
+
+        self.assertEqual(1, len(opener.requests))
+        request = opener.requests[0]
+        self.assertEqual("http://api.local/internal/jobs/workers/register", request.full_url)
+        self.assertEqual("POST", request.get_method())
+        self.assertIn(b'"worker_id": "zero-shot-a"', request.data)
+        self.assertIn(b'"resource_lane": "jobs:gpu"', request.data)
+        self.assertIn(b'"job_types": ["zero-shot"]', request.data)
+
 
 if __name__ == "__main__":
     unittest.main()

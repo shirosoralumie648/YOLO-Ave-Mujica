@@ -2,6 +2,20 @@ openapi: 3.1.0
 info:
   title: YOLO Platform MVP API
   version: 0.1.0
+  description: |
+    Public routes live under `/v1/*` plus `/healthz` and `/readyz`.
+
+    When `AUTH_BEARER_TOKEN` is configured, public mutating `/v1/*` routes require
+    `Authorization: Bearer <token>`.
+
+    Minimal authorization is project-scoped, not full RBAC. `AUTH_DEFAULT_PROJECT_IDS`
+    defaults to `1` and seeds the caller's allowed project scope unless a trusted caller
+    overrides it with `X-Project-Scopes`. `X-Actor` may be injected by a reverse proxy
+    to stamp the caller identity into audit trails.
+
+    Clients may optionally send `X-Request-Id`. The API echoes that value back via
+    `X-Request-Id` and `X-Correlation-Id`, and job-creating mutations propagate the
+    same trace id into worker callbacks so API and worker activity can be correlated.
 servers:
   - url: http://localhost:8080
 paths:
@@ -25,6 +39,11 @@ paths:
           description: Dataset summary list
     post:
       summary: Create dataset
+      parameters:
+        - $ref: '#/components/parameters/ProjectScopesHeader'
+        - $ref: '#/components/parameters/ActorHeader'
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -35,8 +54,12 @@ paths:
       responses:
         "200":
           description: Dataset created
+        "403":
+          $ref: '#/components/responses/ForbiddenProjectScope'
         "400":
           description: Invalid dataset create request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/datasets/{id}:
     get:
       summary: Get dataset detail with aggregate counts and latest snapshot info
@@ -56,7 +79,11 @@ paths:
   /v1/datasets/{id}/scan:
     post:
       summary: Scan dataset object keys
+      security:
+        - bearerAuth: []
       parameters:
+        - $ref: '#/components/parameters/ProjectScopesHeader'
+        - $ref: '#/components/parameters/ActorHeader'
         - in: path
           name: id
           required: true
@@ -65,12 +92,20 @@ paths:
       responses:
         "200":
           description: Scan accepted
+        "403":
+          $ref: '#/components/responses/ForbiddenProjectScope'
         "400":
           description: Invalid dataset scan request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/datasets/{id}/snapshots:
     post:
       summary: Create snapshot
+      security:
+        - bearerAuth: []
       parameters:
+        - $ref: '#/components/parameters/ProjectScopesHeader'
+        - $ref: '#/components/parameters/ActorHeader'
         - in: path
           name: id
           required: true
@@ -79,8 +114,12 @@ paths:
       responses:
         "200":
           description: Snapshot created
+        "403":
+          $ref: '#/components/responses/ForbiddenProjectScope'
         "400":
           description: Invalid snapshot create request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
     get:
       summary: List snapshots
       parameters:
@@ -98,11 +137,16 @@ paths:
     post:
       summary: Queue snapshot import job
       parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/ProjectScopesHeader'
+        - $ref: '#/components/parameters/ActorHeader'
         - in: path
           name: id
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -114,11 +158,30 @@ paths:
                 format:
                   type: string
                   enum: [yolo, coco]
+                  description: Import snapshot annotations from either YOLO label files or a COCO annotations document.
+                source_uri:
+                  type: string
+                  description: Optional source archive or annotation document URI. Requests exceeding 8 MiB are rejected with 413.
+                idempotency_key:
+                  type: string
+                required_resource_type:
+                  type: string
+                  enum: [cpu, mixed]
+                required_capabilities:
+                  type: array
+                  items:
+                    type: string
       responses:
         "200":
           description: Import job accepted
+        "403":
+          $ref: '#/components/responses/ForbiddenProjectScope'
         "400":
           description: Invalid import request
+        "413":
+          description: Import request body exceeds the supported inline payload size
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
         "404":
           description: Snapshot not found
   /v1/snapshots/{id}:
@@ -141,11 +204,16 @@ paths:
     post:
       summary: Queue snapshot export package build
       parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/ProjectScopesHeader'
+        - $ref: '#/components/parameters/ActorHeader'
         - in: path
           name: id
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -159,6 +227,7 @@ paths:
                 format:
                   type: string
                   enum: [yolo, coco]
+                  description: Export either a YOLO package with data.yaml or a COCO package with annotations.json.
                 version:
                   type: string
                 label_map_json:
@@ -168,8 +237,12 @@ paths:
       responses:
         "202":
           description: Export job accepted
+        "403":
+          $ref: '#/components/responses/ForbiddenProjectScope'
         "400":
           description: Invalid export request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/datasets/{id}/items:
     get:
       summary: List indexed dataset items
@@ -187,11 +260,20 @@ paths:
   /v1/objects/presign:
     post:
       summary: Create object read presign URL
+      parameters:
+        - $ref: '#/components/parameters/ProjectScopesHeader'
+        - $ref: '#/components/parameters/ActorHeader'
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: Signed URL
+        "403":
+          $ref: '#/components/responses/ForbiddenProjectScope'
         "400":
           description: Invalid object presign request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/projects/{id}/overview:
     get:
       summary: Get project task overview
@@ -248,6 +330,8 @@ paths:
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -260,6 +344,8 @@ paths:
           description: Task created
         "400":
           description: Invalid project id or task create request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/tasks/{id}:
     get:
       summary: Get task detail
@@ -285,6 +371,8 @@ paths:
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -297,6 +385,8 @@ paths:
           description: Updated task payload
         "400":
           description: Invalid task id or transition request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/tasks/{id}/workspace:
     get:
       summary: Get annotation workspace payload
@@ -324,6 +414,8 @@ paths:
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -340,6 +432,8 @@ paths:
           description: Task or workspace context not found
         "409":
           description: Workspace draft conflict, such as revision mismatch or already submitted state
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
         "422":
           description: Task cannot accept workspace draft updates
   /v1/tasks/{id}/workspace/submit:
@@ -351,6 +445,8 @@ paths:
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -367,11 +463,19 @@ paths:
           description: Task or workspace context not found
         "409":
           description: Workspace submit conflict
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
         "422":
           description: Task cannot be submitted as an annotation workspace
   /v1/jobs/zero-shot:
     post:
       summary: Queue zero-shot job
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/ProjectScopesHeader'
+        - $ref: '#/components/parameters/ActorHeader'
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -388,6 +492,17 @@ paths:
                   type: integer
                 prompt:
                   type: string
+                  maxLength: 4096
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [item_id, object_key]
+                    properties:
+                      item_id:
+                        type: integer
+                      object_key:
+                        type: string
                 idempotency_key:
                   type: string
                 required_resource_type:
@@ -398,28 +513,49 @@ paths:
                   items:
                     type: string
                 provider:
-                  type: object
-                  required: [type, argv]
-                  properties:
-                    type:
-                      type: string
-                      enum: [command]
-                    argv:
-                      type: array
-                      minItems: 1
-                      items:
-                        type: string
-                    timeout_seconds:
-                      type: number
-                      exclusiveMinimum: 0
+                  oneOf:
+                    - type: object
+                      required: [type, name]
+                      properties:
+                        type:
+                          type: string
+                          enum: [builtin]
+                        name:
+                          type: string
+                    - type: object
+                      required: [type, argv]
+                      properties:
+                        type:
+                          type: string
+                          enum: [command]
+                        argv:
+                          type: array
+                          minItems: 1
+                          items:
+                            type: string
+                        timeout_seconds:
+                          type: number
+                          exclusiveMinimum: 0
       responses:
         "200":
           description: Job accepted
+        "403":
+          $ref: '#/components/responses/ForbiddenProjectScope'
         "400":
           description: Invalid zero-shot job request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
+        "422":
+          description: Zero-shot prompt or provider payload failed validation
   /v1/jobs/video-extract:
     post:
       summary: Queue video extraction job
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/ProjectScopesHeader'
+        - $ref: '#/components/parameters/ActorHeader'
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -434,6 +570,12 @@ paths:
                   type: integer
                 fps:
                   type: integer
+                duration_ms:
+                  type: integer
+                source_object_key:
+                  type: string
+                frame_prefix:
+                  type: string
                 idempotency_key:
                   type: string
                 required_resource_type:
@@ -444,33 +586,56 @@ paths:
                   items:
                     type: string
                 provider:
-                  type: object
-                  required: [type, argv]
-                  properties:
-                    type:
-                      type: string
-                      enum: [command]
-                    argv:
-                      type: array
-                      minItems: 1
-                      items:
-                        type: string
-                    timeout_seconds:
-                      type: number
-                      exclusiveMinimum: 0
+                  oneOf:
+                    - type: object
+                      required: [type, name]
+                      properties:
+                        type:
+                          type: string
+                          enum: [builtin]
+                        name:
+                          type: string
+                    - type: object
+                      required: [type, argv]
+                      properties:
+                        type:
+                          type: string
+                          enum: [command]
+                        argv:
+                          type: array
+                          minItems: 1
+                          items:
+                            type: string
+                        timeout_seconds:
+                          type: number
+                          exclusiveMinimum: 0
       responses:
         "200":
           description: Job accepted
+        "403":
+          $ref: '#/components/responses/ForbiddenProjectScope'
         "400":
           description: Invalid video extraction job request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/jobs/cleaning:
     post:
       summary: Queue cleaning job
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/ProjectScopesHeader'
+        - $ref: '#/components/parameters/ActorHeader'
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: Job accepted
+        "403":
+          $ref: '#/components/responses/ForbiddenProjectScope'
         "400":
           description: Invalid cleaning job request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/jobs/{job_id}:
     get:
       summary: Get job status
@@ -487,6 +652,12 @@ paths:
           description: Invalid job id
         "404":
           description: Job not found
+  /v1/jobs/workers:
+    get:
+      summary: List registered worker instances
+      responses:
+        "200":
+          description: Worker registry snapshot
   /v1/jobs/{job_id}/events:
     get:
       summary: Get job event timeline
@@ -504,11 +675,15 @@ paths:
   /v1/snapshots/diff:
     post:
       summary: Diff snapshots
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: Diff result
         "400":
           description: Invalid diff request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/review/candidates:
     get:
       summary: List queued review candidates with source metadata
@@ -519,25 +694,37 @@ paths:
     post:
       summary: Accept candidate
       parameters:
+        - $ref: '#/components/parameters/ProjectScopesHeader'
+        - $ref: '#/components/parameters/ActorHeader'
         - in: path
           name: id
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: Candidate accepted
+        "403":
+          $ref: '#/components/responses/ForbiddenProjectScope'
         "400":
           description: Invalid candidate id or review accept request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/review/candidates/{id}/reject:
     post:
       summary: Reject candidate with required reason code
       parameters:
+        - $ref: '#/components/parameters/ProjectScopesHeader'
+        - $ref: '#/components/parameters/ActorHeader'
         - in: path
           name: id
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -554,8 +741,12 @@ paths:
       responses:
         "200":
           description: Candidate rejected
+        "403":
+          $ref: '#/components/responses/ForbiddenProjectScope'
         "400":
           description: Invalid candidate id or review reject request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/publish/candidates:
     get:
       summary: List publish candidate groups
@@ -573,6 +764,8 @@ paths:
   /v1/publish/batches:
     post:
       summary: Create publish batch
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -585,6 +778,8 @@ paths:
           description: Publish batch created
         "400":
           description: Invalid publish batch request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/publish/batches/{id}:
     get:
       summary: Get publish batch detail
@@ -610,11 +805,15 @@ paths:
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: Publish batch items replaced
         "400":
           description: Invalid batch id or batch items request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/publish/batches/{id}/review-approve:
     post:
       summary: Approve publish batch as reviewer
@@ -624,11 +823,15 @@ paths:
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: Reviewer approval recorded
         "400":
           description: Invalid batch id or reviewer approval request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/publish/batches/{id}/review-reject:
     post:
       summary: Reject publish batch as reviewer
@@ -638,11 +841,15 @@ paths:
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: Reviewer rejection recorded
         "400":
           description: Invalid batch id or reviewer rejection request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/publish/batches/{id}/review-rework:
     post:
       summary: Request publish batch rework as reviewer
@@ -652,11 +859,15 @@ paths:
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: Reviewer rework recorded
         "400":
           description: Invalid batch id or reviewer rework request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/publish/batches/{id}/owner-approve:
     post:
       summary: Approve publish batch as owner
@@ -666,11 +877,15 @@ paths:
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: Owner approval recorded
         "400":
           description: Invalid batch id or owner approval request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/publish/batches/{id}/owner-reject:
     post:
       summary: Reject publish batch as owner
@@ -680,11 +895,15 @@ paths:
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: Owner rejection recorded
         "400":
           description: Invalid batch id or owner rejection request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/publish/batches/{id}/owner-rework:
     post:
       summary: Request publish batch rework as owner
@@ -694,11 +913,15 @@ paths:
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: Owner rework recorded
         "400":
           description: Invalid batch id or owner rework request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/publish/batches/{id}/feedback:
     post:
       summary: Add batch-level publish feedback
@@ -708,11 +931,15 @@ paths:
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       responses:
         "201":
           description: Publish batch feedback created
         "400":
           description: Invalid batch id or batch feedback request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/publish/batches/{id}/items/{itemId}/feedback:
     post:
       summary: Add item-level publish feedback
@@ -727,11 +954,15 @@ paths:
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       responses:
         "201":
           description: Publish item feedback created
         "400":
           description: Invalid batch id, item id, or item feedback request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/publish/batches/{id}/workspace:
     get:
       summary: Get aggregated review workspace payload
@@ -767,6 +998,12 @@ paths:
   /v1/artifacts/packages:
     post:
       summary: Queue artifact package build
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/ProjectScopesHeader'
+        - $ref: '#/components/parameters/ActorHeader'
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -782,6 +1019,7 @@ paths:
                 format:
                   type: string
                   enum: [yolo, coco]
+                  description: Build either a YOLO package with data.yaml or a COCO package with annotations.json.
                 version:
                   type: string
                 label_map_json:
@@ -791,8 +1029,12 @@ paths:
       responses:
         "202":
           description: Package job accepted
+        "403":
+          $ref: '#/components/responses/ForbiddenProjectScope'
         "400":
           description: Invalid package request
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
   /v1/artifacts/resolve:
     get:
       summary: Resolve artifact metadata by optional dataset, format, and version
@@ -807,6 +1049,7 @@ paths:
           required: true
           schema:
             type: string
+            enum: [yolo, coco]
         - in: query
           name: version
           required: true
@@ -814,11 +1057,11 @@ paths:
             type: string
       responses:
         "200":
-          description: Resolved artifact metadata
+          description: Resolved artifact metadata, including originating `created_by_job_id` when available.
         "400":
           description: Missing required query parameters
         "404":
-          description: Ready artifact not found
+          description: Ready artifact not found yet or no artifact exists for the dataset/format/version tuple
   /v1/artifacts/{id}:
     get:
       summary: Get artifact metadata and inline bundle entries
@@ -830,7 +1073,7 @@ paths:
             type: integer
       responses:
         "200":
-          description: Artifact details
+          description: Artifact details, including originating `created_by_job_id` when the artifact was queued via a package job.
         "400":
           description: Invalid artifact id
         "404":
@@ -857,17 +1100,65 @@ paths:
     post:
       summary: Create artifact download presign URL
       parameters:
+        - $ref: '#/components/parameters/ProjectScopesHeader'
+        - $ref: '#/components/parameters/ActorHeader'
         - in: path
           name: id
           required: true
           schema:
             type: integer
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: Signed artifact URL
+        "403":
+          $ref: '#/components/responses/ForbiddenProjectScope'
         "400":
           description: Invalid artifact id or presign request
         "404":
           description: Artifact not found
         "409":
           description: Artifact exists but is not ready for download
+        "429":
+          description: Too many mutation requests from the same client in the current rate-limit window
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-token
+  parameters:
+    RequestIdHeader:
+      in: header
+      name: X-Request-Id
+      required: false
+      description: Optional caller-provided request ID used for API and worker trace correlation.
+      schema:
+        type: string
+    ProjectScopesHeader:
+      in: header
+      name: X-Project-Scopes
+      required: false
+      description: Optional comma-separated project scope override. If omitted, the API falls back to `AUTH_DEFAULT_PROJECT_IDS` (default `1`).
+      schema:
+        type: string
+    ActorHeader:
+      in: header
+      name: X-Actor
+      required: false
+      description: Optional caller identity injected by a trusted reverse proxy for audit and operator visibility.
+      schema:
+        type: string
+  headers:
+    ResponseRequestIdHeader:
+      description: Request ID associated with the response.
+      schema:
+        type: string
+    ResponseCorrelationIdHeader:
+      description: Correlation ID associated with the response.
+      schema:
+        type: string
+  responses:
+    ForbiddenProjectScope:
+      description: Caller is authenticated but does not have access to the target project scope.

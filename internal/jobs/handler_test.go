@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"yolo-ave-mujica/internal/audit"
+	"yolo-ave-mujica/internal/auth"
+	"yolo-ave-mujica/internal/observability"
 	"yolo-ave-mujica/internal/review"
 )
 
@@ -74,10 +77,10 @@ func TestCreateGPUJobPublishesToGPULane(t *testing.T) {
 	}
 }
 
-func TestLeaseSweeperRequeuesExpiredJob(t *testing.T) {
+func TestLeaseSweeperTransitionsExpiredJobToRetryWaiting(t *testing.T) {
 	repo := NewInMemoryRepository()
 	pub := NewInMemoryPublisher()
-	svc := NewServiceWithPublisher(repo, pub)
+	svc := NewService(repo)
 
 	job, err := svc.CreateJob(CreateJobInput{
 		ProjectID:            1,
@@ -97,8 +100,9 @@ func TestLeaseSweeperRequeuesExpiredJob(t *testing.T) {
 		t.Fatalf("set lease: %v", err)
 	}
 
-	sw := NewSweeper(repo, pub, 3)
-	if err := sw.Tick(time.Now()); err != nil {
+	now := time.Now().UTC()
+	sw := NewSweeper(repo, pub, 3).WithRetryBackoff(5*time.Second, 30*time.Second)
+	if err := sw.Tick(now); err != nil {
 		t.Fatalf("sweeper tick failed: %v", err)
 	}
 
@@ -106,14 +110,20 @@ func TestLeaseSweeperRequeuesExpiredJob(t *testing.T) {
 	if !ok {
 		t.Fatalf("job %d not found after sweep", job.ID)
 	}
-	if got.Status != StatusQueued {
-		t.Fatalf("expected queued after requeue, got %s", got.Status)
+	if got.Status != StatusRetryWaiting {
+		t.Fatalf("expected retry_waiting after lease recovery, got %s", got.Status)
 	}
 	if got.RetryCount != 1 {
 		t.Fatalf("expected retry_count=1, got %d", got.RetryCount)
 	}
-	if pub.LastLane() != "jobs:cpu" {
-		t.Fatalf("expected jobs:cpu requeue, got %s", pub.LastLane())
+	if got.LeaseUntil == nil {
+		t.Fatal("expected retry_waiting job to have retry deadline in lease_until")
+	}
+	if !got.LeaseUntil.Equal(now.Add(5 * time.Second)) {
+		t.Fatalf("expected lease_until to hold retry deadline %s, got %v", now.Add(5*time.Second), got.LeaseUntil)
+	}
+	if len(pub.items) != 0 {
+		t.Fatalf("expected no immediate requeue publish during backoff, got %+v", pub.items)
 	}
 }
 
@@ -131,6 +141,60 @@ func TestCreateZeroShotRequiresIdempotencyKey(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "idempotency_key") {
 		t.Fatalf("expected idempotency_key error, got %s", rec.Body.String())
+	}
+}
+
+func TestCreateZeroShotRejectsProjectOutsideCallerScope(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs/zero-shot", strings.NewReader(`{
+		"project_id":2,
+		"dataset_id":1,
+		"snapshot_id":1,
+		"prompt":"person",
+		"idempotency_key":"idem-authz",
+		"required_resource_type":"gpu"
+	}`))
+	req = req.WithContext(auth.WithIdentity(req.Context(), auth.NewIdentity("reviewer-1", []int64{1})))
+	rec := httptest.NewRecorder()
+
+	h.CreateZeroShot(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, ok := repo.Get(1); ok {
+		t.Fatal("did not expect forbidden zero-shot request to create a job")
+	}
+}
+
+func TestCreateZeroShotRejectsPromptExceedingMaxLength(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+
+	prompt := strings.Repeat("x", zeroShotPromptMaxChars+1)
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs/zero-shot", strings.NewReader(`{
+		"project_id":1,
+		"dataset_id":1,
+		"snapshot_id":1,
+		"prompt":"`+prompt+`",
+		"idempotency_key":"idem-prompt-too-long",
+		"required_resource_type":"gpu"
+	}`))
+	rec := httptest.NewRecorder()
+	h.CreateZeroShot(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "prompt must be <=") {
+		t.Fatalf("expected prompt length validation error, got %s", rec.Body.String())
+	}
+	if _, ok := repo.Get(1); ok {
+		t.Fatal("did not expect oversized prompt request to create a job")
 	}
 }
 
@@ -209,6 +273,171 @@ func TestCreateZeroShotPersistsDatasetAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestGetJobReturnsNotFoundOutsideCallerScope(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+
+	job, err := svc.CreateJob(CreateJobInput{
+		ProjectID:            2,
+		DatasetID:            42,
+		SnapshotID:           9,
+		JobType:              "zero-shot",
+		RequiredResourceType: "gpu",
+		IdempotencyKey:       "idem-job-read-authz",
+		Payload:              map[string]any{"prompt": "person"},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/jobs/1", nil)
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("job_id", strconv.FormatInt(job.ID, 10))
+	getReq = getReq.WithContext(context.WithValue(getReq.Context(), chi.RouteCtxKey, routeCtx))
+	getReq = getReq.WithContext(auth.WithIdentity(getReq.Context(), auth.NewIdentity("reviewer-1", []int64{1})))
+	getRec := httptest.NewRecorder()
+
+	h.GetJob(getRec, getReq)
+
+	if getRec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", getRec.Code, getRec.Body.String())
+	}
+}
+
+func TestListEventsReturnsNotFoundOutsideCallerScope(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+
+	job, err := svc.CreateJob(CreateJobInput{
+		ProjectID:            2,
+		DatasetID:            42,
+		SnapshotID:           9,
+		JobType:              "zero-shot",
+		RequiredResourceType: "gpu",
+		IdempotencyKey:       "idem-job-events-authz",
+		Payload:              map[string]any{"prompt": "person"},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := svc.ReportEvent(job.ID, nil, "info", "queued", "queued", nil); err != nil {
+		t.Fatalf("report event: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/1/events", nil)
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("job_id", strconv.FormatInt(job.ID, 10))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
+	req = req.WithContext(auth.WithIdentity(req.Context(), auth.NewIdentity("reviewer-1", []int64{1})))
+	rec := httptest.NewRecorder()
+
+	h.ListEvents(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateZeroShotWritesAuditEvent(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	recorder := audit.NewRecorder()
+	h := NewHandlerWithAudit(svc, recorder)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/jobs/zero-shot", strings.NewReader(`{
+		"project_id":1,
+		"dataset_id":42,
+		"snapshot_id":9,
+		"prompt":"person",
+		"idempotency_key":"idem-audit",
+		"required_resource_type":"gpu"
+	}`))
+	createRec := httptest.NewRecorder()
+	h.CreateZeroShot(createRec, createReq)
+
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on create, got %d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	events := recorder.Events()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 audit event, got %+v", events)
+	}
+	if events[0].Action != "job.create.zero-shot" || events[0].ResourceType != "job" || events[0].ResourceID != "1" {
+		t.Fatalf("unexpected audit event: %+v", events[0])
+	}
+}
+
+func TestCreateZeroShotPersistsTraceIDFromRequestHeader(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/jobs/zero-shot", strings.NewReader(`{
+		"project_id":1,
+		"dataset_id":42,
+		"snapshot_id":9,
+		"prompt":"person",
+		"idempotency_key":"idem-trace",
+		"required_resource_type":"gpu"
+	}`))
+	createReq.Header.Set(observability.TraceIDHeader, "trace-job-123")
+	createRec := httptest.NewRecorder()
+	h.CreateZeroShot(createRec, createReq)
+
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on create, got %d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	job, ok := repo.Get(1)
+	if !ok {
+		t.Fatal("expected created job to be persisted")
+	}
+	if got := job.Payload["trace_id"]; got != "trace-job-123" {
+		t.Fatalf("expected trace_id in payload, got %#v", got)
+	}
+}
+
+func TestServiceMetricsRecordJobLifecycle(t *testing.T) {
+	repo := NewInMemoryRepository()
+	metrics := observability.NewMetrics()
+	svc := NewServiceWithDependenciesAndMetrics(repo, nil, nil, metrics)
+
+	job, err := svc.CreateJob(CreateJobInput{
+		ProjectID:            1,
+		JobType:              "zero-shot",
+		RequiredResourceType: "gpu",
+		IdempotencyKey:       "idem-metrics",
+		Payload:              map[string]any{"prompt": "person"},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := svc.ReportHeartbeat(job.ID, "worker-a", 30); err != nil {
+		t.Fatalf("report heartbeat: %v", err)
+	}
+	if err := svc.ReportTerminal(job.ID, "worker-a", StatusSucceeded, 1, 1, 0, nil); err != nil {
+		t.Fatalf("report terminal: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, needle := range []string{
+		`yolo_job_creations_total{job_type="zero-shot"} 1`,
+		`yolo_job_completions_total{job_type="zero-shot",status="succeeded"} 1`,
+		`yolo_job_duration_seconds_count{job_type="zero-shot",status="succeeded"} 1`,
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("expected metrics output to contain %q, got:\n%s", needle, body)
+		}
+	}
+}
+
 func TestCreateZeroShotPersistsCommandProviderPayload(t *testing.T) {
 	repo := NewInMemoryRepository()
 	svc := NewService(repo)
@@ -250,6 +479,63 @@ func TestCreateZeroShotPersistsCommandProviderPayload(t *testing.T) {
 	}
 	if !reflect.DeepEqual([]string{"python3", "/opt/providers/zero-shot.py"}, argv) {
 		t.Fatalf("unexpected provider argv: %#v", argv)
+	}
+}
+
+func TestCreateZeroShotPersistsBuiltinProviderAndItemsPayload(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/jobs/zero-shot", strings.NewReader(`{
+		"project_id":1,
+		"dataset_id":42,
+		"snapshot_id":9,
+		"prompt":"person",
+		"idempotency_key":"idem-builtin-provider",
+		"required_resource_type":"gpu",
+		"items":[
+			{"item_id":101,"object_key":"train/a.jpg"},
+			{"item_id":102,"object_key":"train/b.jpg"}
+		],
+		"provider":{
+			"type":"builtin",
+			"name":"grounding_dino_fake"
+		}
+	}`))
+	createRec := httptest.NewRecorder()
+	h.CreateZeroShot(createRec, createReq)
+
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on create, got %d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	job, ok := repo.Get(1)
+	if !ok {
+		t.Fatal("expected created job to be persisted")
+	}
+	provider, ok := job.Payload["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected provider payload to be persisted, got %#v", job.Payload["provider"])
+	}
+	if provider["type"] != "builtin" {
+		t.Fatalf("expected builtin provider type, got %#v", provider["type"])
+	}
+	if provider["name"] != "grounding_dino_fake" {
+		t.Fatalf("expected builtin provider name, got %#v", provider["name"])
+	}
+	items, ok := job.Payload["items"].([]map[string]any)
+	if !ok {
+		t.Fatalf("expected zero-shot items to be persisted, got %#v", job.Payload["items"])
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 zero-shot items, got %#v", items)
+	}
+	if items[0]["item_id"] != int64(101) {
+		t.Fatalf("expected first item_id=101, got %#v", items[0]["item_id"])
+	}
+	if items[0]["object_key"] != "train/a.jpg" {
+		t.Fatalf("expected first object_key=train/a.jpg, got %#v", items[0]["object_key"])
 	}
 }
 
@@ -391,6 +677,89 @@ func TestCreateCleaningPersistsRequiredCapabilities(t *testing.T) {
 	}
 }
 
+func TestRegisterWorkerUpsertsMetadataAndListsWorkers(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+
+	registerReq := httptest.NewRequest(http.MethodPost, "/internal/jobs/workers/register", strings.NewReader(`{
+		"worker_id":"zero-shot-a",
+		"resource_lane":"jobs:gpu",
+		"job_types":["zero-shot"],
+		"capabilities":["zero_shot_inference","grounding_dino"]
+	}`))
+	registerRec := httptest.NewRecorder()
+
+	registerMethod := reflect.ValueOf(h).MethodByName("RegisterWorker")
+	if !registerMethod.IsValid() {
+		t.Fatal("expected handler to expose RegisterWorker")
+	}
+	registerMethod.Call([]reflect.Value{reflect.ValueOf(registerRec), reflect.ValueOf(registerReq)})
+
+	if registerRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on register, got %d body=%s", registerRec.Code, registerRec.Body.String())
+	}
+	for _, needle := range []string{
+		`"worker_id":"zero-shot-a"`,
+		`"resource_lane":"jobs:gpu"`,
+		`"job_types":["zero-shot"]`,
+		`"capabilities":["grounding_dino","zero_shot_inference"]`,
+	} {
+		if !strings.Contains(registerRec.Body.String(), needle) {
+			t.Fatalf("expected register response to contain %q, got %s", needle, registerRec.Body.String())
+		}
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/jobs/workers", nil)
+	listRec := httptest.NewRecorder()
+	listMethod := reflect.ValueOf(h).MethodByName("ListWorkers")
+	if !listMethod.IsValid() {
+		t.Fatal("expected handler to expose ListWorkers")
+	}
+	listMethod.Call([]reflect.Value{reflect.ValueOf(listRec), reflect.ValueOf(listReq)})
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on list, got %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	for _, needle := range []string{
+		`"worker_id":"zero-shot-a"`,
+		`"resource_lane":"jobs:gpu"`,
+		`"job_types":["zero-shot"]`,
+		`"capabilities":["grounding_dino","zero_shot_inference"]`,
+	} {
+		if !strings.Contains(listRec.Body.String(), needle) {
+			t.Fatalf("expected list response to contain %q, got %s", needle, listRec.Body.String())
+		}
+	}
+}
+
+func TestRegisterWorkerRejectsInvalidLane(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/jobs/workers/register", strings.NewReader(`{
+		"worker_id":"zero-shot-a",
+		"resource_lane":"gpu",
+		"job_types":["zero-shot"],
+		"capabilities":["zero_shot_inference"]
+	}`))
+	rec := httptest.NewRecorder()
+
+	registerMethod := reflect.ValueOf(h).MethodByName("RegisterWorker")
+	if !registerMethod.IsValid() {
+		t.Fatal("expected handler to expose RegisterWorker")
+	}
+	registerMethod.Call([]reflect.Value{reflect.ValueOf(rec), reflect.ValueOf(req)})
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "resource_lane") {
+		t.Fatalf("expected resource_lane validation error, got %s", rec.Body.String())
+	}
+}
+
 func TestCreateVideoExtractRejectsCommandProviderWithoutArgv(t *testing.T) {
 	repo := NewInMemoryRepository()
 	svc := NewService(repo)
@@ -443,6 +812,57 @@ func TestCreateVideoExtractRejectsNonPositiveProviderTimeout(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "provider.timeout_seconds") {
 		t.Fatalf("expected provider timeout validation error, got %s", rec.Body.String())
+	}
+}
+
+func TestCreateVideoExtractPersistsBuiltinProviderAndSourceContext(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+	h := NewHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs/video-extract", strings.NewReader(`{
+		"project_id":1,
+		"dataset_id":2,
+		"fps":2,
+		"duration_ms":3000,
+		"source_object_key":"clips/a.mp4",
+		"frame_prefix":"clips/a",
+		"idempotency_key":"idem-video-builtin-provider",
+		"required_resource_type":"cpu",
+		"provider":{
+			"type":"builtin",
+			"name":"video_decode_fake"
+		}
+	}`))
+	rec := httptest.NewRecorder()
+	h.CreateVideoExtract(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	job, ok := repo.Get(1)
+	if !ok {
+		t.Fatal("expected created job to be persisted")
+	}
+	provider, ok := job.Payload["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected provider payload to be persisted, got %#v", job.Payload["provider"])
+	}
+	if provider["type"] != "builtin" {
+		t.Fatalf("expected builtin provider type, got %#v", provider["type"])
+	}
+	if provider["name"] != "video_decode_fake" {
+		t.Fatalf("expected builtin provider name, got %#v", provider["name"])
+	}
+	if job.Payload["source_object_key"] != "clips/a.mp4" {
+		t.Fatalf("expected source_object_key to be persisted, got %#v", job.Payload["source_object_key"])
+	}
+	if job.Payload["frame_prefix"] != "clips/a" {
+		t.Fatalf("expected frame_prefix to be persisted, got %#v", job.Payload["frame_prefix"])
+	}
+	if job.Payload["duration_ms"] != 3000 {
+		t.Fatalf("expected duration_ms to be persisted, got %#v", job.Payload["duration_ms"])
 	}
 }
 
@@ -1021,6 +1441,17 @@ func TestServiceReportEventPersistsReviewCandidatesAndGetJobExposesResultMetadat
 	if len(candidateIDs) != 1 || candidateIDs[0] != candidates[0].ID {
 		t.Fatalf("expected persisted candidate id in result_ref, got %+v want %d", candidateIDs, candidates[0].ID)
 	}
+
+	stored, ok := repo.Get(job.ID)
+	if !ok {
+		t.Fatalf("job %d not found in repo", job.ID)
+	}
+	if stored.ResultType != "annotation_candidates" || stored.ResultCount != 1 {
+		t.Fatalf("expected stored result metadata on job row, got %+v", stored)
+	}
+	if len(stored.ResultRef) == 0 {
+		t.Fatalf("expected stored result_ref on job row, got %+v", stored)
+	}
 }
 
 func TestServiceGetJobRetainsVideoFrameResultDetailsAfterTerminalEvent(t *testing.T) {
@@ -1077,6 +1508,108 @@ func TestServiceGetJobRetainsVideoFrameResultDetailsAfterTerminalEvent(t *testin
 	}
 	if len(frames) != 2 {
 		t.Fatalf("expected 2 frames in result_ref, got %+v", frames)
+	}
+}
+
+func TestServiceGetJobRetainsCleaningReportAfterTerminalEvent(t *testing.T) {
+	svc := NewService(NewInMemoryRepository())
+
+	job, err := svc.CreateJob(CreateJobInput{
+		ProjectID:            1,
+		DatasetID:            1,
+		SnapshotID:           2,
+		JobType:              "cleaning",
+		RequiredResourceType: "cpu",
+		IdempotencyKey:       "idem-cleaning-results",
+		Payload:              map[string]any{"rules": map[string]any{"dark_threshold": 0.3}},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	reportDetail := map[string]any{
+		"result_type":  "cleaning_report",
+		"result_count": 2,
+		"report": map[string]any{
+			"summary": map[string]any{
+				"invalid_bbox":      1,
+				"category_mismatch": 1,
+				"too_dark":          1,
+			},
+			"issues": []any{
+				map[string]any{"item_id": 1, "rule": "invalid_bbox"},
+				map[string]any{"item_id": 1, "rule": "too_dark"},
+				map[string]any{"item_id": 2, "rule": "category_mismatch"},
+			},
+			"removal_candidates": []any{float64(1), float64(2)},
+		},
+	}
+
+	callServiceErrorMethod(t, svc, "ReportEvent", job.ID, (*int64)(nil), "info", "cleaning_report_materialized", "persisted cleaning report", reportDetail)
+	callServiceErrorMethod(t, svc, "ReportTerminal", job.ID, "worker-cleaning", StatusSucceededWithErrors, 3, 1, 2, map[string]any{
+		"result_type":  "cleaning_report",
+		"result_count": 2,
+	})
+
+	got, ok := svc.GetJob(job.ID)
+	if !ok {
+		t.Fatalf("job %d not found", job.ID)
+	}
+	if got.ResultType != "cleaning_report" || got.ResultCount != 2 {
+		t.Fatalf("expected cleaning result metadata, got %+v", got)
+	}
+	report, ok := got.ResultRef["report"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected report in result_ref, got %+v", got.ResultRef)
+	}
+	if summary, ok := report["summary"].(map[string]any); !ok || int64Value(summary["invalid_bbox"]) != 1 {
+		t.Fatalf("expected invalid_bbox summary in result_ref, got %+v", report)
+	}
+	removalCandidates, ok := report["removal_candidates"].([]any)
+	if !ok || len(removalCandidates) != 2 {
+		t.Fatalf("expected removal_candidates in result_ref, got %+v", report)
+	}
+}
+
+func TestServiceReportTerminalPersistsArtifactResultRefOnJobRecord(t *testing.T) {
+	repo := NewInMemoryRepository()
+	svc := NewService(repo)
+
+	job, err := svc.CreateJob(CreateJobInput{
+		ProjectID:            1,
+		DatasetID:            1,
+		SnapshotID:           2,
+		JobType:              "artifact-package",
+		RequiredResourceType: "cpu",
+		IdempotencyKey:       "idem-artifact-result-ref",
+		Payload:              map[string]any{"artifact_id": 9, "format": "yolo"},
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	callServiceErrorMethod(t, svc, "ReportTerminal", job.ID, "worker-packager", StatusSucceeded, 3, 3, 0, map[string]any{
+		"result_type":  "artifacts",
+		"result_count": 1,
+		"artifact_ids": []int64{9},
+	})
+
+	stored, ok := repo.Get(job.ID)
+	if !ok {
+		t.Fatalf("job %d not found in repo", job.ID)
+	}
+	if stored.ResultType != "artifacts" || stored.ResultCount != 1 {
+		t.Fatalf("expected stored artifact result metadata, got %+v", stored)
+	}
+	if len(stored.ResultArtifactIDs) != 1 || stored.ResultArtifactIDs[0] != 9 {
+		t.Fatalf("expected stored result artifact ids [9], got %+v", stored.ResultArtifactIDs)
+	}
+	artifactIDs, ok := stored.ResultRef["artifact_ids"].([]int64)
+	if !ok {
+		t.Fatalf("expected artifact_ids in stored result_ref, got %+v", stored.ResultRef)
+	}
+	if len(artifactIDs) != 1 || artifactIDs[0] != 9 {
+		t.Fatalf("expected stored artifact_ids [9], got %+v", artifactIDs)
 	}
 }
 

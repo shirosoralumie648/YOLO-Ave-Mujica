@@ -102,6 +102,7 @@ func TestMVPRoutesAreRegistered(t *testing.T) {
 		{http.MethodPost, "/v1/tasks/1/workspace/submit"},
 		{http.MethodPost, "/v1/jobs/zero-shot"},
 		{http.MethodGet, "/v1/jobs/1"},
+		{http.MethodGet, "/v1/jobs/workers"},
 		{http.MethodPost, "/v1/snapshots/diff"},
 		{http.MethodPost, "/v1/snapshots/1/import"},
 		{http.MethodPost, "/internal/snapshots/1/import"},
@@ -125,6 +126,7 @@ func TestMVPRoutesAreRegistered(t *testing.T) {
 		{http.MethodGet, "/v1/artifacts/resolve?format=yolo&version=v1"},
 		{http.MethodGet, "/v1/artifacts/1/download"},
 		{http.MethodPost, "/internal/jobs/1/heartbeat"},
+		{http.MethodPost, "/internal/jobs/workers/register"},
 		{http.MethodPost, "/internal/jobs/1/progress"},
 		{http.MethodPost, "/internal/jobs/1/events"},
 		{http.MethodPost, "/internal/jobs/1/complete"},
@@ -242,6 +244,97 @@ func TestOpenAPIArtifactPackageDocumentsSupportedRequestFormats(t *testing.T) {
 	}
 	if !strings.Contains(block, "enum: [yolo, coco]") {
 		t.Fatalf("expected artifact package path to document yolo and coco formats, got:\n%s", block)
+	}
+}
+
+func TestOpenAPIDefinesBearerAuthAndTraceHeaders(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+	for _, needle := range []string{
+		"bearerAuth:",
+		"RequestIdHeader:",
+		"X-Request-Id",
+		"X-Correlation-Id",
+	} {
+		if !strings.Contains(raw, needle) {
+			t.Fatalf("expected openapi document to contain %q, got:\n%s", needle, raw)
+		}
+	}
+}
+
+func TestOpenAPIJobCreationRoutesDocumentRequestIDAndBearerAuth(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+
+	for _, path := range []string{
+		"/v1/snapshots/{id}/import",
+		"/v1/snapshots/{id}/export",
+		"/v1/jobs/zero-shot",
+		"/v1/jobs/video-extract",
+		"/v1/jobs/cleaning",
+		"/v1/artifacts/packages",
+	} {
+		block, err := extractOpenAPIPathBlock(raw, path)
+		if err != nil {
+			t.Fatalf("extract path block %s: %v", path, err)
+		}
+		if !strings.Contains(block, `$ref: '#/components/parameters/RequestIdHeader'`) {
+			t.Fatalf("expected %s to document X-Request-Id, got:\n%s", path, block)
+		}
+		if !strings.Contains(block, "security:") || !strings.Contains(block, "bearerAuth") {
+			t.Fatalf("expected %s to document bearer auth, got:\n%s", path, block)
+		}
+	}
+}
+
+func TestOpenAPIProjectScopedMutationRoutesDocument403FailureResponses(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+
+	for _, path := range []string{
+		"/v1/datasets",
+		"/v1/datasets/{id}/scan",
+		"/v1/datasets/{id}/snapshots",
+		"/v1/objects/presign",
+		"/v1/snapshots/{id}/import",
+		"/v1/jobs/zero-shot",
+		"/v1/jobs/video-extract",
+		"/v1/jobs/cleaning",
+		"/v1/review/candidates/{id}/accept",
+		"/v1/review/candidates/{id}/reject",
+		"/v1/artifacts/packages",
+		"/v1/snapshots/{id}/export",
+		"/v1/artifacts/{id}/presign",
+	} {
+		block, err := extractOpenAPIPathBlock(raw, path)
+		if err != nil {
+			t.Fatalf("extract path block %s: %v", path, err)
+		}
+		if !strings.Contains(block, `"403":`) {
+			t.Fatalf("expected %s to document 403 forbidden responses, got:\n%s", path, block)
+		}
+	}
+}
+
+func TestOpenAPIDocumentsProjectScopeHeaders(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+	for _, needle := range []string{
+		"AUTH_DEFAULT_PROJECT_IDS",
+		"X-Project-Scopes",
+		"X-Actor",
+	} {
+		if !strings.Contains(raw, needle) {
+			t.Fatalf("expected openapi document to contain %q, got:\n%s", needle, raw)
+		}
 	}
 }
 
@@ -491,6 +584,52 @@ func TestOpenAPIPublishMutationRoutesDocumentFailureResponses(t *testing.T) {
 		}
 		if !strings.Contains(block, `"400":`) {
 			t.Fatalf("expected %s to document 400 failures, got:\n%s", path, block)
+		}
+	}
+}
+
+func TestOpenAPIPublicMutationRoutesDocument429FailureResponses(t *testing.T) {
+	raw, err := readOpenAPIDocument()
+	if err != nil {
+		t.Fatalf("read openapi document: %v", err)
+	}
+
+	for _, path := range []string{
+		"/v1/datasets",
+		"/v1/datasets/{id}/scan",
+		"/v1/datasets/{id}/snapshots",
+		"/v1/objects/presign",
+		"/v1/snapshots/{id}/import",
+		"/v1/projects/{id}/tasks",
+		"/v1/tasks/{id}/transition",
+		"/v1/tasks/{id}/workspace/draft",
+		"/v1/tasks/{id}/workspace/submit",
+		"/v1/jobs/zero-shot",
+		"/v1/jobs/video-extract",
+		"/v1/jobs/cleaning",
+		"/v1/snapshots/diff",
+		"/v1/review/candidates/{id}/accept",
+		"/v1/review/candidates/{id}/reject",
+		"/v1/publish/batches",
+		"/v1/publish/batches/{id}/items",
+		"/v1/publish/batches/{id}/review-approve",
+		"/v1/publish/batches/{id}/review-reject",
+		"/v1/publish/batches/{id}/review-rework",
+		"/v1/publish/batches/{id}/owner-approve",
+		"/v1/publish/batches/{id}/owner-reject",
+		"/v1/publish/batches/{id}/owner-rework",
+		"/v1/publish/batches/{id}/feedback",
+		"/v1/publish/batches/{id}/items/{itemId}/feedback",
+		"/v1/artifacts/packages",
+		"/v1/snapshots/{id}/export",
+		"/v1/artifacts/{id}/presign",
+	} {
+		block, err := extractOpenAPIPathBlock(raw, path)
+		if err != nil {
+			t.Fatalf("extract mutation path block %s: %v", path, err)
+		}
+		if !strings.Contains(block, `"429":`) {
+			t.Fatalf("expected %s to document 429 failures, got:\n%s", path, block)
 		}
 	}
 }

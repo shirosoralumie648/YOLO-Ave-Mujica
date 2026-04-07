@@ -208,21 +208,22 @@ func writeTestArchive(t *testing.T, archive testArchive) string {
 	return archivePath
 }
 
-func buildManifestEntries(files map[string][]byte, overrides map[string]string) []map[string]string {
+func buildManifestEntries(files map[string][]byte, overrides map[string]string) []map[string]any {
 	paths := make([]string, 0, len(files))
 	for path := range files {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
 
-	entries := make([]map[string]string, 0, len(paths))
+	entries := make([]map[string]any, 0, len(paths))
 	for _, path := range paths {
 		checksum := "sha256:" + checksumHex(files[path])
 		if override, ok := overrides[path]; ok {
 			checksum = override
 		}
-		entries = append(entries, map[string]string{
+		entries = append(entries, map[string]any{
 			"path":     path,
+			"size":     len(files[path]),
 			"checksum": checksum,
 		})
 	}
