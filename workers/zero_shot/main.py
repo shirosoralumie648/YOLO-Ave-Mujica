@@ -3,6 +3,7 @@ import os
 from workers.common.command_provider import load_provider_result, provider_items
 from workers.common.job_client import JobClient, emit_terminal
 from workers.common.queue_runner import QueueRunner, poll_forever
+from workers.common.structured_logging import WorkerLogger
 
 
 def summarize_batch(total: int, ok: int, failed: int):
@@ -105,25 +106,79 @@ def _summary_from_provider(provider_result: dict | None, default_total: int) -> 
     return total, succeeded, failed
 
 
+def _progress_event(total: int, succeeded: int, failed: int) -> dict:
+    return {
+        "event_level": "info",
+        "event_type": "progress",
+        "message": "worker progress",
+        "detail_json": {
+            "total_items": total,
+            "succeeded_items": succeeded,
+            "failed_items": failed,
+        },
+    }
+
+
+def _build_item_failure_events(provider_result: dict | None) -> list[dict]:
+    if provider_result is None:
+        return []
+
+    raw_errors = provider_result.get("errors") or []
+    if not raw_errors:
+        return []
+    if not isinstance(raw_errors, list):
+        raise ValueError("provider output field errors must be a list")
+
+    events = []
+    for raw in raw_errors:
+        if not isinstance(raw, dict):
+            raise ValueError("provider output errors entries must be objects")
+        item_id = _positive_int(raw.get("item_id", 0), "item_id")
+        message = _required_text(raw.get("message", ""), "message")
+        detail = raw.get("detail") or {}
+        if not isinstance(detail, dict):
+            raise ValueError("provider error detail must be an object")
+        detail = dict(detail)
+
+        object_key = str(raw.get("object_key", "")).strip()
+        if object_key and "object_key" not in detail:
+            detail["object_key"] = object_key
+
+        events.append(
+            {
+                "event_level": "error",
+                "event_type": "item_failed",
+                "message": message,
+                "detail_json": detail,
+                "item_id": item_id,
+            }
+        )
+    return events
+
+
 def run_zero_shot_job(job: dict):
     payload = job.get("payload", {})
     provider_result = load_provider_result(payload)
     candidates = _build_candidates(job, provider_result=provider_result)
     total, succeeded, failed = _summary_from_provider(provider_result, len(candidates))
     result = build_terminal_event(job["job_id"], total=total, ok=succeeded, failed=failed)
-    result["events"] = [
-        {
-            "event_level": "info",
-            "event_type": "review_candidates_materialized",
-            "message": "persisted review candidates",
-            "detail_json": {
-                "result_type": "annotation_candidates",
-                "result_count": len(candidates),
-                "candidates": candidates,
-            },
-        }
-    ]
-    result["result_ref"] = {"result_type": "annotation_candidates", "result_count": len(candidates)}
+    events = [_progress_event(total, succeeded, failed)]
+    events.extend(_build_item_failure_events(provider_result))
+    if candidates:
+        events.append(
+            {
+                "event_level": "info",
+                "event_type": "review_candidates_materialized",
+                "message": "persisted review candidates",
+                "detail_json": {
+                    "result_type": "annotation_candidates",
+                    "result_count": len(candidates),
+                    "candidates": candidates,
+                },
+            }
+        )
+        result["result_ref"] = {"result_type": "annotation_candidates", "result_count": len(candidates)}
+    result["events"] = events
     return result
 
 
@@ -139,7 +194,8 @@ def build_zero_shot_runner(worker_id: str | None = None):
 def main():
     runner = build_zero_shot_runner()
     client = JobClient(base_url=os.getenv("API_BASE_URL", "http://127.0.0.1:8080"))
-    poll_forever(redis_addr=os.getenv("REDIS_ADDR", "localhost:6379"), lane="jobs:gpu", runner=runner, handler=run_zero_shot_job, job_client=client)
+    logger = WorkerLogger(component="zero_shot_worker")
+    poll_forever(redis_addr=os.getenv("REDIS_ADDR", "localhost:6379"), lane="jobs:gpu", runner=runner, handler=run_zero_shot_job, job_client=client, logger=logger)
 
 
 if __name__ == "__main__":

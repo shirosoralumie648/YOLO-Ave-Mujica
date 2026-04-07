@@ -40,7 +40,7 @@ func (r *PostgresRepository) CreateOrGet(in CreateJobInput) (*Job, bool, error) 
 		)
 		values ($1, nullif($2, 0), nullif($3, 0), $4, $5, $6, $7, $8, $9)
 		returning id, project_id, dataset_id, snapshot_id, job_type, status, required_resource_type,
-		          required_capabilities_json, idempotency_key, worker_id, payload_json, total_items,
+		          required_capabilities_json, idempotency_key, worker_id, payload_json, result_artifact_ids_json, result_ref_json, total_items,
 		          succeeded_items, failed_items, created_at, started_at, finished_at, lease_until,
 		          retry_count, error_code, error_msg
 	`, in.ProjectID, in.DatasetID, in.SnapshotID, in.JobType, StatusQueued, in.RequiredResourceType, requiredCapabilitiesJSON, in.IdempotencyKey, payloadJSON)
@@ -55,7 +55,7 @@ func (r *PostgresRepository) CreateOrGet(in CreateJobInput) (*Job, bool, error) 
 func (r *PostgresRepository) findByKey(ctx context.Context, projectID int64, jobType, key string) (*Job, bool, error) {
 	row := r.pool.QueryRow(ctx, `
 		select id, project_id, dataset_id, snapshot_id, job_type, status, required_resource_type,
-		       required_capabilities_json, idempotency_key, worker_id, payload_json, total_items, succeeded_items, failed_items, created_at, started_at,
+		       required_capabilities_json, idempotency_key, worker_id, payload_json, result_artifact_ids_json, result_ref_json, total_items, succeeded_items, failed_items, created_at, started_at,
 		       finished_at, lease_until, retry_count, error_code, error_msg
 		from jobs
 		where project_id = $1 and job_type = $2 and idempotency_key = $3
@@ -74,7 +74,7 @@ func (r *PostgresRepository) findByKey(ctx context.Context, projectID int64, job
 func (r *PostgresRepository) Get(id int64) (*Job, bool) {
 	row := r.pool.QueryRow(context.Background(), `
 		select id, project_id, dataset_id, snapshot_id, job_type, status, required_resource_type,
-		       required_capabilities_json, idempotency_key, worker_id, payload_json, total_items, succeeded_items, failed_items, created_at, started_at,
+		       required_capabilities_json, idempotency_key, worker_id, payload_json, result_artifact_ids_json, result_ref_json, total_items, succeeded_items, failed_items, created_at, started_at,
 		       finished_at, lease_until, retry_count, error_code, error_msg
 		from jobs
 		where id = $1
@@ -94,7 +94,7 @@ func (r *PostgresRepository) ListRecentFailedJobs(projectID int64, limit int) ([
 
 	rows, err := r.pool.Query(context.Background(), `
 		select id, project_id, dataset_id, snapshot_id, job_type, status, required_resource_type,
-		       required_capabilities_json, idempotency_key, worker_id, payload_json, total_items,
+		       required_capabilities_json, idempotency_key, worker_id, payload_json, result_artifact_ids_json, result_ref_json, total_items,
 		       succeeded_items, failed_items, created_at, started_at, finished_at, lease_until,
 		       retry_count, error_code, error_msg
 		from jobs
@@ -140,9 +140,10 @@ func (r *PostgresRepository) UpdateStatus(id int64, to string) error {
 		update jobs
 		set status = $2,
 		    started_at = coalesce($3, started_at),
-		    finished_at = coalesce($4, finished_at)
+		    finished_at = coalesce($4, finished_at),
+		    lease_until = case when $2 = $5 then null else lease_until end
 		where id = $1
-	`, id, to, startedAt, finishedAt)
+	`, id, to, startedAt, finishedAt, StatusQueued)
 	return err
 }
 
@@ -245,11 +246,35 @@ func (r *PostgresRepository) Complete(id int64, workerID, status string, total, 
 func (r *PostgresRepository) ListExpiredRunning(now time.Time) []*Job {
 	rows, err := r.pool.Query(context.Background(), `
 		select id, project_id, dataset_id, snapshot_id, job_type, status, required_resource_type,
-		       required_capabilities_json, idempotency_key, worker_id, payload_json, total_items, succeeded_items, failed_items, created_at, started_at,
+		       required_capabilities_json, idempotency_key, worker_id, payload_json, result_artifact_ids_json, result_ref_json, total_items, succeeded_items, failed_items, created_at, started_at,
 		       finished_at, lease_until, retry_count, error_code, error_msg
 		from jobs
 		where status = $1 and lease_until is not null and lease_until < $2
 	`, StatusRunning, now)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	out := []*Job{}
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil
+		}
+		out = append(out, job)
+	}
+	return out
+}
+
+func (r *PostgresRepository) ListRetryReady(now time.Time) []*Job {
+	rows, err := r.pool.Query(context.Background(), `
+		select id, project_id, dataset_id, snapshot_id, job_type, status, required_resource_type,
+		       required_capabilities_json, idempotency_key, worker_id, payload_json, result_artifact_ids_json, result_ref_json, total_items, succeeded_items, failed_items, created_at, started_at,
+		       finished_at, lease_until, retry_count, error_code, error_msg
+		from jobs
+		where status = $1 and lease_until is not null and lease_until <= $2
+	`, StatusRetryWaiting, now)
 	if err != nil {
 		return nil
 	}
@@ -281,8 +306,26 @@ func (r *PostgresRepository) IncrementRetryCount(id int64) error {
 	return nil
 }
 
-func (r *PostgresRepository) MarkRetryWaiting(id int64) error {
-	return r.UpdateStatus(id, StatusRetryWaiting)
+func (r *PostgresRepository) MarkRetryWaiting(id int64, retryAt time.Time) error {
+	job, ok := r.Get(id)
+	if !ok {
+		return newNotFoundError("job %d not found", id)
+	}
+	if err := CanTransition(job.Status, StatusRetryWaiting); err != nil {
+		return err
+	}
+	tag, err := r.pool.Exec(context.Background(), `
+		update jobs
+		set status = $2, lease_until = $3
+		where id = $1
+	`, id, StatusRetryWaiting, retryAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return newNotFoundError("job %d not found", id)
+	}
+	return nil
 }
 
 func (r *PostgresRepository) MarkFailed(id int64, code, msg string) error {
@@ -292,6 +335,40 @@ func (r *PostgresRepository) MarkFailed(id int64, code, msg string) error {
 		set status = $2, error_code = $3, error_msg = $4, finished_at = $5
 		where id = $1
 	`, id, StatusFailed, code, msg, now)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return newNotFoundError("job %d not found", id)
+	}
+	return nil
+}
+
+func (r *PostgresRepository) StoreResultRef(id int64, resultRef map[string]any) error {
+	if len(resultRef) == 0 {
+		return nil
+	}
+	job, ok := r.Get(id)
+	if !ok {
+		return newNotFoundError("job %d not found", id)
+	}
+
+	merged := mergeResultRefs(job.ResultRef, resultRef)
+	resultRefJSON, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	artifactIDsJSON, err := json.Marshal(extractInt64Slice(merged["artifact_ids"]))
+	if err != nil {
+		return err
+	}
+
+	tag, err := r.pool.Exec(context.Background(), `
+		update jobs
+		set result_ref_json = $2,
+		    result_artifact_ids_json = $3
+		where id = $1
+	`, id, resultRefJSON, artifactIDsJSON)
 	if err != nil {
 		return err
 	}
@@ -342,6 +419,52 @@ func (r *PostgresRepository) ListEvents(jobID int64) ([]Event, error) {
 	return events, rows.Err()
 }
 
+func (r *PostgresRepository) UpsertWorker(in RegisterWorkerInput) (*Worker, error) {
+	capabilitiesJSON, err := json.Marshal(in.Capabilities)
+	if err != nil {
+		return nil, err
+	}
+	jobTypesJSON, err := json.Marshal(in.JobTypes)
+	if err != nil {
+		return nil, err
+	}
+
+	row := r.pool.QueryRow(context.Background(), `
+		insert into worker_instances (worker_id, resource_lane, capabilities_json, job_types_json)
+		values ($1, $2, $3, $4)
+		on conflict (worker_id) do update
+		set resource_lane = excluded.resource_lane,
+		    capabilities_json = excluded.capabilities_json,
+		    job_types_json = excluded.job_types_json,
+		    last_seen_at = now()
+		returning worker_id, resource_lane, capabilities_json, job_types_json, registered_at, last_seen_at
+	`, in.WorkerID, in.ResourceLane, capabilitiesJSON, jobTypesJSON)
+
+	return scanWorker(row)
+}
+
+func (r *PostgresRepository) ListWorkers() ([]Worker, error) {
+	rows, err := r.pool.Query(context.Background(), `
+		select worker_id, resource_lane, capabilities_json, job_types_json, registered_at, last_seen_at
+		from worker_instances
+		order by worker_id asc
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []Worker{}
+	for rows.Next() {
+		worker, err := scanWorker(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *worker)
+	}
+	return out, rows.Err()
+}
+
 func (r *PostgresRepository) FailedRecentJobCount(projectID int64) (int, error) {
 	var count int
 	err := r.pool.QueryRow(context.Background(), `
@@ -364,6 +487,8 @@ func scanJob(row interface {
 	var datasetID sql.NullInt64
 	var snapshotID sql.NullInt64
 	var payloadJSON []byte
+	var resultArtifactIDsJSON []byte
+	var resultRefJSON []byte
 	var requiredCapabilitiesJSON []byte
 	var workerID *string
 	var errorCode *string
@@ -380,6 +505,8 @@ func scanJob(row interface {
 		&job.IdempotencyKey,
 		&workerID,
 		&payloadJSON,
+		&resultArtifactIDsJSON,
+		&resultRefJSON,
 		&job.TotalItems,
 		&job.SucceededItems,
 		&job.FailedItems,
@@ -418,8 +545,23 @@ func scanJob(row interface {
 			return nil, err
 		}
 	}
+	if len(resultArtifactIDsJSON) > 0 {
+		if err := json.Unmarshal(resultArtifactIDsJSON, &job.ResultArtifactIDs); err != nil {
+			return nil, err
+		}
+	}
+	if len(resultRefJSON) > 0 {
+		if err := json.Unmarshal(resultRefJSON, &job.ResultRef); err != nil {
+			return nil, err
+		}
+		job.ResultType = stringValue(job.ResultRef["result_type"])
+		job.ResultCount = int(int64Value(job.ResultRef["result_count"]))
+	}
 	if job.Payload == nil {
 		job.Payload = map[string]any{}
+	}
+	if job.ResultRef == nil {
+		job.ResultRef = map[string]any{}
 	}
 	return job, nil
 }
@@ -441,4 +583,39 @@ func scanEvent(row interface {
 		ev.Detail = map[string]any{}
 	}
 	return ev, nil
+}
+
+func scanWorker(row interface {
+	Scan(dest ...any) error
+}) (*Worker, error) {
+	worker := &Worker{}
+	var capabilitiesJSON []byte
+	var jobTypesJSON []byte
+	if err := row.Scan(
+		&worker.WorkerID,
+		&worker.ResourceLane,
+		&capabilitiesJSON,
+		&jobTypesJSON,
+		&worker.RegisteredAt,
+		&worker.LastSeenAt,
+	); err != nil {
+		return nil, err
+	}
+	if len(capabilitiesJSON) > 0 {
+		if err := json.Unmarshal(capabilitiesJSON, &worker.Capabilities); err != nil {
+			return nil, err
+		}
+	}
+	if len(jobTypesJSON) > 0 {
+		if err := json.Unmarshal(jobTypesJSON, &worker.JobTypes); err != nil {
+			return nil, err
+		}
+	}
+	if worker.Capabilities == nil {
+		worker.Capabilities = []string{}
+	}
+	if worker.JobTypes == nil {
+		worker.JobTypes = []string{}
+	}
+	return worker, nil
 }

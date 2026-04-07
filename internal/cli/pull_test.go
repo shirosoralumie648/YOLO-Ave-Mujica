@@ -3,11 +3,13 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeSource struct {
@@ -51,6 +53,28 @@ func (r *recordingSource) DownloadArchive(_ context.Context, _ ResolvedArtifact,
 	return os.WriteFile(tempPath, body, 0o644)
 }
 
+type pollingSource struct {
+	attempts    int
+	archivePath string
+	resolved    ResolvedArtifact
+}
+
+func (p *pollingSource) ResolveArtifact(_ string, _ string, _ string) (ResolvedArtifact, error) {
+	p.attempts++
+	if p.attempts < 3 {
+		return ResolvedArtifact{}, ErrArtifactUnavailable
+	}
+	return p.resolved, nil
+}
+
+func (p *pollingSource) DownloadArchive(_ context.Context, _ ResolvedArtifact, tempPath string) error {
+	body, err := os.ReadFile(p.archivePath)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(tempPath, body, 0o644)
+}
+
 func TestVerifyManifestFailsOnChecksumMismatch(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "sample.txt")
@@ -75,6 +99,27 @@ func TestVerifyFileRejectsNonSHA256Checksum(t *testing.T) {
 	}
 }
 
+func TestVerifyManifestEntryRejectsSizeMismatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.txt")
+	body := []byte("hello")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatalf("write sample: %v", err)
+	}
+
+	_, err := VerifyManifestEntry(path, ManifestEntry{
+		Path:     "sample.txt",
+		Size:     int64(len(body) + 1),
+		Checksum: "sha256:" + checksumHex(body),
+	})
+	if err == nil {
+		t.Fatal("expected size mismatch to be rejected")
+	}
+	if !strings.Contains(err.Error(), "size mismatch") {
+		t.Fatalf("expected size mismatch error, got %v", err)
+	}
+}
+
 func TestPullWritesVerifyReport(t *testing.T) {
 	dir := t.TempDir()
 	archivePath := writeTestArchive(t, testArchive{
@@ -88,7 +133,14 @@ func TestPullWritesVerifyReport(t *testing.T) {
 		download: copyArchiveDownloader(t, archivePath),
 	})
 
-	err := client.Pull(PullOptions{Dataset: "smoke-dataset", Format: "yolo", Version: "v1", AllowPartial: false, OutputDir: dir})
+	err := client.Pull(PullOptions{
+		Dataset:       "smoke-dataset",
+		Format:        "yolo",
+		Version:       "v1",
+		AllowPartial:  false,
+		OutputDir:     dir,
+		VerifyWorkers: 1,
+	})
 	if err != nil {
 		t.Fatalf("pull returned error: %v", err)
 	}
@@ -112,8 +164,23 @@ func TestPullWritesVerifyReport(t *testing.T) {
 	if report.FailedFiles != 0 {
 		t.Fatalf("expected zero failed files, got %d", report.FailedFiles)
 	}
+	if report.VerifiedFiles != 1 {
+		t.Fatalf("expected one verified file, got %d", report.VerifiedFiles)
+	}
+	if report.VerificationWorkers != 1 {
+		t.Fatalf("expected one verification worker, got %d", report.VerificationWorkers)
+	}
 	if report.EnvironmentContext.OS == "" || report.EnvironmentContext.StorageDriver == "" {
 		t.Fatalf("expected environment context, got %+v", report.EnvironmentContext)
+	}
+	if len(report.Files) != 1 {
+		t.Fatalf("expected one file result, got %+v", report.Files)
+	}
+	if report.Files[0].Path != "labels/0001.txt" || report.Files[0].Status != VerifyStatusPassed {
+		t.Fatalf("unexpected file verification result: %+v", report.Files[0])
+	}
+	if report.Files[0].Size == 0 {
+		t.Fatalf("expected file size in report, got %+v", report.Files[0])
 	}
 
 	pulledFile := filepath.Join(dir, "pulled-v1", "labels", "0001.txt")
@@ -150,14 +217,40 @@ func TestPullAllowPartialControlsChecksumMismatch(t *testing.T) {
 	}
 
 	err = client.Pull(PullOptions{
-		Dataset:      "smoke-dataset",
-		Format:       "yolo",
-		Version:      "v2",
-		AllowPartial: true,
-		OutputDir:    dir,
+		Dataset:       "smoke-dataset",
+		Format:        "yolo",
+		Version:       "v2",
+		AllowPartial:  true,
+		OutputDir:     dir,
+		VerifyWorkers: 2,
 	})
 	if err != nil {
 		t.Fatalf("expected allow-partial flow to succeed, got %v", err)
+	}
+
+	reportPath := filepath.Join(dir, "verify-report.json")
+	body, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read verify report: %v", err)
+	}
+	var report VerifyReport
+	if err := json.Unmarshal(body, &report); err != nil {
+		t.Fatalf("unmarshal verify report: %v", err)
+	}
+	if report.FailedFiles != 1 || report.VerifiedFiles != 0 {
+		t.Fatalf("expected one failed file and zero verified files, got %+v", report)
+	}
+	if report.VerificationWorkers != 2 {
+		t.Fatalf("expected verification worker count 2, got %d", report.VerificationWorkers)
+	}
+	if len(report.Files) != 1 {
+		t.Fatalf("expected one file verification result, got %+v", report.Files)
+	}
+	if report.Files[0].Status != VerifyStatusFailed {
+		t.Fatalf("expected failed file status, got %+v", report.Files[0])
+	}
+	if !strings.Contains(report.Files[0].Error, "checksum mismatch") {
+		t.Fatalf("expected checksum mismatch detail, got %+v", report.Files[0])
 	}
 }
 
@@ -190,7 +283,7 @@ func TestPullWithoutSourceFails(t *testing.T) {
 
 func TestHelpTextShowsDatasetVersionFormatAndAllowPartial(t *testing.T) {
 	text := helpText()
-	for _, token := range []string{"pull", "--dataset", "--version", "--format", "--allow-partial"} {
+	for _, token := range []string{"pull", "--dataset", "--version", "--format", "--allow-partial", "--wait-timeout", "--poll-interval", "--verify-workers"} {
 		if !strings.Contains(text, token) {
 			t.Fatalf("expected help text to contain %s, got:\n%s", token, text)
 		}
@@ -225,6 +318,37 @@ func TestPullPassesDatasetToSource(t *testing.T) {
 	}
 }
 
+func TestPullPollsUntilArtifactBecomesAvailable(t *testing.T) {
+	dir := t.TempDir()
+	archivePath := writeTestArchive(t, testArchive{
+		Version: "v4",
+		Files: map[string][]byte{
+			"train/labels/a.txt": []byte("0 0.5 0.5 0.2 0.2\n"),
+		},
+	})
+	source := &pollingSource{
+		archivePath: archivePath,
+		resolved:    ResolvedArtifact{ArtifactID: 8, Version: "v4", DownloadURL: "http://example.test/v1/artifacts/8/download"},
+	}
+	client := NewPullClientWithSource(dir, source)
+
+	err := client.Pull(PullOptions{
+		Dataset:        "smoke-dataset",
+		Format:         "yolo",
+		Version:        "v4",
+		OutputDir:      dir,
+		ResolveTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+		VerifyWorkers:  1,
+	})
+	if err != nil {
+		t.Fatalf("pull returned error: %v", err)
+	}
+	if source.attempts != 3 {
+		t.Fatalf("expected three resolve attempts, got %d", source.attempts)
+	}
+}
+
 func TestAPIArtifactSourceResolveArtifactIncludesDatasetQuery(t *testing.T) {
 	source := NewAPIArtifactSource("http://artifact.test")
 	source.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -250,5 +374,17 @@ func TestAPIArtifactSourceResolveArtifactIncludesDatasetQuery(t *testing.T) {
 	}
 	if resolved.DownloadURL != "http://artifact.test/v1/artifacts/5/download" {
 		t.Fatalf("unexpected absolute download url: %s", resolved.DownloadURL)
+	}
+}
+
+func TestAPIArtifactSourceResolveArtifactTreatsNotFoundAsUnavailable(t *testing.T) {
+	source := NewAPIArtifactSource("http://artifact.test")
+	source.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusNotFound, map[string]string{"error": "not found"}), nil
+	})}
+
+	_, err := source.ResolveArtifact("smoke-dataset", "yolo", "v1")
+	if !errors.Is(err, ErrArtifactUnavailable) {
+		t.Fatalf("expected unavailable error, got %v", err)
 	}
 }

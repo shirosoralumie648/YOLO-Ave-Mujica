@@ -7,6 +7,7 @@ from urllib import request
 
 from workers.common.job_client import JobClient
 from workers.common.queue_runner import QueueRunner, poll_forever
+from workers.common.structured_logging import WorkerLogger
 
 
 def build_data_yaml(names: Iterable[str]) -> str:
@@ -64,13 +65,32 @@ def run_package_job(job: dict, base_url: str | None = None, opener=None):
     artifact_id = payload.get("artifact_id")
     if artifact_id:
         complete_artifact(artifact_id, entries, base_url or os.getenv("API_BASE_URL", "http://127.0.0.1:8080"), opener=opener)
-    return {
+    result = {
         "status": "succeeded",
         "total_items": len(entries),
         "succeeded_items": len(entries),
         "failed_items": 0,
         "workdir": workdir,
+        "events": [
+            {
+                "event_level": "info",
+                "event_type": "progress",
+                "message": "worker progress",
+                "detail_json": {
+                    "total_items": len(entries),
+                    "succeeded_items": len(entries),
+                    "failed_items": 0,
+                },
+            }
+        ],
     }
+    if artifact_id:
+        result["result_ref"] = {
+            "result_type": "artifacts",
+            "result_count": 1,
+            "artifact_ids": [artifact_id],
+        }
+    return result
 
 
 def build_packager_runner(worker_id: str | None = None):
@@ -85,7 +105,8 @@ def build_packager_runner(worker_id: str | None = None):
 def main():
     runner = build_packager_runner()
     client = JobClient(base_url=os.getenv("API_BASE_URL", "http://127.0.0.1:8080"))
-    poll_forever(redis_addr=os.getenv("REDIS_ADDR", "localhost:6379"), lane="jobs:cpu", runner=runner, handler=run_package_job, job_client=client)
+    logger = WorkerLogger(component="packager_worker")
+    poll_forever(redis_addr=os.getenv("REDIS_ADDR", "localhost:6379"), lane="jobs:cpu", runner=runner, handler=run_package_job, job_client=client, logger=logger)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ package jobs
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -25,6 +26,8 @@ func defaultFakeJobRowValues() []any {
 		"idem-nullables",
 		nil,
 		[]byte(`{"prompt":"person"}`),
+		[]byte(`[]`),
+		[]byte(`{}`),
 		0,
 		0,
 		0,
@@ -111,5 +114,25 @@ func TestScanJobHandlesNullDatasetAndSnapshotIDs(t *testing.T) {
 	_, err := scanJob(fakeJobRow{values: values})
 	if err != nil {
 		t.Fatalf("scanJob returned error: %v", err)
+	}
+}
+
+func TestScanJobHydratesPersistedResultRef(t *testing.T) {
+	values := defaultFakeJobRowValues()
+	values[11] = []byte(`[9,12]`)
+	values[12] = []byte(`{"result_type":"artifacts","result_count":2,"artifact_ids":[9,12]}`)
+
+	job, err := scanJob(fakeJobRow{values: values})
+	if err != nil {
+		t.Fatalf("scanJob returned error: %v", err)
+	}
+	if job.ResultType != "artifacts" {
+		t.Fatalf("expected result_type artifacts, got %q", job.ResultType)
+	}
+	if job.ResultCount != 2 {
+		t.Fatalf("expected result_count 2, got %d", job.ResultCount)
+	}
+	if !reflect.DeepEqual(job.ResultArtifactIDs, []int64{9, 12}) {
+		t.Fatalf("expected artifact ids [9 12], got %+v", job.ResultArtifactIDs)
 	}
 }

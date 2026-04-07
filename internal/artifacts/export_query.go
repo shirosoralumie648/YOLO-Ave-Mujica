@@ -77,6 +77,23 @@ func (q *ExportQuery) LoadSnapshotBundle(ctx context.Context, datasetID, snapsho
 	return bundle, nil
 }
 
+func (q *ExportQuery) ResolveProjectID(ctx context.Context, datasetID, snapshotID int64) (int64, error) {
+	var projectID int64
+	err := q.pool.QueryRow(ctx, `
+		select d.project_id
+		from datasets d
+		join dataset_snapshots ds on ds.dataset_id = d.id
+		where d.id = $1 and ds.id = $2
+	`, datasetID, snapshotID).Scan(&projectID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, fmt.Errorf("dataset %d snapshot %d: %w", datasetID, snapshotID, ErrNotFound)
+		}
+		return 0, err
+	}
+	return projectID, nil
+}
+
 func (q *ExportQuery) loadBundleMetadata(ctx context.Context, datasetID, snapshotID int64, version string) (ExportBundle, error) {
 	var bundle ExportBundle
 	var snapshotVersion string
@@ -146,9 +163,9 @@ func (q *ExportQuery) loadItems(ctx context.Context, bundle *ExportBundle) error
 	bundle.Items = make([]ExportItem, 0)
 	for rows.Next() {
 		var (
-			item      ExportItem
-			width     sql.NullInt64
-			height    sql.NullInt64
+			item   ExportItem
+			width  sql.NullInt64
+			height sql.NullInt64
 		)
 		if err := rows.Scan(&item.ItemID, &item.ObjectKey, &width, &height); err != nil {
 			return err

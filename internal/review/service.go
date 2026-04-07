@@ -41,6 +41,7 @@ type PersistCandidateInput struct {
 
 type Candidate struct {
 	ID           int64           `json:"id"`
+	ProjectID    int64           `json:"project_id,omitempty"`
 	DatasetID    int64           `json:"dataset_id"`
 	SnapshotID   int64           `json:"snapshot_id"`
 	ItemID       int64           `json:"item_id"`

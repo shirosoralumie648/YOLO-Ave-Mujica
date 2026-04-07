@@ -42,6 +42,17 @@ class PackagerWorkerTest(unittest.TestCase):
         self.assertEqual("http://api.local/internal/artifacts/9/complete", request.full_url)
         self.assertEqual("POST", request.get_method())
         self.assertIn(b'"entries"', request.data)
+        self.assertEqual("progress", result["events"][0]["event_type"])
+        self.assertEqual(result["total_items"], result["events"][0]["detail_json"]["total_items"])
+        self.assertEqual(result["succeeded_items"], result["events"][0]["detail_json"]["succeeded_items"])
+        self.assertEqual(
+            {
+                "result_type": "artifacts",
+                "result_count": 1,
+                "artifact_ids": [9],
+            },
+            result["result_ref"],
+        )
 
 
 if __name__ == "__main__":

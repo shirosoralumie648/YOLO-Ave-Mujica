@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"yolo-ave-mujica/internal/audit"
 	"yolo-ave-mujica/internal/server"
 	"yolo-ave-mujica/internal/tasks"
 )
@@ -14,7 +15,8 @@ func TestHandlerReviewApproveAndOwnerApprove(t *testing.T) {
 	repo := NewInMemoryRepository()
 	taskRepo := tasks.NewInMemoryRepository()
 	svc := NewService(repo, tasks.NewService(taskRepo))
-	handler := NewHandler(svc)
+	recorder := audit.NewRecorder()
+	handler := NewHandlerWithAudit(svc, recorder)
 	httpServer := server.NewHTTPServerWithModules(server.Modules{
 		Publish: server.PublishRoutes{
 			ListCandidates:    handler.ListSuggestedCandidates,
@@ -63,5 +65,19 @@ func TestHandlerReviewApproveAndOwnerApprove(t *testing.T) {
 	}
 	if !strings.Contains(ownerRec.Body.String(), `"publish_record_id":`) {
 		t.Fatalf("expected publish_record_id in response, got %s", ownerRec.Body.String())
+	}
+
+	events := recorder.Events()
+	if len(events) != 3 {
+		t.Fatalf("expected 3 audit events, got %+v", events)
+	}
+	if events[0].Action != "publish.batch.create" || events[0].ResourceType != "publish_batch" || events[0].ResourceID != "1" {
+		t.Fatalf("unexpected create batch audit event: %+v", events[0])
+	}
+	if events[1].Action != "publish.batch.review-approve" || events[1].Actor != "reviewer-1" {
+		t.Fatalf("unexpected review approve audit event: %+v", events[1])
+	}
+	if events[2].Action != "publish.batch.owner-approve" || events[2].Actor != "owner-1" {
+		t.Fatalf("unexpected owner approve audit event: %+v", events[2])
 	}
 }

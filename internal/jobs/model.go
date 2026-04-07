@@ -45,7 +45,18 @@ type Job struct {
 	ErrorMsg             string
 	ResultType           string
 	ResultCount          int
+	ResultArtifactIDs    []int64
 	ResultRef            map[string]any
+}
+
+// Worker captures the runtime metadata a worker instance advertises on startup.
+type Worker struct {
+	WorkerID     string
+	ResourceLane string
+	Capabilities []string
+	JobTypes     []string
+	RegisteredAt time.Time
+	LastSeenAt   time.Time
 }
 
 type CreateJobInput struct {
@@ -57,4 +68,11 @@ type CreateJobInput struct {
 	RequiredCapabilities []string
 	IdempotencyKey       string
 	Payload              map[string]any
+}
+
+type RegisterWorkerInput struct {
+	WorkerID     string
+	ResourceLane string
+	Capabilities []string
+	JobTypes     []string
 }

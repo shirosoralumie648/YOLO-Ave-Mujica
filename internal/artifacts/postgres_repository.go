@@ -2,6 +2,7 @@ package artifacts
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 
@@ -26,11 +27,11 @@ func (r *PostgresRepository) Create(ctx context.Context, a Artifact) (Artifact, 
 	row := r.pool.QueryRow(ctx, `
 		insert into artifacts (
 			project_id, dataset_id, snapshot_id, artifact_type, format, version,
-			uri, checksum, size, manifest_uri, label_map_json, status, error_msg
+			uri, checksum, size, manifest_uri, label_map_json, status, error_msg, created_by_job_id
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		returning id, project_id, dataset_id, snapshot_id, artifact_type, format, version,
-		          uri, manifest_uri, checksum, size, label_map_json, status, error_msg, created_at
+		          created_by_job_id, uri, manifest_uri, checksum, size, label_map_json, status, error_msg, created_at
 	`,
 		a.ProjectID,
 		a.DatasetID,
@@ -45,6 +46,7 @@ func (r *PostgresRepository) Create(ctx context.Context, a Artifact) (Artifact, 
 		labelMapJSON,
 		a.Status,
 		a.ErrorMsg,
+		a.CreatedByJobID,
 	)
 	return scanArtifact(row)
 }
@@ -52,7 +54,7 @@ func (r *PostgresRepository) Create(ctx context.Context, a Artifact) (Artifact, 
 func (r *PostgresRepository) Get(ctx context.Context, id int64) (Artifact, bool, error) {
 	row := r.pool.QueryRow(ctx, `
 		select id, project_id, dataset_id, snapshot_id, artifact_type, format, version,
-		       uri, manifest_uri, checksum, size, label_map_json, status, error_msg, created_at
+		       created_by_job_id, uri, manifest_uri, checksum, size, label_map_json, status, error_msg, created_at
 		from artifacts
 		where id = $1
 	`, id)
@@ -70,7 +72,7 @@ func (r *PostgresRepository) Get(ctx context.Context, id int64) (Artifact, bool,
 func (r *PostgresRepository) FindReadyByFormatVersion(ctx context.Context, format, version string) (Artifact, bool, error) {
 	row := r.pool.QueryRow(ctx, `
 		select id, project_id, dataset_id, snapshot_id, artifact_type, format, version,
-		       uri, manifest_uri, checksum, size, label_map_json, status, error_msg, created_at
+		       created_by_job_id, uri, manifest_uri, checksum, size, label_map_json, status, error_msg, created_at
 		from artifacts
 		where format = $1 and version = $2 and status = $3
 		order by id desc
@@ -90,7 +92,7 @@ func (r *PostgresRepository) FindReadyByFormatVersion(ctx context.Context, forma
 func (r *PostgresRepository) FindReadyByDatasetFormatVersion(ctx context.Context, dataset, format, version string) (Artifact, bool, error) {
 	row := r.pool.QueryRow(ctx, `
 		select artifacts.id, artifacts.project_id, artifacts.dataset_id, artifacts.snapshot_id,
-		       artifacts.artifact_type, artifacts.format, artifacts.version, artifacts.uri,
+		       artifacts.artifact_type, artifacts.format, artifacts.version, artifacts.created_by_job_id, artifacts.uri,
 		       artifacts.manifest_uri, artifacts.checksum, artifacts.size, artifacts.label_map_json,
 		       artifacts.status, artifacts.error_msg, artifacts.created_at
 		from artifacts
@@ -113,13 +115,24 @@ func (r *PostgresRepository) FindReadyByDatasetFormatVersion(ctx context.Context
 	return artifact, true, nil
 }
 
+func (r *PostgresRepository) LinkJob(ctx context.Context, artifactID, jobID int64) (Artifact, error) {
+	row := r.pool.QueryRow(ctx, `
+		update artifacts
+		set created_by_job_id = $2
+		where id = $1
+		returning id, project_id, dataset_id, snapshot_id, artifact_type, format, version,
+		          created_by_job_id, uri, manifest_uri, checksum, size, label_map_json, status, error_msg, created_at
+	`, artifactID, jobID)
+	return scanArtifact(row)
+}
+
 func (r *PostgresRepository) UpdateStatus(ctx context.Context, id int64, status string, errorMsg string) (Artifact, error) {
 	row := r.pool.QueryRow(ctx, `
 		update artifacts
 		set status = $2, error_msg = $3
 		where id = $1
 		returning id, project_id, dataset_id, snapshot_id, artifact_type, format, version,
-		          uri, manifest_uri, checksum, size, label_map_json, status, error_msg, created_at
+		          created_by_job_id, uri, manifest_uri, checksum, size, label_map_json, status, error_msg, created_at
 	`, id, status, errorMsg)
 	return scanArtifact(row)
 }
@@ -135,7 +148,7 @@ func (r *PostgresRepository) UpdateBuildResult(ctx context.Context, id int64, re
 		    error_msg = $7
 		where id = $1
 		returning id, project_id, dataset_id, snapshot_id, artifact_type, format, version,
-		          uri, manifest_uri, checksum, size, label_map_json, status, error_msg, created_at
+		          created_by_job_id, uri, manifest_uri, checksum, size, label_map_json, status, error_msg, created_at
 	`, id, result.Status, result.URI, result.ManifestURI, result.Checksum, result.Size, result.ErrorMsg)
 	return scanArtifact(row)
 }
@@ -157,6 +170,7 @@ func scanArtifact(row interface {
 }) (Artifact, error) {
 	var artifact Artifact
 	var labelMapJSON []byte
+	var createdByJobID sql.NullInt64
 	err := row.Scan(
 		&artifact.ID,
 		&artifact.ProjectID,
@@ -165,6 +179,7 @@ func scanArtifact(row interface {
 		&artifact.ArtifactType,
 		&artifact.Format,
 		&artifact.Version,
+		&createdByJobID,
 		&artifact.URI,
 		&artifact.ManifestURI,
 		&artifact.Checksum,
@@ -176,6 +191,9 @@ func scanArtifact(row interface {
 	)
 	if err != nil {
 		return Artifact{}, err
+	}
+	if createdByJobID.Valid {
+		artifact.CreatedByJobID = &createdByJobID.Int64
 	}
 	if len(labelMapJSON) > 0 {
 		if err := json.Unmarshal(labelMapJSON, &artifact.LabelMapJSON); err != nil {

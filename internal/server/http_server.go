@@ -38,7 +38,9 @@ type JobRoutes struct {
 	CreateVideoExtract http.HandlerFunc
 	CreateCleaning     http.HandlerFunc
 	GetJob             http.HandlerFunc
+	ListWorkers        http.HandlerFunc
 	ListEvents         http.HandlerFunc
+	RegisterWorker     http.HandlerFunc
 	ReportHeartbeat    http.HandlerFunc
 	ReportProgress     http.HandlerFunc
 	ReportItemError    http.HandlerFunc
@@ -109,16 +111,19 @@ type OverviewRoutes struct {
 // Modules collects optional route groups so the server can keep a stable MVP
 // route surface while individual modules are delivered incrementally.
 type Modules struct {
-	Overview    OverviewRoutes
-	Tasks       TaskRoutes
-	DataHub     DataHubRoutes
-	Jobs        JobRoutes
-	Versioning  VersioningRoutes
-	Review      ReviewRoutes
-	Publish     PublishRoutes
-	Artifacts   ArtifactRoutes
-	Annotations AnnotationRoutes
-	ReadyChecks []ReadyCheck
+	Overview           OverviewRoutes
+	Tasks              TaskRoutes
+	DataHub            DataHubRoutes
+	Jobs               JobRoutes
+	Versioning         VersioningRoutes
+	Review             ReviewRoutes
+	Publish            PublishRoutes
+	Artifacts          ArtifactRoutes
+	Annotations        AnnotationRoutes
+	HTTPMiddleware     func(http.Handler) http.Handler
+	MutationMiddleware func(http.Handler) http.Handler
+	MetricsHandler     http.HandlerFunc
+	ReadyChecks        []ReadyCheck
 }
 
 // NewHTTPServer builds a control-plane HTTP server with base health routes.
@@ -173,7 +178,9 @@ func NewHTTPServerWithDataHubAndJobs(dataHubHandler *datahub.Handler, jobsHandle
 			CreateVideoExtract: jobsHandler.CreateVideoExtract,
 			CreateCleaning:     jobsHandler.CreateCleaning,
 			GetJob:             jobsHandler.GetJob,
+			ListWorkers:        jobsHandler.ListWorkers,
 			ListEvents:         jobsHandler.ListEvents,
+			RegisterWorker:     jobsHandler.RegisterWorker,
 			ReportHeartbeat:    jobsHandler.ReportHeartbeat,
 			ReportProgress:     jobsHandler.ReportProgress,
 			ReportItemError:    jobsHandler.ReportItemError,
@@ -191,6 +198,9 @@ func NewHTTPServerWithDataHubAndJobs(dataHubHandler *datahub.Handler, jobsHandle
 // every backing module is fully implemented.
 func NewHTTPServerWithModules(m Modules) *HTTPServer {
 	r := chi.NewRouter()
+	if m.HTTPMiddleware != nil {
+		r.Use(m.HTTPMiddleware)
+	}
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -209,64 +219,69 @@ func NewHTTPServerWithModules(m Modules) *HTTPServer {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready"))
 	})
+	if m.MetricsHandler != nil {
+		r.Get("/metrics", handlerOrNotImplemented(m.MetricsHandler))
+	}
 
 	r.Route("/v1", func(r chi.Router) {
-		r.Post("/datasets", handlerOrNotImplemented(m.DataHub.CreateDataset))
+		r.Post("/datasets", mutationHandler(m.MutationMiddleware, m.DataHub.CreateDataset))
 		r.Get("/datasets", handlerOrNotImplemented(m.DataHub.ListDatasets))
 		r.Get("/datasets/{id}", handlerOrNotImplemented(m.DataHub.GetDatasetDetail))
-		r.Post("/datasets/{id}/scan", handlerOrNotImplemented(m.DataHub.ScanDataset))
-		r.Post("/datasets/{id}/snapshots", handlerOrNotImplemented(m.DataHub.CreateSnapshot))
+		r.Post("/datasets/{id}/scan", mutationHandler(m.MutationMiddleware, m.DataHub.ScanDataset))
+		r.Post("/datasets/{id}/snapshots", mutationHandler(m.MutationMiddleware, m.DataHub.CreateSnapshot))
 		r.Get("/datasets/{id}/snapshots", handlerOrNotImplemented(m.DataHub.ListSnapshots))
 		r.Get("/datasets/{id}/items", handlerOrNotImplemented(m.DataHub.ListItems))
-		r.Post("/objects/presign", handlerOrNotImplemented(m.DataHub.PresignObject))
+		r.Post("/objects/presign", mutationHandler(m.MutationMiddleware, m.DataHub.PresignObject))
 		r.Get("/snapshots/{id}", handlerOrNotImplemented(m.DataHub.GetSnapshotDetail))
-		r.Post("/snapshots/{id}/import", handlerOrNotImplemented(m.DataHub.ImportSnapshot))
+		r.Post("/snapshots/{id}/import", mutationHandler(m.MutationMiddleware, m.DataHub.ImportSnapshot))
 
 		r.Get("/projects/{id}/overview", handlerOrNotImplemented(m.Overview.GetProjectOverview))
 		r.Get("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.ListTasks))
-		r.Post("/projects/{id}/tasks", handlerOrNotImplemented(m.Tasks.CreateTask))
+		r.Post("/projects/{id}/tasks", mutationHandler(m.MutationMiddleware, m.Tasks.CreateTask))
 		r.Get("/tasks/{id}", handlerOrNotImplemented(m.Tasks.GetTask))
-		r.Post("/tasks/{id}/transition", handlerOrNotImplemented(m.Tasks.TransitionTask))
+		r.Post("/tasks/{id}/transition", mutationHandler(m.MutationMiddleware, m.Tasks.TransitionTask))
 		r.Get("/tasks/{id}/workspace", handlerOrNotImplemented(m.Annotations.GetWorkspace))
-		r.Put("/tasks/{id}/workspace/draft", handlerOrNotImplemented(m.Annotations.SaveDraft))
-		r.Post("/tasks/{id}/workspace/submit", handlerOrNotImplemented(m.Annotations.SubmitWorkspace))
+		r.Put("/tasks/{id}/workspace/draft", mutationHandler(m.MutationMiddleware, m.Annotations.SaveDraft))
+		r.Post("/tasks/{id}/workspace/submit", mutationHandler(m.MutationMiddleware, m.Annotations.SubmitWorkspace))
 
-		r.Post("/jobs/zero-shot", handlerOrNotImplemented(m.Jobs.CreateZeroShot))
-		r.Post("/jobs/video-extract", handlerOrNotImplemented(m.Jobs.CreateVideoExtract))
-		r.Post("/jobs/cleaning", handlerOrNotImplemented(m.Jobs.CreateCleaning))
+		r.Post("/jobs/zero-shot", mutationHandler(m.MutationMiddleware, m.Jobs.CreateZeroShot))
+		r.Post("/jobs/video-extract", mutationHandler(m.MutationMiddleware, m.Jobs.CreateVideoExtract))
+		r.Post("/jobs/cleaning", mutationHandler(m.MutationMiddleware, m.Jobs.CreateCleaning))
 		r.Get("/jobs/{job_id}", handlerOrNotImplemented(m.Jobs.GetJob))
+		r.Get("/jobs/workers", handlerOrNotImplemented(m.Jobs.ListWorkers))
 		r.Get("/jobs/{job_id}/events", handlerOrNotImplemented(m.Jobs.ListEvents))
 
-		r.Post("/snapshots/diff", handlerOrNotImplemented(m.Versioning.DiffSnapshots))
+		r.Post("/snapshots/diff", mutationHandler(m.MutationMiddleware, m.Versioning.DiffSnapshots))
 
 		r.Get("/review/candidates", handlerOrNotImplemented(m.Review.ListCandidates))
-		r.Post("/review/candidates/{id}/accept", handlerOrNotImplemented(m.Review.AcceptCandidate))
-		r.Post("/review/candidates/{id}/reject", handlerOrNotImplemented(m.Review.RejectCandidate))
+		r.Post("/review/candidates/{id}/accept", mutationHandler(m.MutationMiddleware, m.Review.AcceptCandidate))
+		r.Post("/review/candidates/{id}/reject", mutationHandler(m.MutationMiddleware, m.Review.RejectCandidate))
 
 		r.Get("/publish/candidates", handlerOrNotImplemented(m.Publish.ListCandidates))
-		r.Post("/publish/batches", handlerOrNotImplemented(m.Publish.CreateBatch))
+		r.Post("/publish/batches", mutationHandler(m.MutationMiddleware, m.Publish.CreateBatch))
 		r.Get("/publish/batches/{id}", handlerOrNotImplemented(m.Publish.GetBatch))
-		r.Post("/publish/batches/{id}/items", handlerOrNotImplemented(m.Publish.ReplaceBatchItems))
-		r.Post("/publish/batches/{id}/review-approve", handlerOrNotImplemented(m.Publish.ReviewApprove))
-		r.Post("/publish/batches/{id}/review-reject", handlerOrNotImplemented(m.Publish.ReviewReject))
-		r.Post("/publish/batches/{id}/review-rework", handlerOrNotImplemented(m.Publish.ReviewRework))
-		r.Post("/publish/batches/{id}/owner-approve", handlerOrNotImplemented(m.Publish.OwnerApprove))
-		r.Post("/publish/batches/{id}/owner-reject", handlerOrNotImplemented(m.Publish.OwnerReject))
-		r.Post("/publish/batches/{id}/owner-rework", handlerOrNotImplemented(m.Publish.OwnerRework))
-		r.Post("/publish/batches/{id}/feedback", handlerOrNotImplemented(m.Publish.AddBatchFeedback))
-		r.Post("/publish/batches/{id}/items/{itemId}/feedback", handlerOrNotImplemented(m.Publish.AddItemFeedback))
+		r.Post("/publish/batches/{id}/items", mutationHandler(m.MutationMiddleware, m.Publish.ReplaceBatchItems))
+		r.Post("/publish/batches/{id}/review-approve", mutationHandler(m.MutationMiddleware, m.Publish.ReviewApprove))
+		r.Post("/publish/batches/{id}/review-reject", mutationHandler(m.MutationMiddleware, m.Publish.ReviewReject))
+		r.Post("/publish/batches/{id}/review-rework", mutationHandler(m.MutationMiddleware, m.Publish.ReviewRework))
+		r.Post("/publish/batches/{id}/owner-approve", mutationHandler(m.MutationMiddleware, m.Publish.OwnerApprove))
+		r.Post("/publish/batches/{id}/owner-reject", mutationHandler(m.MutationMiddleware, m.Publish.OwnerReject))
+		r.Post("/publish/batches/{id}/owner-rework", mutationHandler(m.MutationMiddleware, m.Publish.OwnerRework))
+		r.Post("/publish/batches/{id}/feedback", mutationHandler(m.MutationMiddleware, m.Publish.AddBatchFeedback))
+		r.Post("/publish/batches/{id}/items/{itemId}/feedback", mutationHandler(m.MutationMiddleware, m.Publish.AddItemFeedback))
 		r.Get("/publish/batches/{id}/workspace", handlerOrNotImplemented(m.Publish.GetWorkspace))
 		r.Get("/publish/records/{id}", handlerOrNotImplemented(m.Publish.GetRecord))
 
-		r.Post("/artifacts/packages", handlerOrNotImplemented(m.Artifacts.CreatePackage))
-		r.Post("/snapshots/{id}/export", handlerOrNotImplemented(m.Artifacts.ExportSnapshot))
+		r.Post("/artifacts/packages", mutationHandler(m.MutationMiddleware, m.Artifacts.CreatePackage))
+		r.Post("/snapshots/{id}/export", mutationHandler(m.MutationMiddleware, m.Artifacts.ExportSnapshot))
 		r.Get("/artifacts/resolve", handlerOrNotImplemented(m.Artifacts.ResolveArtifact))
 		r.Get("/artifacts/{id}", handlerOrNotImplemented(m.Artifacts.GetArtifact))
 		r.Get("/artifacts/{id}/download", handlerOrNotImplemented(m.Artifacts.DownloadArtifact))
-		r.Post("/artifacts/{id}/presign", handlerOrNotImplemented(m.Artifacts.PresignArtifact))
+		r.Post("/artifacts/{id}/presign", mutationHandler(m.MutationMiddleware, m.Artifacts.PresignArtifact))
 	})
 
 	r.Route("/internal", func(r chi.Router) {
+		r.Post("/jobs/workers/register", handlerOrNotImplemented(m.Jobs.RegisterWorker))
 		r.Post("/jobs/{job_id}/heartbeat", handlerOrNotImplemented(m.Jobs.ReportHeartbeat))
 		r.Post("/jobs/{job_id}/progress", handlerOrNotImplemented(m.Jobs.ReportProgress))
 		r.Post("/jobs/{job_id}/events", handlerOrNotImplemented(m.Jobs.ReportItemError))
@@ -286,5 +301,15 @@ func handlerOrNotImplemented(h http.HandlerFunc) http.HandlerFunc {
 		// Keep unimplemented routes visible to clients instead of silently
 		// disappearing from the MVP surface.
 		http.Error(w, http.StatusText(http.StatusNotImplemented), http.StatusNotImplemented)
+	}
+}
+
+func mutationHandler(middleware func(http.Handler) http.Handler, h http.HandlerFunc) http.HandlerFunc {
+	base := http.Handler(handlerOrNotImplemented(h))
+	if middleware != nil {
+		base = middleware(base)
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		base.ServeHTTP(w, r)
 	}
 }

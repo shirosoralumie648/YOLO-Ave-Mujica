@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"yolo-ave-mujica/internal/auth"
 )
 
 type Handler struct {
@@ -21,8 +22,18 @@ type reviewActionRequest struct {
 	ReasonCode string `json:"reason_code,omitempty"`
 }
 
-func (h *Handler) ListCandidates(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"items": h.svc.ListCandidates()})
+func (h *Handler) ListCandidates(w http.ResponseWriter, r *http.Request) {
+	items := h.svc.ListCandidates()
+	if identity, ok := auth.IdentityFromContext(r.Context()); ok && len(identity.ProjectIDs) > 0 {
+		filtered := make([]Candidate, 0, len(items))
+		for _, item := range items {
+			if identity.AllowsProject(item.ProjectID) {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (h *Handler) AcceptCandidate(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +50,12 @@ func (h *Handler) AcceptCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.ReviewerID == "" {
 		in.ReviewerID = "system"
+	}
+	if candidate, ok := h.svc.GetCandidate(id); ok {
+		if err := auth.RequireProjectAccess(r.Context(), candidate.ProjectID); err != nil {
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
 	}
 
 	if err := h.svc.AcceptCandidate(id, in.ReviewerID); err != nil {
@@ -62,6 +79,12 @@ func (h *Handler) RejectCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.ReviewerID == "" {
 		in.ReviewerID = "system"
+	}
+	if candidate, ok := h.svc.GetCandidate(id); ok {
+		if err := auth.RequireProjectAccess(r.Context(), candidate.ProjectID); err != nil {
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
 	}
 
 	if err := h.svc.RejectCandidate(id, in.ReviewerID, in.ReasonCode); err != nil {

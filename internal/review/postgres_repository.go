@@ -21,11 +21,12 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 
 func (r *PostgresRepository) ListPending() ([]Candidate, error) {
 	rows, err := r.pool.Query(context.Background(), `
-		select c.id, c.job_id, c.dataset_id, c.snapshot_id, c.item_id, di.object_key, c.category_id,
+		select c.id, d.project_id, c.job_id, c.dataset_id, c.snapshot_id, c.item_id, di.object_key, c.category_id,
 		       c.bbox_x, c.bbox_y, c.bbox_w, c.bbox_h,
 		       c.confidence, c.model_name, c.is_pseudo, c.review_status, c.reviewer_id, c.reviewed_at, c.created_at
 		from annotation_candidates c
 		join dataset_items di on di.id = c.item_id
+		join datasets d on d.id = c.dataset_id
 		where c.review_status in ('pending', 'queued_for_review')
 		order by c.id asc
 	`)
@@ -44,6 +45,7 @@ func (r *PostgresRepository) ListPending() ([]Candidate, error) {
 		var createdAt time.Time
 		if err := rows.Scan(
 			&c.ID,
+			&c.ProjectID,
 			&jobID,
 			&c.DatasetID,
 			&c.SnapshotID,
@@ -76,6 +78,60 @@ func (r *PostgresRepository) ListPending() ([]Candidate, error) {
 		items = append(items, normalizeCandidate(c))
 	}
 	return items, rows.Err()
+}
+
+func (r *PostgresRepository) GetCandidate(id int64) (Candidate, bool) {
+	row := r.pool.QueryRow(context.Background(), `
+		select c.id, d.project_id, c.job_id, c.dataset_id, c.snapshot_id, c.item_id, di.object_key, c.category_id,
+		       c.bbox_x, c.bbox_y, c.bbox_w, c.bbox_h,
+		       c.confidence, c.model_name, c.is_pseudo, c.review_status, c.reviewer_id, c.reviewed_at, c.created_at
+		from annotation_candidates c
+		join dataset_items di on di.id = c.item_id
+		join datasets d on d.id = c.dataset_id
+		where c.id = $1
+	`, id)
+
+	var (
+		c          Candidate
+		jobID      *int64
+		confidence *float64
+		reviewerID *string
+		reviewedAt *time.Time
+		createdAt  time.Time
+	)
+	if err := row.Scan(
+		&c.ID,
+		&c.ProjectID,
+		&jobID,
+		&c.DatasetID,
+		&c.SnapshotID,
+		&c.ItemID,
+		&c.ObjectKey,
+		&c.CategoryID,
+		&c.BBox.X,
+		&c.BBox.Y,
+		&c.BBox.W,
+		&c.BBox.H,
+		&confidence,
+		&c.Source.ModelName,
+		&c.Source.IsPseudo,
+		&c.ReviewStatus,
+		&reviewerID,
+		&reviewedAt,
+		&createdAt,
+	); err != nil {
+		return Candidate{}, false
+	}
+	c.Source.JobID = jobID
+	c.Source.Confidence = confidence
+	c.Source.CreatedAt = &createdAt
+	if reviewerID != nil {
+		c.ReviewerID = *reviewerID
+	}
+	if reviewedAt != nil {
+		c.ReviewedAt = *reviewedAt
+	}
+	return normalizeCandidate(c), true
 }
 
 func (r *PostgresRepository) PersistCandidates(jobID int64, items []PersistCandidateInput) ([]Candidate, error) {

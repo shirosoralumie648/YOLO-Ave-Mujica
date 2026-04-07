@@ -14,9 +14,12 @@ import (
 	"github.com/minio/minio-go/v7"
 	"yolo-ave-mujica/internal/annotations"
 	"yolo-ave-mujica/internal/artifacts"
+	"yolo-ave-mujica/internal/audit"
+	"yolo-ave-mujica/internal/auth"
 	"yolo-ave-mujica/internal/config"
 	"yolo-ave-mujica/internal/datahub"
 	"yolo-ave-mujica/internal/jobs"
+	"yolo-ave-mujica/internal/observability"
 	"yolo-ave-mujica/internal/overview"
 	"yolo-ave-mujica/internal/publish"
 	"yolo-ave-mujica/internal/queue"
@@ -78,12 +81,31 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	jobsRepo := jobs.NewPostgresRepository(pool)
 	reviewRepo := review.NewPostgresRepository(pool)
 	reviewSvc := review.NewServiceWithRepository(reviewRepo)
-	jobsSvc := jobs.NewServiceWithReviewSink(jobsRepo, jobs.NewRedisPublisher(redisClient), reviewCandidateSinkAdapter{svc: reviewSvc})
-	jobsHandler := jobs.NewHandler(jobsSvc)
-	dataHubHandler := datahub.NewHandlerWithJobsAndSourcePresign(dataHubSvc, jobsSvc, func(sourceURI string, ttlSeconds int) (string, error) {
-		return storage.PresignURI(s3Client, sourceURI, time.Duration(ttlSeconds)*time.Second)
+	metrics := observability.NewMetrics()
+	metrics.SetQueueDepthProvider(func(ctx context.Context) (map[string]int64, error) {
+		depths := map[string]int64{}
+		for _, lane := range []string{"jobs:cpu", "jobs:gpu", "jobs:mixed"} {
+			value, err := redisClient.LLen(ctx, lane).Result()
+			if err != nil {
+				return nil, err
+			}
+			depths[lane] = value
+		}
+		return depths, nil
 	})
-	jobSweeper := jobs.NewSweeper(jobsRepo, jobs.NewRedisPublisher(redisClient), 3)
+	metrics.SetReviewBacklogProvider(func(context.Context) (int64, error) {
+		count, err := reviewRepo.PendingCandidateCount(1)
+		return int64(count), err
+	})
+	httpLogger := observability.NewJSONLogger(log.Writer())
+	auditLogger := audit.NewPostgresLogger(pool)
+	jobsSvc := jobs.NewServiceWithDependenciesAndMetrics(jobsRepo, jobs.NewRedisPublisher(redisClient), reviewCandidateSinkAdapter{svc: reviewSvc}, metrics)
+	jobsHandler := jobs.NewHandlerWithAudit(jobsSvc, auditLogger)
+	dataHubHandler := datahub.NewHandlerWithJobsAndSourcePresignAndAudit(dataHubSvc, jobsSvc, func(sourceURI string, ttlSeconds int) (string, error) {
+		return storage.PresignURI(s3Client, sourceURI, time.Duration(ttlSeconds)*time.Second)
+	}, auditLogger)
+	jobSweeper := jobs.NewSweeperWithMetrics(jobsRepo, jobs.NewRedisPublisher(redisClient), 3, metrics).
+		WithRetryBackoff(cfg.JobRetryBackoffBase, cfg.JobRetryBackoffMax)
 
 	versioningHandler := versioning.NewHandler(versioning.NewServiceWithRepository(versioning.NewPostgresRepository(pool)))
 	reviewHandler := review.NewHandler(reviewSvc)
@@ -95,7 +117,7 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	annotationHandler := annotations.NewHandler(annotationSvc)
 	publishRepo := publish.NewPostgresRepository(pool)
 	publishSvc := publish.NewService(publishRepo, taskSvc)
-	publishHandler := publish.NewHandler(publishSvc)
+	publishHandler := publish.NewHandlerWithAudit(publishSvc, auditLogger)
 	overviewSvc := overview.NewService(
 		overview.TaskSourceFunc(func(projectID int64, filter tasks.ListTasksFilter) ([]tasks.Task, error) {
 			return taskSvc.ListTasks(context.Background(), projectID, filter)
@@ -108,16 +130,16 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	artifactRepo := artifacts.NewPostgresRepository(pool)
 	artifactQuery := artifacts.NewExportQuery(pool)
 	artifactStorage := artifacts.NewFilesystemStorage(cfg.ArtifactStorageDir)
-	artifactSource := artifacts.ObjectSourceFunc(func(ctx context.Context, objectKey string) ([]byte, error) {
+	artifactSource := artifacts.StreamingObjectSourceFunc(func(ctx context.Context, objectKey string) (io.ReadCloser, error) {
 		obj, err := s3Client.GetObject(ctx, cfg.S3Bucket, objectKey, minio.GetObjectOptions{})
 		if err != nil {
 			return nil, err
 		}
-		defer obj.Close()
-		return io.ReadAll(obj)
+		return obj, nil
 	})
 	artifactBuilder := artifacts.NewBuilder(artifactSource)
 	artifactService := artifacts.NewServiceWithDependencies(artifactRepo, artifactQuery, artifactBuilder, artifactStorage)
+	artifactService = artifactService.WithMetrics(metrics)
 	// Recover unfinished builds before serving traffic so stale "building"
 	// rows do not survive an unclean restart indefinitely.
 	if _, err := artifactService.MarkStaleBuildsFailed(ctx, "startup_recovery"); err != nil {
@@ -128,7 +150,7 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 	// Start the in-process build runner only after startup recovery has
 	// finished so newly queued work starts from a known-good baseline.
 	artifactService.StartBuildRunner(ctx, cfg.ArtifactBuildConcurrency)
-	artifactHandler := artifacts.NewHandler(artifactService)
+	artifactHandler := artifacts.NewHandlerWithJobsAndAudit(artifactService, nil, auditLogger)
 
 	modules := buildModulesWithHandlers(reviewHandler, publishHandler, artifactHandler)
 	modules.DataHub = server.DataHubRoutes{
@@ -149,7 +171,9 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 		CreateVideoExtract: jobsHandler.CreateVideoExtract,
 		CreateCleaning:     jobsHandler.CreateCleaning,
 		GetJob:             jobsHandler.GetJob,
+		ListWorkers:        jobsHandler.ListWorkers,
 		ListEvents:         jobsHandler.ListEvents,
+		RegisterWorker:     jobsHandler.RegisterWorker,
 		ReportHeartbeat:    jobsHandler.ReportHeartbeat,
 		ReportProgress:     jobsHandler.ReportProgress,
 		ReportItemError:    jobsHandler.ReportItemError,
@@ -197,6 +221,19 @@ func buildModules(ctx context.Context, cfg config.Config) (server.Modules, func(
 			}
 			return nil
 		},
+	}
+	modules.HTTPMiddleware = func(next http.Handler) http.Handler {
+		return auth.IdentityMiddleware(cfg.AuthDefaultProjectIDs)(
+			observability.Middleware(httpLogger, metrics)(next),
+		)
+	}
+	modules.MetricsHandler = metrics.Handler()
+	modules.MutationMiddleware = func(next http.Handler) http.Handler {
+		return auth.StaticBearerMiddleware(cfg.AuthBearerToken)(
+			auth.FixedWindowRateLimitMiddleware(cfg.MutationRateLimitPerMinute, time.Minute)(
+				next,
+			),
+		)
 	}
 
 	return modules, func() {
